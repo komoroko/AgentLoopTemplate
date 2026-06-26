@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Read",
+      "Grep",
+      "Glob",
+      "Bash(cat .agentloop/state.md:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(ls:*)",
+      "Bash(make build-loop:*)",
+      "Bash(make test-tools:*)",
+      "Bash(uv run python scripts/agentloop/dag.py:*)",
+      "Bash(uv run python scripts/agentloop/build_loop.py:*)"
+    ],
+    "ask": [],
+    "deny": []
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -f .agentloop/state.md && echo '--- AgentLoop 現在の状態（.agentloop/state.md 冒頭）---' && sed -n '1,20p' .agentloop/state.md || true"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run python scripts/agentloop/gate_guard.py"
+          }
+        ]
+      }
+    ]
+  }
+}

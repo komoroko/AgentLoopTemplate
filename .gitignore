@@ -1,0 +1,40 @@
+# ---- Python / uv ----
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+build/
+dist/
+# uv.lock は再現性のためコミットする（ignore しない）
+
+# ---- frontend / pnpm ----
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# ---- mkdocs ----
+site/
+
+# ---- ログ ----
+backend/logfiles/*.log
+!backend/logfiles/.gitkeep
+
+# ---- AgentLoop 実行時生成物 ----
+.worktrees/                 # build_loop.py が並列タスク用に作る一時 worktree
+.agentloop/build-loop.log   # オーケストレータのエスカレーション・ログ
+
+# ---- 環境変数・秘匿情報 ----
+.env
+.env.*
+!.env.example
+
+# ---- OS / エディタ ----
+.DS_Store
+.idea/
+.vscode/
+
+# ---- Claude Code ローカル設定 ----
+.claude/settings.local.json

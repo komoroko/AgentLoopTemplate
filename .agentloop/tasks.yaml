@@ -1,0 +1,33 @@
+# .agentloop/tasks.yaml — タスクグラフ(DAG)の「機械可読な単一情報源」
+#
+# /tasks がこのファイルを生成し、/build（scripts/build_loop.py）と /status
+# （scripts/dag.py --render）がこれを読む。fan-out・実行可能フロンティア・
+# 実行レイヤ・クリティカルパスは blockedBy から導出するため、ここには保存しない
+# （導出値を二重に持つと drift するため）。
+#
+# phase / gates / 各種ログは .agentloop/state.md が持つ。タスクグラフの真実はここ。
+#
+# スキーマ:
+#   id:        T-NNN 形式の一意なタスクID
+#   title:     人が読む短い説明
+#   kind:      foundation（多数が依存する基盤）| parallel（独立同時進行できる葉）
+#              | integration（複数完了後に合流）
+#   blockedBy: 先に done が必要なタスクIDの配列（DAG の辺）。循環は不可。
+#   status:    todo | in_progress | blocked | needs-revision | done
+#   test:      green 判定に使うコマンド/対象（例: "make test" や "pytest backend/foo"）
+
+tasks: []
+# 例（/tasks が埋める。雛形のため空リスト）:
+# tasks:
+#   - id: T-001
+#     title: "共通スキーマ定義"
+#     kind: foundation
+#     blockedBy: []
+#     status: todo
+#     test: "make test"
+#   - id: T-002
+#     title: "ユーザー登録 API"
+#     kind: parallel
+#     blockedBy: [T-001]
+#     status: todo
+#     test: "pytest backend/tests/test_register.py"

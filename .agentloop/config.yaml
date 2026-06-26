@@ -1,0 +1,35 @@
+# .agentloop/config.yaml — 確定的オーケストレーションの「唯一のノブ源」
+#
+# scripts/build_loop.py（実装ループのオーケストレータ）と scripts/gate_guard.py
+# （ゲート機構フック）がこのファイルを読む。並列度・retry・worktree・ゲート強制の
+# 挙動はすべてここで決まる。プロンプト（自然言語）ではなくコードが参照するため、
+# ここを変えると実行の制御フローが確定的に変わる。
+
+build:
+  # フロンティア内の独立な葉タスクを同時に何個まで起動するか（worktree 隔離の上限）。
+  max_parallel: 3
+
+  worktree:
+    enabled: true            # false にすると隔離せず work ブランチ上で直列実行する
+    dir: .worktrees          # worktree を作るディレクトリ（.gitignore 済み）
+    branch_pattern: "{branch}/{task_id}"  # 例: build/myproduct/T-003
+
+  # 品質ゲートが fail したときに implementer へ差し戻して再試行する上限。
+  # 超過したタスクは blocked にしてループを止め、人へエスカレーションする。
+  retries:
+    test_fix: 2              # make test が red のときの再試行回数
+    check_fix: 2             # make check（lint/format/type）が fail のときの再試行回数
+
+  # 確定ゲート判定に使うコマンド。orchestrator が終了コードで pass/fail を判定する。
+  # make の無いプロジェクトにコピーした場合はここを当該プロジェクトのコマンドへ読み替える。
+  quality_gate:
+    test_cmd: "make test"
+    check_cmd: "make check"
+
+  merge:
+    strategy: sequential     # 葉ブランチを done になった順に work へ順次マージする
+
+gates:
+  # true なら scripts/gate_guard.py（PreToolUse フック）が前提ゲート未承認時の
+  # 成果物編集を機構的にブロックする。false で規約層（CLAUDE.md）のみに戻す。
+  enforce_hook: true

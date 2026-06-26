@@ -1,0 +1,59 @@
+[project]
+name = "project-name"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+]
+
+# installing Cuda Version
+# [tool.uv]
+# find-links = [
+#     "https://download.pytorch.org/whl/cu128/torch",
+#     "https://download.pytorch.org/whl/cu128/torchvision",
+# ]
+# extra-index-url = ["https://download.pytorch.org/whl/cu128"]
+
+[tool.uv]
+# アップロードから1週間以内の新しいバージョンはインストール対象から除外する。
+# 公開直後のリリース(供給網リスク・初期不具合)を避けるためのクールダウン。
+# 値は現在時刻からの相対期間で、解決(uv lock / uv sync)のたびにローリング評価される。
+exclude-newer = "1 week"
+
+[tool.ruff]
+exclude = [".git", ".mypy_cache", ".venv", "third_party"]
+line-length = 120
+target-version = "py313"
+
+[tool.ruff.lint]
+fixable = ["ALL"]
+unfixable = []
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.format]
+quote-style = "double"
+line-ending = "auto"
+
+[tool.mypy]
+strict = true
+ignore_missing_imports = true
+warn_unused_ignores = false
+
+[dependency-groups]
+dev = [
+    "filetype>=1.2.0",
+    "pydantic>=2.13.4",
+    "mkdocs>=1.6.1",
+    "pytest>=9.0.3",
+    "pre-commit>=4.6.0",
+    "mypy>=2.1.0",
+    "ruff>=0.15.16",
+    "mkdocs-material>=9.7.6",
+    "mkdocstrings[python]>=1.0.4",
+    # scripts/agentloop/ の確定オーケストレーション（dag.py・build_loop.py・gate_guard.py）が
+    # config.yaml / tasks.yaml / state.md を読むのに使う。テンプレート基盤ツール専用のため
+    # プロダクト本体の依存ではなく dev に置く（types-pyyaml は型スタブ）。
+    "pyyaml>=6.0",
+    "types-pyyaml>=6.0.12.20260518",
+]
