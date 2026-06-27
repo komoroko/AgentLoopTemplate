@@ -20,7 +20,7 @@ brief → requirements → design → tasks → build → verify → done
 | build        | `/build`  | 実装コード + テスト | ④ 実装完了レビュー |
 | verify       | `/verify` | `docs/test/test-plan.md` 実行結果 | ⑤ リリース可否 |
 
-進捗・全タスクは `/status` で確認できる。
+進捗・全タスクは `/status` で確認できる。`done` 到達時は `/verify` が `docs/retrospective.md` に振り返り（手戻りの発生元・上流への学び）を残し、未回収ログを閉じる。
 
 ## 単一情報源（SSOT）
 
@@ -44,6 +44,23 @@ brief → requirements → design → tasks → build → verify → done
 **ゲートは2層で強制する**（規約だけに依存しない）:
 - **規約層**: 上記のとおり各コマンドが冒頭で前提ゲートを確認する。
 - **機構層**: `scripts/agentloop/gate_guard.py`（`.claude/settings.json` の PreToolUse フック）が、前提ゲート未承認のまま**次フェーズの成果物パス**（`docs/20-design.md`・`docs/decisions/**`→要件承認、`docs/tasks/**`→設計承認、`backend/**`・`frontend/**`・`scripts/**`（プロダクト用スクリプト）→タスク承認、`docs/test/**`→実装承認）を Write/Edit する操作をコードで **deny** する。ただし `scripts/agentloop/**`（テンプレート基盤ツール）はゲートに関わらず常に許可（フック自身の保守を妨げない）。さらに `/build` は `scripts/agentloop/build_loop.py` が冒頭で `gates.tasks==approved` をコード判定して二重化する。`.agentloop/config.yaml` の `gates.enforce_hook: false` で機構層を無効化できる。
+
+> **テンプレート自身を保守する場合の注意**: 雛形 `docs/20-design.md`・`docs/tasks/**` や `scripts/**` 配下のテンプレ原本は、実プロダクトの成果物パスと一致するため、ゲート未承認だと機構層が編集を deny する（保守時に自分のゲートに阻まれる）。これは想定挙動。テンプレ保守の際は `gates.enforce_hook: false` に一時切替 → 編集 → **直後に `true` へ復元**する（この用途のための逃げ口。原本と実成果物を機構的に区別はしない＝ゲートの単純さ・確実さを優先する）。
+
+## ゲート自己評価（必須）
+
+ゲートに到達したら、成果物に加えて **自己評価ブロック** を必ず提示する。これは「システムが
+自分の確信のなさ・置いた前提を自覚し、人のレビューを軽くする」ためのメタ認知の核であり、
+全ゲート（①〜⑤）共通:
+
+- **置いた前提**: 人に未確認のまま前提にした仮定（外れると成果物が崩れる点）。
+- **確信度**: 高 / 中 / 低（領域別に分けてよい）。**低い箇所は理由を必ず添え**、人の注意をそこへ向ける。
+- **未解決の論点 / 人に判断を仰ぐ点**（最重要）。
+- **想定リスク・トレードオフ**（後段に効く判断）。
+
+確信度が高いふりをして人の検算を省かせない——**不確かさを正直に出す**ことがゲートの価値を上げる。
+これは「先回り作業ログ」とは別物（あちらは破棄前提作業の記録）。要件/設計/タスク票では
+この自己評価を成果物自体にも残す（口頭だけにしない。各雛形の「自己評価」節）。
 
 ## 承認待ち中のボトルネック最小化
 
@@ -123,6 +140,6 @@ brief → requirements → design → tasks → build → verify → done
 - `.agentloop/tasks.yaml` — タスクグラフ(DAG)の機械可読 SSOT
 - `.agentloop/config.yaml` — 確定実行のノブ源（並列・retry・worktree・ゲート強制）
 - `scripts/agentloop/` — 確定オーケストレーション（`dag.py` 導出 / `build_loop.py` 実装ループ / `gate_guard.py` ゲートフック）。**プロダクト用スクリプトは `scripts/` 直下に置き、基盤ツールと混在させない**
-- `docs/` — 工程成果物（要件・設計・ADR・タスク票・テスト計画）
+- `docs/` — 工程成果物（要件・設計・ADR・タスク票・テスト計画）。`docs/retrospective.md` に done 時の振り返り（メタ認知の回収）を残す
 - `.claude/commands/` — 各工程の入口（slash command）
 - `.claude/agents/` — 専門サブエージェント
