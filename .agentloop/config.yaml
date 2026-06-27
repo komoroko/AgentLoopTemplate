@@ -1,7 +1,7 @@
 # .agentloop/config.yaml — 確定的オーケストレーションの「唯一のノブ源」
 #
-# scripts/build_loop.py（実装ループのオーケストレータ）と scripts/gate_guard.py
-# （ゲート機構フック）がこのファイルを読む。並列度・retry・worktree・ゲート強制の
+# scripts/agentloop/build_loop.py（実装ループのオーケストレータ）と
+# scripts/agentloop/gate_guard.py（ゲート機構フック）がこのファイルを読む。並列度・retry・worktree・ゲート強制の
 # 挙動はすべてここで決まる。プロンプト（自然言語）ではなくコードが参照するため、
 # ここを変えると実行の制御フローが確定的に変わる。
 
@@ -30,6 +30,6 @@ build:
     strategy: sequential     # 葉ブランチを done になった順に work へ順次マージする
 
 gates:
-  # true なら scripts/gate_guard.py（PreToolUse フック）が前提ゲート未承認時の
+  # true なら scripts/agentloop/gate_guard.py（PreToolUse フック）が前提ゲート未承認時の
   # 成果物編集を機構的にブロックする。false で規約層（CLAUDE.md）のみに戻す。
   enforce_hook: true

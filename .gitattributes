@@ -1,0 +1,18 @@
+# テキストは LF に正規化する（Windows ドライブ上の CRLF 混入を防ぐ）。
+# /mnt/d などの Windows マウントでチェックアウトしても、リポジトリ内・作業ツリーとも LF に揃える。
+* text=auto eol=lf
+
+# シェルスクリプト・makefile は LF 必須（CRLF だと実行時に壊れる）
+*.sh    text eol=lf
+makefile text eol=lf
+Makefile text eol=lf
+
+# バイナリは変換しない
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.pdf   binary
+*.zip   binary
+*.lock  text eol=lf

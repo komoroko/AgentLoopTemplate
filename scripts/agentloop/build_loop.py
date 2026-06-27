@@ -68,7 +68,7 @@ class Config:
         retries = build.get("retries") or {}
         qg = build.get("quality_gate") or {}
         return cls(
-            max_parallel=int(build.get("max_parallel", 3)),
+            max_parallel=max(1, int(build.get("max_parallel", 3))),
             worktree_enabled=bool(wt.get("enabled", True)),
             worktree_dir=str(wt.get("dir", ".worktrees")),
             branch_pattern=str(wt.get("branch_pattern", "{branch}/{task_id}")),
@@ -167,7 +167,8 @@ class Orchestrator:
             f"docs/tasks/{task.id}.md と docs/20-design.md・既存コードを読み、"
             ".claude/agents/implementer.md のプロトコルに従って実装してください。\n"
             f"自動テストを書いて `{self.config.test_cmd}` を green に、`{self.config.check_cmd}` をクリーンにする。\n"
-            f'完了したら変更をこのブランチにコミットする: git add -A && git commit -m "{task.id}: <要約>"\n'
+            "完了したら変更をこのブランチにコミットする（オーケストレーション状態 .agentloop/ は除外）:\n"
+            f"  git add -A -- . ':(exclude).agentloop' && git commit -m \"{task.id}: <要約>\"\n"
             "スコープ外（他タスクの領域）には手を出さない。要件/設計の不備を見つけたら勝手に直さず報告する。"
         )
         if failure_log:
@@ -225,16 +226,32 @@ class Orchestrator:
     def _worktree_path(self, task: dag.Task) -> str:
         return str(Path(self.config.worktree_dir) / task.id)
 
-    def process_leaf(self, task: dag.Task) -> tuple[str, bool, str]:
-        """葉タスクを worktree 隔離で実装する。(branch, ok, log) を返す。マージは呼び出し側。"""
+    def _add_worktree(self, task: dag.Task) -> str:
+        """葉タスク用の worktree を作り branch 名を返す。再実行衝突を避けるため既存を先に掃除する。
+
+        .git の index.lock 競合を避けるため、worktree 作成は **メインスレッドで直列に**呼ぶこと。
+        """
         branch = self._branch_for(task)
         path = self._worktree_path(task)
+        if not self.dry_run:
+            # 前回の中断で残った worktree/ブランチを掃除する（無ければ無視）。これが無いと
+            # 再実行時に `git worktree add -b` がパス/ブランチ衝突で失敗する。
+            _run(["git", "worktree", "remove", "--force", path], cwd=".")
+            _run(["git", "branch", "-D", branch], cwd=".")
+            _run(["git", "worktree", "prune"], cwd=".")
         self._git(["worktree", "add", "-b", branch, path, self.branch])
+        return branch
+
+    def _safe_run_task(self, task: dag.Task, cwd: str) -> tuple[bool, str]:
+        """_run_task_to_done をスレッドから安全に呼ぶ。例外は (False, log) に変換する。
+
+        1葉の失敗（implementer 起動失敗など）が並列バッチ全体を巻き込み、他タスクを
+        in_progress のまま取り残してデッドロックさせないようにするため。
+        """
         try:
-            ok, log = self._run_task_to_done(task, cwd=path)
-        finally:
-            pass
-        return branch, ok, log
+            return self._run_task_to_done(task, cwd=cwd)
+        except StopLoop as exc:
+            return False, str(exc)
 
     def merge_leaf(self, task: dag.Task, branch: str) -> bool:
         """葉ブランチを work へマージし worktree を撤去する。コンフリクト時は abort して False。"""
@@ -251,12 +268,28 @@ class Orchestrator:
 
     # -- メインループ --
 
+    def _recover_in_progress(self) -> None:
+        """前回の中断で in_progress のまま残ったタスクを todo へ戻す（クラッシュ復帰）。
+
+        frontier は status==todo のみを拾うため、in_progress を残したまま再実行すると
+        そのタスクは永久に着手されずループがデッドロックする。起動時に一度だけ巻き戻す。
+        """
+        try:
+            graph = dag.load(TASKS_PATH)
+        except (OSError, dag.DagError, yaml.YAMLError):
+            return
+        for t in graph.tasks:
+            if t.status == "in_progress":
+                set_task_status(t.id, "todo")
+                print(f"  [recover] {t.id}: in_progress → todo に戻しました（前回の中断から再開）")
+
     def run(self) -> int:
         gates = self.front.get("gates") or {}
         if not (isinstance(gates, dict) and gates.get("tasks") == "approved"):
             print("gates.tasks が approved ではありません。先に /tasks を承認してください。", file=sys.stderr)
             return 2
 
+        self._recover_in_progress()
         while True:
             graph = dag.load(TASKS_PATH)
             counts = graph.counts()
@@ -294,31 +327,39 @@ class Orchestrator:
                 log_escalation(f"{task.id}: 品質ゲートを規定回数で通せず blocked。\n{log[-500:]}")
                 raise StopLoop(f"{task.id} が blocked。人の介入が必要。", code=1)
             if not self.dry_run:
-                self._git(["add", "-A"])
-                # implementer がコミット済みでなければここで確定（差分があれば）。
+                # タスク差分のみ確定。.agentloop/ のオーケストレーション状態（tasks.yaml の
+                # status 等）は per-task コミットに含めない（1コミット=1タスクを保つ）。
+                _run(["git", "add", "-A", "--", ".", ":(exclude).agentloop"], cwd=".")
+                # implementer がコミット済みでなければここで確定（差分があれば。無ければ no-op）。
                 _run(["git", "commit", "-m", f"{task.id}: {task.title}"], cwd=".")
             set_task_status(task.id, "done")
 
     def _consume_parallel(self, tasks: list[dag.Task]) -> None:
-        """独立葉を worktree 隔離で最大 max_parallel 並列実装し、done 順に work へマージ。"""
+        """独立葉を worktree 隔離で最大 max_parallel 並列実装し、id 昇順で決定的に work へマージ。
+
+        worktree 作成はメインスレッドで直列に行い（.git の index.lock 競合を避ける）、
+        実装のみを並列化する。
+        """
         for task in tasks:
             set_task_status(task.id, "in_progress")
-        results: dict[str, tuple[str, bool, str]] = {}
-        with ThreadPoolExecutor(max_workers=self.config.max_parallel) as pool:
-            futures = {pool.submit(self.process_leaf, t): t for t in tasks}
+        # worktree 作成は直列（git のロック競合回避）。実装はこの後で並列に回す。
+        branches = {task.id: self._add_worktree(task) for task in tasks}
+        results: dict[str, tuple[bool, str]] = {}
+        with ThreadPoolExecutor(max_workers=max(1, self.config.max_parallel)) as pool:
+            futures = {pool.submit(self._safe_run_task, t, self._worktree_path(t)): t for t in tasks}
             for future, task in futures.items():
                 results[task.id] = future.result()
 
         blocked_any = False
         # 決定的に id 昇順でマージ（sequential join）。
         for task in sorted(tasks, key=lambda t: t.id):
-            branch, ok, log = results[task.id]
+            ok, log = results[task.id]
             if not ok:
                 set_task_status(task.id, "blocked")
                 log_escalation(f"{task.id}: 品質ゲートを規定回数で通せず blocked。\n{log[-500:]}")
                 blocked_any = True
                 continue
-            if self.merge_leaf(task, branch):
+            if self.merge_leaf(task, branches[task.id]):
                 set_task_status(task.id, "done")
             else:
                 set_task_status(task.id, "blocked")

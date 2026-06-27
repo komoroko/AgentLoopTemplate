@@ -7,7 +7,7 @@
 #   → WSL または Git Bash を利用してください
 # =========================================================
 
-.PHONY: install setup pre-commit pre-push check test test-tools audit build-loop clean link-claude
+.PHONY: install setup pre-commit pre-push check test test-tools audit build-loop clean
 
 # ツール導入（uv / pnpm のバイナリ）
 install:
@@ -52,90 +52,6 @@ audit:
 #   make build-loop ARGS=--dry-run
 build-loop:
 	uv run python scripts/agentloop/build_loop.py $(ARGS)
-
-# Create symbolic links for "claude code" files from existing "github copilot" files.
-# This scans for files whose names contain both "github" and "copilot", and creates
-# a symlink in the same location with 'github'->'claude' and 'copilot'->'code' replacements.
-# Example: path/to/github-copilot-config.json -> path/to/claude-code-config.json
-
-link-claude:
-	@set -e; \
-	# root CLAUDE.md: prefer .github/copilot-instructions.md, then root copilot-instructions.md,
-	# then .github/AGENTS.md, then root AGENTS.md
-	if [ -f .github/copilot-instructions.md ]; then \
-		ln -sf .github/copilot-instructions.md CLAUDE.md; \
-	elif [ -f copilot-instructions.md ]; then \
-		ln -sf copilot-instructions.md CLAUDE.md; \
-	elif [ -f .github/AGENTS.md ]; then \
-		ln -sf .github/AGENTS.md CLAUDE.md; \
-	elif [ -f AGENTS.md ]; then \
-		ln -sf AGENTS.md CLAUDE.md; \
-	fi; \
-	# ensure target dirs exist once
-	mkdir -p ".claude/commands" ".claude/skills" ".claude/agents" ".claude/memory"; \
-	# prompts: mirror .github/prompts tree, and map any *.prompt.md files preserving path
-	if [ -d .github/prompts ]; then \
-		find .github/prompts -mindepth 1 -print0 | \
-			while IFS= read -r -d '' src; do \
-				rel=$${src#.github/prompts/}; \
-				dest=.claude/commands/$$rel; \
-				mkdir -p "$$(dirname "$$dest")"; \
-				ln -sfn "$$src" "$$dest"; \
-			done; \
-	fi; \
-	find . -type f -name '*.prompt.md' -print0 | \
-		while IFS= read -r -d '' src; do \
-			rel=$${src#./}; \
-			rel=$${rel%.prompt.md}.md; \
-			dest=.claude/commands/$$rel; \
-			mkdir -p "$$(dirname "$$dest")"; \
-			ln -sfn "$$src" "$$dest"; \
-		done; \
-
-	# agents: mirror .github/agents tree, and map any *.agent.md files preserving path
-	if [ -d .github/agents ]; then \
-		find .github/agents -mindepth 1 -print0 | \
-			while IFS= read -r -d '' src; do \
-				rel=$${src#.github/agents/}; \
-				dest=.claude/agents/$$rel; \
-				mkdir -p "$$(dirname "$$dest")"; \
-				ln -sfn "$$src" "$$dest"; \
-			done; \
-	fi; \
-	find . -type f -name '*.agent.md' -print0 | \
-		while IFS= read -r -d '' src; do \
-			rel=$${src#./}; \
-			rel=$${rel%.agent.md}.md; \
-			dest=.claude/agents/$$rel; \
-			mkdir -p "$$(dirname "$$dest")"; \
-			ln -sfn "$$src" "$$dest"; \
-		done; \
-	# memory: mirror .github/memory into .claude/memory recursively
-	if [ -d .github/memory ]; then \
-		find .github/memory -mindepth 1 -print0 | \
-			while IFS= read -r -d '' src; do \
-				rel=$${src#.github/memory/}; \
-				dest=.claude/memory/$$rel; \
-				mkdir -p "$$(dirname "$$dest")"; \
-				ln -sfn "$$src" "$$dest"; \
-			done; \
-	fi; \
-	# SKILL.md files: place under .claude/skills/<parent>/SKILL.md (mirror parent dir)
-	find . -type f -name 'SKILL.md' -print0 | \
-		while IFS= read -r -d '' src; do \
-			dir=$$(dirname "$$src"); \
-			rel=$${dir#./}; \
-			dest=.claude/skills/$$rel/SKILL.md; \
-			mkdir -p "$$(dirname "$$dest")"; \
-			ln -sfn "$$src" "$$dest"; \
-		done; \
-
-	# directory-scoped instructions -> <dir>/CLAUDE.md
-	find . -type f -name '*.instructions.md' -print0 | \
-		while IFS= read -r -d '' src; do \
-			dir=$$(dirname "$$src"); \
-			ln -sfn "$$src" "$$dir/CLAUDE.md"; \
-		done
 
 # クリーンアップ
 clean:

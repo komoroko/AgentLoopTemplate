@@ -95,3 +95,11 @@ def test_load_from_yaml(tmp_path: object) -> None:
     )
     graph = dag.load(str(p))
     assert [t.id for t in graph.frontier()] == ["T-002"]
+
+
+def test_load_rejects_non_mapping_task(tmp_path: object) -> None:
+    # task 要素がスカラ（マッピングでない）場合は AttributeError ではなく DagError を投げる。
+    p = tmp_path / "tasks.yaml"  # type: ignore[operator]
+    p.write_text("tasks:\n  - T-001\n", encoding="utf-8")
+    with pytest.raises(dag.DagError):
+        dag.load(str(p))

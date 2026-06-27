@@ -1,7 +1,7 @@
 # .agentloop/tasks.yaml — タスクグラフ(DAG)の「機械可読な単一情報源」
 #
-# /tasks がこのファイルを生成し、/build（scripts/build_loop.py）と /status
-# （scripts/dag.py --render）がこれを読む。fan-out・実行可能フロンティア・
+# /tasks がこのファイルを生成し、/build（scripts/agentloop/build_loop.py）と /status
+# （scripts/agentloop/dag.py --render）がこれを読む。fan-out・実行可能フロンティア・
 # 実行レイヤ・クリティカルパスは blockedBy から導出するため、ここには保存しない
 # （導出値を二重に持つと drift するため）。
 #

@@ -171,6 +171,8 @@ class Graph:
 
 
 def _task_from_raw(raw: dict[str, object]) -> Task:
+    if not isinstance(raw, dict):
+        raise DagError(f"タスクはマッピング（id/title/... を持つ要素）である必要があります: {raw!r}")
     if "id" not in raw:
         raise DagError(f"id の無いタスクがあります: {raw!r}")
     blocked = raw.get("blockedBy", []) or []

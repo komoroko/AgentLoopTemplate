@@ -104,3 +104,18 @@ def test_dry_run_completes_all_tasks(project: Path) -> None:
     assert rc == 0
     graph = dag.load(".agentloop/tasks.yaml")
     assert graph.counts()["done"] == 3
+
+
+def test_recovers_stale_in_progress(project: Path) -> None:
+    # 前回の中断で in_progress のまま残ったタスクは起動時に todo へ戻され、再消化される。
+    # 復帰しないと frontier(todo限定) から外れて永久に着手されずデッドロックする。
+    stale = _TASKS.replace(
+        "{id: T-002, title: 葉A, kind: parallel, blockedBy: [T-001], status: todo, test: make test}",
+        "{id: T-002, title: 葉A, kind: parallel, blockedBy: [T-001], status: in_progress, test: make test}",
+    )
+    (project / ".agentloop" / "state.md").write_text(_STATE.format(tasks="approved"), encoding="utf-8")
+    (project / ".agentloop" / "tasks.yaml").write_text(stale, encoding="utf-8")
+    rc = build_loop.main(["--dry-run"])
+    assert rc == 0
+    graph = dag.load(".agentloop/tasks.yaml")
+    assert graph.counts()["done"] == 3  # in_progress だった T-002 も done に到達する
