@@ -15,22 +15,22 @@ def main(**kwargs: object) -> None:
     logger.debug(f"{kwargs=}")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     # Main 実行された場合のみ、ログファイルを出力する
     # 本番稼働では、ログファイルの蓄積により容量を圧迫されないように、ファイルにログ出力させないこと
     try:
         LOG_DIR.mkdir(parents=True, exist_ok=True)  # ログ出力先を確実に用意する
-        formatter_func = '%(asctime)s - %(module)s.%(funcName)s [%(levelname)s]\t%(message)s'  # フォーマットを定義
+        formatter_func = "%(asctime)s - %(module)s.%(funcName)s [%(levelname)s]\t%(message)s"  # フォーマットを定義
         logging.basicConfig(
             filename=str(LOG_DIR / f"{OWN_FILE_NAME}.logger.log"),
             level=logging.DEBUG,
             format=formatter_func,
-            encoding='utf-8',
+            encoding="utf-8",
         )  # ログファイルを出力する設定
 
         # コマンドライン引数を受け取りたい場合
         parser = argparse.ArgumentParser()
-        parser.add_argument('--arg1', type=str, required=False)
+        parser.add_argument("--arg1", type=str, required=False)
         args = parser.parse_args()
 
         main(**vars(args))

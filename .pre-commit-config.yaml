@@ -64,6 +64,9 @@
           - "mypy-extensions>=1.1.0"
           - "annotated-types>=0.7.0"
           - "types-PyYAML>=6.0.12.20260518"
+          # テストの @pytest.fixture を型付き扱いにする（隔離 env に pytest 型が無いと
+          # strict の disallow_untyped_decorators で untyped-decorator エラーになる）。
+          - "pytest>=9.0.3"
         minimum_pre_commit_version: "4.6.0"
         stages: [pre-push]
 

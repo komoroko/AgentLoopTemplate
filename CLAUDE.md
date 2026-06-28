@@ -27,7 +27,7 @@ brief → requirements → design → tasks → build → verify → done
 真実は次の3ファイルに分かれる。役割が違うので混同しない:
 
 - **`.agentloop/state.md`** — フェーズ・各ゲートの承認状況・各種ログ（先回り/エスカレーション）の真実。**作業開始時は必ず読む**。作業後に更新する（フェーズ進行、`updated_at`）。フロントマターの `gates.<name>` は `pending` | `approved`。**人の承認以外でこれを `approved` にしてはならない。**
-- **`.agentloop/tasks.yaml`** — タスクグラフ(DAG)の**機械可読な真実**。`/tasks` が生成し、`/build`（`scripts/agentloop/build_loop.py`）と `/status`（`scripts/agentloop/dag.py`）が読む。各タスクは `id`/`title`/`kind`/`blockedBy`/`status`/`test`。fan-out・フロンティア・実行レイヤ・クリティカルパスは `blockedBy` から導出するので保存しない（drift 防止）。state.md のタスク表は `dag.py --render` の人間向けビュー。**GitHub Issues 連携（opt-in）を有効にしても tasks.yaml が SSOT** で、Issues は `scripts/agentloop/issue_sync.py` による**一方向ミラー**（読み戻さない＝確定駆動・オフライン性を保つ）。
+- **`.agentloop/tasks.yaml`** — タスクグラフ(DAG)の**機械可読な真実**。`/tasks` が生成し、`/build`（`scripts/agentloop/build_loop.py`）と `/status`（`scripts/agentloop/dag.py`）が読む。各タスクは `id`/`title`/`kind`/`blockedBy`/`status`/`test`（表示・ラベル用の任意メタ `req`/`phase`）。fan-out・フロンティア・実行レイヤ・クリティカルパスは `blockedBy` から導出するので保存しない（drift 防止）。state.md のタスク表は `dag.py --render` の人間向けビュー。**GitHub Issues 連携（opt-in）を有効にしても tasks.yaml が SSOT** で、Issues は `scripts/agentloop/issue_sync.py` による**一方向ミラー**（読み戻さない＝確定駆動・オフライン性を保つ）。
 - **`.agentloop/config.yaml`** — 確定実行のノブ源（並列数・retry・worktree・ゲート強制）。`build_loop.py`/`gate_guard.py` が読む。
 
 ## ゲート規則（厳守）
