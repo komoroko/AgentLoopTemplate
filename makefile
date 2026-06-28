@@ -7,7 +7,7 @@
 #   → WSL または Git Bash を利用してください
 # =========================================================
 
-.PHONY: install setup pre-commit pre-push check test test-tools audit build-loop clean
+.PHONY: install setup pre-commit pre-push check test test-tools audit build-loop issue-sync revise clean
 
 # ツール導入（uv / pnpm のバイナリ）
 install:
@@ -52,6 +52,20 @@ audit:
 #   make build-loop ARGS=--dry-run
 build-loop:
 	uv run python scripts/agentloop/build_loop.py $(ARGS)
+
+# tasks.yaml を GitHub Issues へ一方向ミラー（人向け可視化・opt-in）。
+# .agentloop/config.yaml の github.enabled が true のときだけ実働。gh/remote 不在なら自動スキップ。
+# 予定だけ見たいときは --dry-run（gh を呼ばない）:
+#   make issue-sync ARGS=--dry-run
+issue-sync:
+	uv run python scripts/agentloop/issue_sync.py $(ARGS)
+
+# 差し戻し（上流への後戻り）。戻し先 phase 以降のゲートを連鎖して pending に戻し、current_phase と
+# 差し戻しログを更新する（人が承認を巻き戻す一級操作）。タスクは触らず、影響分析は dag.py --impacted で。
+#   make revise ARGS="--to design --reason '認証方式の見直し'"
+#   make revise ARGS="--to requirements --dry-run"
+revise:
+	uv run python scripts/agentloop/revise.py $(ARGS)
 
 # クリーンアップ
 clean:

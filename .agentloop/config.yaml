@@ -33,3 +33,12 @@ gates:
   # true なら scripts/agentloop/gate_guard.py（PreToolUse フック）が前提ゲート未承認時の
   # 成果物編集を機構的にブロックする。false で規約層（CLAUDE.md）のみに戻す。
   enforce_hook: true
+
+github:
+  # tasks.yaml を GitHub Issues へ一方向ミラーする（人向けの可視化）。scripts/agentloop/issue_sync.py
+  # が読む。**既定オフ**＝オフライン安全。true でも gh 不在 / remote 不在なら自動スキップする。
+  # tasks.yaml が常に SSOT で、Issues は読み戻さない射影（確定駆動・オフライン性を保つ）。
+  enabled: false
+  label: agentloop        # ミラー issue を識別するラベル（このラベルの issue のみ管理対象）
+  close_on_done: true     # status==done のタスクは issue を close する
+  repo: ""                # 空なら gh が origin から推定。owner/repo を指定して固定も可

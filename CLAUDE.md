@@ -2,7 +2,7 @@
 
 このリポジトリは **Human on the Loop** で開発を進めるためのテンプレートである。
 コーディングエージェントが各工程の作業・成果物作成・自己テストまでを担い、
-**人間は各フェーズ境界の「ゲート」でレビューし承認・判断するだけ**を担う。
+**人間は各フェーズ境界の「ゲート」でレビューし、承認・判断するだけ**でよい。
 
 ## 開発ライフサイクル
 
@@ -20,14 +20,14 @@ brief → requirements → design → tasks → build → verify → done
 | build        | `/build`  | 実装コード + テスト | ④ 実装完了レビュー |
 | verify       | `/verify` | `docs/test/test-plan.md` 実行結果 | ⑤ リリース可否 |
 
-進捗・全タスクは `/status` で確認できる。`done` 到達時は `/verify` が `docs/retrospective.md` に振り返り（手戻りの発生元・上流への学び）を残し、未回収ログを閉じる。
+進捗・全タスクは `/status` で確認できる（テキストの `dag.py --render` と依存図の `dag.py --mermaid`）。`done` 到達時は `/verify` が `docs/retrospective.md` に振り返り（手戻りの発生元・上流への学び）を残し、未回収ログを閉じる。上流の不備が判明したら `/revise` で要件/設計へ**差し戻せる**（ゲートを連鎖して戻す。後述「差し戻し」）。
 
 ## 単一情報源（SSOT）
 
-真実は2つのファイルに分かれる。役割が違うので混同しない:
+真実は次の3ファイルに分かれる。役割が違うので混同しない:
 
 - **`.agentloop/state.md`** — フェーズ・各ゲートの承認状況・各種ログ（先回り/エスカレーション）の真実。**作業開始時は必ず読む**。作業後に更新する（フェーズ進行、`updated_at`）。フロントマターの `gates.<name>` は `pending` | `approved`。**人の承認以外でこれを `approved` にしてはならない。**
-- **`.agentloop/tasks.yaml`** — タスクグラフ(DAG)の**機械可読な真実**。`/tasks` が生成し、`/build`（`scripts/agentloop/build_loop.py`）と `/status`（`scripts/agentloop/dag.py`）が読む。各タスクは `id`/`title`/`kind`/`blockedBy`/`status`/`test`。fan-out・フロンティア・実行レイヤ・クリティカルパスは `blockedBy` から導出するので保存しない（drift 防止）。state.md のタスク表は `dag.py --render` の人間向けビュー。
+- **`.agentloop/tasks.yaml`** — タスクグラフ(DAG)の**機械可読な真実**。`/tasks` が生成し、`/build`（`scripts/agentloop/build_loop.py`）と `/status`（`scripts/agentloop/dag.py`）が読む。各タスクは `id`/`title`/`kind`/`blockedBy`/`status`/`test`。fan-out・フロンティア・実行レイヤ・クリティカルパスは `blockedBy` から導出するので保存しない（drift 防止）。state.md のタスク表は `dag.py --render` の人間向けビュー。**GitHub Issues 連携（opt-in）を有効にしても tasks.yaml が SSOT** で、Issues は `scripts/agentloop/issue_sync.py` による**一方向ミラー**（読み戻さない＝確定駆動・オフライン性を保つ）。
 - **`.agentloop/config.yaml`** — 確定実行のノブ源（並列数・retry・worktree・ゲート強制）。`build_loop.py`/`gate_guard.py` が読む。
 
 ## ゲート規則（厳守）
@@ -46,6 +46,15 @@ brief → requirements → design → tasks → build → verify → done
 - **機構層**: `scripts/agentloop/gate_guard.py`（`.claude/settings.json` の PreToolUse フック）が、前提ゲート未承認のまま**次フェーズの成果物パス**（`docs/20-design.md`・`docs/decisions/**`→要件承認、`docs/tasks/**`→設計承認、`backend/**`・`frontend/**`・`scripts/**`（プロダクト用スクリプト）→タスク承認、`docs/test/**`→実装承認）を Write/Edit する操作をコードで **deny** する。ただし `scripts/agentloop/**`（テンプレート基盤ツール）はゲートに関わらず常に許可（フック自身の保守を妨げない）。さらに `/build` は `scripts/agentloop/build_loop.py` が冒頭で `gates.tasks==approved` をコード判定して二重化する。`.agentloop/config.yaml` の `gates.enforce_hook: false` で機構層を無効化できる。
 
 > **テンプレート自身を保守する場合の注意**: 雛形 `docs/20-design.md`・`docs/tasks/**` や `scripts/**` 配下のテンプレ原本は、実プロダクトの成果物パスと一致するため、ゲート未承認だと機構層が編集を deny する（保守時に自分のゲートに阻まれる）。これは想定挙動。テンプレ保守の際は `gates.enforce_hook: false` に一時切替 → 編集 → **直後に `true` へ復元**する（この用途のための逃げ口。原本と実成果物を機構的に区別はしない＝ゲートの単純さ・確実さを優先する）。
+
+## 差し戻し（上流への後戻り）
+
+実装/検証中に上流（要件・設計）の不備が確定したら、人の判断で**上流へ差し戻す**。`/revise`（`make revise`）が一級操作:
+
+- **ゲートは連鎖で戻す**: 戻し先 phase 以降のゲートをすべて `pending` に戻す（`scripts/agentloop/revise.py`）。**不変条件: 上流ゲートが `pending` なら下流ゲートを `approved` のまま残さない**（stale な承認の上で次工程が進む不整合を防ぐ）。以後の編集順は `gate_guard` が機構強制する（例: design pending の間は `docs/tasks/**`・実装コードの編集を deny）。
+- **承認の巻き戻しも人の権限**: ゲートを開けるのと対称。`/revise` は人の明示判断の下でのみ実行し、エージェントが勝手に戻さない。
+- **上流修正は必ずタスク影響分析を伴う**: タスクは捨てて作り直さない。既存タスクを修正後の上流と突き合わせ、直接影響するタスクと、その**推移的被依存（下流）**を `dag.py --impacted` で漏れなく洗い出し、**keep / modify / obsolete / new** に分類する。modify は `needs-revision`、無効化された `done` は `todo` に戻す（再実装要）。
+- 検知の起点は実装中の `needs-revision`（上記ゲート規則③）。そこからの戻し・再開導線が `/revise`。
 
 ## ゲート自己評価（必須）
 
@@ -133,13 +142,14 @@ brief → requirements → design → tasks → build → verify → done
 - `/build` の per-task ローカルコミットは **`T-NNN: <要約>`** 形式。**1コミット = 1タスク**。
 - **`/build` の承認 = そのループ内のローカルコミットは承認済み作業の一部**。逐一の確認は不要。
 - ただし **push / PR 作成 / main へのマージは外向き操作**。これらは別途、人の承認を得てから行う（勝手に push・マージしない）。
+- **GitHub Issues への書き込み（作成/更新/close／ラベル作成）も外向き操作**。`.agentloop/config.yaml` の `github.enabled: true` という明示 opt-in を同意とみなし、それ以外では一切行わない。`make issue-sync` は一方向ミラー専用で、Issues を真実として読み戻さない。使用ラベル（`kind:*`/`status:*`/`phase:*`/`req:*`）は冪等に provisioning する。
 
 ## ディレクトリ
 
 - `.agentloop/state.md` — フェーズ・ゲート・ログの SSOT
 - `.agentloop/tasks.yaml` — タスクグラフ(DAG)の機械可読 SSOT
 - `.agentloop/config.yaml` — 確定実行のノブ源（並列・retry・worktree・ゲート強制）
-- `scripts/agentloop/` — 確定オーケストレーション（`dag.py` 導出 / `build_loop.py` 実装ループ / `gate_guard.py` ゲートフック）。**プロダクト用スクリプトは `scripts/` 直下に置き、基盤ツールと混在させない**
+- `scripts/agentloop/` — 確定オーケストレーション（`dag.py` 導出 / `build_loop.py` 実装ループ / `gate_guard.py` ゲートフック / `issue_sync.py` Issues 一方向ミラー）。**プロダクト用スクリプトは `scripts/` 直下に置き、基盤ツールと混在させない**
 - `docs/` — 工程成果物（要件・設計・ADR・タスク票・テスト計画）。`docs/retrospective.md` に done 時の振り返り（メタ認知の回収）を残す
 - `.claude/commands/` — 各工程の入口（slash command）
 - `.claude/agents/` — 専門サブエージェント

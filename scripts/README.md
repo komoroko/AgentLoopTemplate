@@ -4,7 +4,7 @@
 
 | パス | 用途 | 所有 |
 |------|------|------|
-| `scripts/agentloop/` | AgentLoop テンプレートの基盤ツール（確定オーケストレータ `build_loop.py`／DAG 導出 `dag.py`／ゲートフック `gate_guard.py` とその単体テスト）。テンプレートに同梱され、`make build-loop`・`make test-tools`・`.claude/settings.json` のフックが参照する。 | テンプレート |
+| `scripts/agentloop/` | AgentLoop テンプレートの基盤ツール（確定オーケストレータ `build_loop.py`／DAG 導出 `dag.py`／ゲートフック `gate_guard.py`／Issues 一方向ミラー `issue_sync.py` とその単体テスト）。テンプレートに同梱され、`make build-loop`・`make test-tools`・`make issue-sync`・`.claude/settings.json` のフックが参照する。 | テンプレート |
 | `scripts/`（直下・その他サブフォルダ） | **プロダクト固有**のスクリプト（データ整備・運用補助など）。プロダクトごとに自由に追加してよい。 | プロダクト |
 
 `scripts/agentloop/` 配下はテンプレートの一部なので、プロダクト都合で書き換えない（設定で変えたい挙動は `.agentloop/config.yaml` で調整する）。

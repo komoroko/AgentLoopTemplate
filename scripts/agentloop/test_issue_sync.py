@@ -1,0 +1,160 @@
+"""issue_sync.py の純粋ロジックと dry-run（オフライン・gh 非依存）を検証する。"""
+
+from __future__ import annotations
+
+import os
+from collections.abc import Iterator
+from pathlib import Path
+
+import dag
+import issue_sync
+import pytest
+
+
+def _task(tid: str, kind: str = "parallel", status: str = "todo", req: str = "", phase: str = "build") -> dag.Task:
+    return dag.Task(
+        id=tid,
+        title=f"{tid} のタイトル",
+        kind=kind,
+        blocked_by=(),
+        status=status,
+        test="make test",
+        req=req,
+        phase=phase,
+    )
+
+
+def test_desired_issue_fields() -> None:
+    d = issue_sync.desired_issue(_task("T-001", kind="foundation"), base_label="agentloop", close_on_done=True)
+    assert d.title == "T-001: T-001 のタイトル"
+    assert d.labels == ("agentloop", "kind:foundation", "status:todo", "phase:build")
+    assert d.closed is False
+    assert "一方向ミラー" in d.body
+
+
+def test_desired_issue_includes_req_and_phase() -> None:
+    d = issue_sync.desired_issue(
+        _task("T-001", req="R-1, R-3", phase="verify"), base_label="agentloop", close_on_done=False
+    )
+    assert "phase:verify" in d.labels
+    assert "req:R-1" in d.labels and "req:R-3" in d.labels  # カンマ区切りは複数ラベル
+    assert "工程(phase): verify" in d.body
+    assert "対応要件(req): R-1, R-3" in d.body
+
+
+def test_done_task_is_desired_closed_only_when_enabled() -> None:
+    done = _task("T-001", status="done")
+    assert issue_sync.desired_issue(done, base_label="agentloop", close_on_done=True).closed is True
+    assert issue_sync.desired_issue(done, base_label="agentloop", close_on_done=False).closed is False
+
+
+def test_plan_creates_when_no_existing() -> None:
+    tasks = (_task("T-002"), _task("T-001"))
+    actions = issue_sync.plan_actions(tasks, {}, base_label="agentloop", close_on_done=True)
+    assert [(a.op, a.task_id) for a in actions] == [("create", "T-001"), ("create", "T-002")]  # id 昇順
+    assert actions[0].add_labels == ("agentloop", "kind:parallel", "status:todo", "phase:build")
+
+
+def test_label_specs_cover_families_and_dynamic_req() -> None:
+    graph = dag.Graph.from_tasks([dag.Task(id="T-001", title="x", kind="foundation", req="R-1,R-2")])
+    specs = issue_sync.label_specs(graph, "agentloop")
+    names = {s.name for s in specs}
+    assert "agentloop" in names
+    assert {f"kind:{k}" for k in dag.KIND_VALUES} <= names
+    assert {f"status:{s}" for s in dag.STATUS_VALUES} <= names
+    assert {"phase:requirements", "phase:design", "phase:build", "phase:verify"} <= names
+    assert {"req:R-1", "req:R-2"} <= names  # 動的（現タスクの req から）
+    assert all(len(s.color) == 6 and all(c in "0123456789abcdef" for c in s.color) for s in specs)
+
+
+def test_plan_noop_when_identical() -> None:
+    task = _task("T-001")
+    desired = issue_sync.desired_issue(task, base_label="agentloop", close_on_done=True)
+    existing = {
+        "T-001": issue_sync.ExistingIssue(
+            number=5, title=desired.title, state="OPEN", labels=desired.labels, body=desired.body
+        )
+    }
+    assert issue_sync.plan_actions((task,), existing, base_label="agentloop", close_on_done=True) == []
+
+
+def test_plan_updates_status_label_diff() -> None:
+    task = _task("T-001", status="in_progress")
+    desired = issue_sync.desired_issue(task, base_label="agentloop", close_on_done=True)
+    existing = {
+        "T-001": issue_sync.ExistingIssue(
+            number=5,
+            title=desired.title,
+            state="OPEN",
+            labels=("agentloop", "kind:parallel", "status:todo", "phase:build"),  # 古い status
+            body=desired.body,
+        )
+    }
+    actions = issue_sync.plan_actions((task,), existing, base_label="agentloop", close_on_done=True)
+    assert [a.op for a in actions] == ["update"]
+    assert actions[0].add_labels == ("status:in_progress",)
+    assert actions[0].remove_labels == ("status:todo",)
+
+
+def test_plan_closes_done_open_issue() -> None:
+    task = _task("T-001", status="done")
+    desired = issue_sync.desired_issue(task, base_label="agentloop", close_on_done=True)
+    existing = {
+        "T-001": issue_sync.ExistingIssue(
+            number=5, title=desired.title, state="OPEN", labels=desired.labels, body=desired.body
+        )
+    }
+    actions = issue_sync.plan_actions((task,), existing, base_label="agentloop", close_on_done=True)
+    assert [a.op for a in actions] == ["close"]
+
+
+def test_plan_reopens_regressed_issue() -> None:
+    task = _task("T-001", status="in_progress")
+    desired = issue_sync.desired_issue(task, base_label="agentloop", close_on_done=True)
+    existing = {
+        "T-001": issue_sync.ExistingIssue(
+            number=5, title=desired.title, state="CLOSED", labels=desired.labels, body=desired.body
+        )
+    }
+    actions = issue_sync.plan_actions((task,), existing, base_label="agentloop", close_on_done=True)
+    assert [a.op for a in actions] == ["reopen"]
+
+
+def test_preflight_skips_when_disabled() -> None:
+    cfg = issue_sync.GithubConfig(enabled=False, label="agentloop", close_on_done=True, repo="")
+    ready, reason = issue_sync.preflight(cfg)
+    assert ready is False
+    assert "enabled" in reason
+
+
+_CONFIG = "build:\n  max_parallel: 3\ngithub:\n  enabled: false\n  label: agentloop\n  close_on_done: true\n"
+_TASKS = """tasks:
+  - {id: T-001, title: 基盤, kind: foundation, blockedBy: [], status: todo, test: make test, req: R-1}
+  - {id: T-002, title: 葉, kind: parallel, blockedBy: [T-001], status: todo, test: make test}
+"""
+
+
+@pytest.fixture
+def project(tmp_path: Path) -> Iterator[Path]:
+    (tmp_path / ".agentloop").mkdir()
+    (tmp_path / ".agentloop" / "config.yaml").write_text(_CONFIG, encoding="utf-8")
+    (tmp_path / ".agentloop" / "tasks.yaml").write_text(_TASKS, encoding="utf-8")
+    prev = os.getcwd()
+    os.chdir(tmp_path)
+    try:
+        yield tmp_path
+    finally:
+        os.chdir(prev)
+
+
+def test_dry_run_is_offline_and_plans_creates(project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    # --dry-run は gh を呼ばず（無効設定でも）ラベル一覧と作成予定を出す。
+    rc = issue_sync.main(["--dry-run"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "create T-001" in out
+    assert "create T-002" in out
+    # 作成/確認するラベル（固定 kind/status/phase ＋ 動的 req）。
+    assert "kind:foundation" in out
+    assert "phase:build" in out
+    assert "req:R-1" in out

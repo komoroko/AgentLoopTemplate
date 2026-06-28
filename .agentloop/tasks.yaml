@@ -5,7 +5,8 @@
 # 実行レイヤ・クリティカルパスは blockedBy から導出するため、ここには保存しない
 # （導出値を二重に持つと drift するため）。
 #
-# phase / gates / 各種ログは .agentloop/state.md が持つ。タスクグラフの真実はここ。
+# ライフサイクルの現在フェーズ(current_phase) / gates / 各種ログは .agentloop/state.md が持つ
+# （下の task 内 phase はタスク単位の工程メタで別物）。タスクグラフの真実はここ。
 #
 # スキーマ:
 #   id:        T-NNN 形式の一意なタスクID
@@ -15,6 +16,9 @@
 #   blockedBy: 先に done が必要なタスクIDの配列（DAG の辺）。循環は不可。
 #   status:    todo | in_progress | blocked | needs-revision | done
 #   test:      green 判定に使うコマンド/対象（例: "make test" や "pytest backend/foo"）
+#   req:       （任意）対応要件。例 "R-1" / "R-1,R-3"。Issues ミラー時に req:* ラベルになる
+#   phase:     （任意）工程 requirements|design|build|verify（既定 build。verify=バグ修正起票など）。
+#              Issues ミラー時に phase:* ラベルになる
 
 tasks: []
 # 例（/tasks が埋める。雛形のため空リスト）:
@@ -25,6 +29,8 @@ tasks: []
 #     blockedBy: []
 #     status: todo
 #     test: "make test"
+#     req: "R-1"
+#     phase: build
 #   - id: T-002
 #     title: "ユーザー登録 API"
 #     kind: parallel

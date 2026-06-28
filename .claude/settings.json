@@ -12,8 +12,12 @@
       "Bash(ls:*)",
       "Bash(make build-loop:*)",
       "Bash(make test-tools:*)",
+      "Bash(make issue-sync:*)",
+      "Bash(make revise:*)",
       "Bash(uv run python scripts/agentloop/dag.py:*)",
-      "Bash(uv run python scripts/agentloop/build_loop.py:*)"
+      "Bash(uv run python scripts/agentloop/build_loop.py:*)",
+      "Bash(uv run python scripts/agentloop/issue_sync.py:*)",
+      "Bash(uv run python scripts/agentloop/revise.py:*)"
     ],
     "ask": [],
     "deny": []
