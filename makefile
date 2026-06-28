@@ -42,7 +42,9 @@ test-tools:
 # Python: 解決済み依存を pip-audit で監査。frontend: package.json があれば pnpm audit。
 # 代替: lockfile を一括走査する osv-scanner（uv.lock + pnpm-lock.yaml 対応）でも可。
 audit:
-	uv export --format requirements-txt --no-emit-project | uvx pip-audit -r -
+	@req="$$(mktemp)"; \
+	uv export --format requirements-txt --no-emit-project -o "$$req" && uvx pip-audit -r "$$req"; \
+	status=$$?; rm -f "$$req"; exit $$status
 	@if [ -f frontend/package.json ]; then cd frontend && pnpm audit; else echo "frontend/package.json なし: フロント監査はスキップ"; fi
 
 # /build の確定的オーケストレータ。.agentloop/{config,tasks}.yaml と state.md を読み、
