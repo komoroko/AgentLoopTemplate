@@ -1,7 +1,8 @@
 # T-NNN: <タスクタイトル>
 
-- **対応要件/設計**: R-x / 20-design.md の該当節
+- **対応要件/設計**: R-x / 20-design.md の該当節   <!-- tasks.yaml の req に転記。例: R-1, R-3 -->
 - **種別**: 並列          <!-- 基盤 | 並列 | 統合。基盤=多数が依存する共通土台 / 並列=独立同時進行できる葉 / 統合=複数の合流 -->
+- **工程 (phase)**: build   <!-- requirements | design | build | verify。既定 build。/verify 由来のバグ修正は verify。tasks.yaml の phase に転記 -->
 - **status**: todo            <!-- todo | in_progress | blocked | needs-revision | done。真実は state.md 側 -->
 - **依存 (blockedBy)**: なし   <!-- 先に done が必要なタスク。例: T-001, T-002 -->
 - **被依存 (このタスクを待つもの)**: なし  <!-- 例: T-005, T-006。多いほど早く消すと並列度が上がる -->
