@@ -39,7 +39,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "uv run python scripts/agentloop/gate_guard.py"
+            "command": "uv run --no-project --with pyyaml python scripts/agentloop/gate_guard.py"
           }
         ]
       }

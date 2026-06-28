@@ -43,7 +43,7 @@ brief → requirements → design → tasks → build → verify → done
 
 **ゲートは2層で強制する**（規約だけに依存しない）:
 - **規約層**: 上記のとおり各コマンドが冒頭で前提ゲートを確認する。
-- **機構層**: `scripts/agentloop/gate_guard.py`（`.claude/settings.json` の PreToolUse フック）が、前提ゲート未承認のまま**次フェーズの成果物パス**（`docs/20-design.md`・`docs/decisions/**`→要件承認、`docs/tasks/**`→設計承認、`backend/**`・`frontend/**`・`scripts/**`（プロダクト用スクリプト）→タスク承認、`docs/test/**`→実装承認）を Write/Edit する操作をコードで **deny** する。ただし `scripts/agentloop/**`（テンプレート基盤ツール）はゲートに関わらず常に許可（フック自身の保守を妨げない）。さらに `/build` は `scripts/agentloop/build_loop.py` が冒頭で `gates.tasks==approved` をコード判定して二重化する。`.agentloop/config.yaml` の `gates.enforce_hook: false` で機構層を無効化できる。
+- **機構層**: `scripts/agentloop/gate_guard.py`（`.claude/settings.json` の PreToolUse フック）が、前提ゲート未承認のまま**次フェーズの成果物パス**（`docs/20-design.md`・`docs/decisions/**`→要件承認、`docs/tasks/**`→設計承認、`backend/**`・`frontend/**`・`scripts/**`（プロダクト用スクリプト）→タスク承認、`docs/test/**`→実装承認）を Write/Edit する操作をコードで **deny** する。ただし `scripts/agentloop/**`（テンプレート基盤ツール）はゲートに関わらず常に許可（フック自身の保守を妨げない）。さらに `/build` は `scripts/agentloop/build_loop.py` が冒頭で `gates.tasks==approved` をコード判定して二重化する。`.agentloop/config.yaml` の `gates.enforce_hook: false` で機構層を無効化できる。フックは `uv run --no-project --with pyyaml` で起動し、**プロジェクト env（`make setup`）に依存せず**コピー直後・最初の編集から機能する。
 
 > **テンプレート自身を保守する場合の注意**: 雛形 `docs/20-design.md`・`docs/tasks/**` や `scripts/**` 配下のテンプレ原本は、実プロダクトの成果物パスと一致するため、ゲート未承認だと機構層が編集を deny する（保守時に自分のゲートに阻まれる）。これは想定挙動。テンプレ保守の際は `gates.enforce_hook: false` に一時切替 → 編集 → **直後に `true` へ復元**する（この用途のための逃げ口。原本と実成果物を機構的に区別はしない＝ゲートの単純さ・確実さを優先する）。
 
@@ -53,7 +53,7 @@ brief → requirements → design → tasks → build → verify → done
 
 - **ゲートは連鎖で戻す**: 戻し先 phase 以降のゲートをすべて `pending` に戻す（`scripts/agentloop/revise.py`）。**不変条件: 上流ゲートが `pending` なら下流ゲートを `approved` のまま残さない**（stale な承認の上で次工程が進む不整合を防ぐ）。以後の編集順は `gate_guard` が機構強制する（例: design pending の間は `docs/tasks/**`・実装コードの編集を deny）。
 - **承認の巻き戻しも人の権限**: ゲートを開けるのと対称。`/revise` は人の明示判断の下でのみ実行し、エージェントが勝手に戻さない。
-- **上流修正は必ずタスク影響分析を伴う**: タスクは捨てて作り直さない。既存タスクを修正後の上流と突き合わせ、直接影響するタスクと、その**推移的被依存（下流）**を `dag.py --impacted` で漏れなく洗い出し、**keep / modify / obsolete / new** に分類する。modify は `needs-revision`、無効化された `done` は `todo` に戻す（再実装要）。
+- **上流修正は必ずタスク影響分析を伴う**: タスクは捨てて作り直さない。既存タスクを修正後の上流と突き合わせ、**直接影響するタスク（seed）を特定し、その推移的被依存（下流）を `dag.py --impacted` で漏れなく展開**して、**keep / modify / obsolete / new** に分類する。modify は `needs-revision`、無効化された `done` は `todo` に戻す（再実装要）。
 - 検知の起点は実装中の `needs-revision`（上記ゲート規則③）。そこからの戻し・再開導線が `/revise`。
 
 ## ゲート自己評価（必須）

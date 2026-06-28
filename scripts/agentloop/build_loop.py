@@ -19,8 +19,8 @@
 全タスク done 後はサマリを出して停止し、人の承認（/build のゲート④）に委ねる。
 
 使い方:
-  uv run python scripts/build_loop.py            # 実行
-  uv run python scripts/build_loop.py --dry-run  # claude/git を呼ばず制御フローのみ確認
+  uv run python scripts/agentloop/build_loop.py            # 実行
+  uv run python scripts/agentloop/build_loop.py --dry-run  # claude/git を呼ばず制御フローのみ確認
 """
 
 from __future__ import annotations
@@ -110,7 +110,10 @@ def set_task_status(task_id: str, status: str, tasks_path: str = TASKS_PATH) -> 
         if str(t.get("id")) == task_id:
             t["status"] = status
             break
-    header = "# .agentloop/tasks.yaml — タスクグラフ(DAG)の機械可読 SSOT（build_loop が status を更新）\n"
+    header = (
+        "# .agentloop/tasks.yaml — タスクグラフ(DAG)の機械可読 SSOT（build_loop が status を更新）\n"
+        "# スキーマ（id/title/kind/blockedBy/status/test/req/phase）: .claude/commands/tasks.md / CLAUDE.md 参照\n"
+    )
     Path(tasks_path).write_text(header + yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
 
 

@@ -2,7 +2,7 @@
 
 `.agentloop/tasks.yaml` を読み、実行可能フロンティア・実行レイヤ・クリティカルパス・
 fan-out を **blockedBy から決定的に導出** する純粋関数群を提供する。
-scripts/build_loop.py（消化順の決定）と /status（`--render`）が共用する。
+scripts/agentloop/build_loop.py（消化順の決定）と /status（`--render`）が共用する。
 
 導出値（fan-out 等）はファイルに保存しない。常にグラフから計算するため drift しない。
 """
