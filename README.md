@@ -37,21 +37,23 @@ flowchart TD
     end
 
     brief --> req --> g1 --> design --> g2 --> tasks
-    tasks -->|生成| TASKS --> g3
+    tasks -->|生成| T1
+    TI --> g3
     g3 -->|並列消化（最大3）| build
     build --> g4 --> verify --> g5 --> done
 
-    build -. "差し戻し /revise" .-> design
-    build -. "/revise" .-> req
-    verify -. "/revise" .-> design
+    req -. 上流へ /revise .- build
+    design -. 上流へ /revise .- build
+    design -. 上流へ /revise .- verify
 
     classDef agent fill:#cfe8ff,stroke:#3b82f6,color:#06325e;
     classDef gate fill:#ffe9c7,stroke:#f59e0b,color:#7a4a00;
     classDef human fill:#d7f5dd,stroke:#22a04b,color:#0b3d1d;
     classDef task fill:#eeeeff,stroke:#8888aa,color:#222255;
+    linkStyle 18,19,20 stroke:#ee5544,color:#ee5544,stroke-width:1.5px;
 ```
 
-凡例: 🟦 青=エージェントが実施するフェーズ ／ 🟧 橙=人が承認するゲート①〜⑤ ／ 🟩 緑=人の関与点（構想の記入・完了判断）／ 🟪 薄紫=タスク（**複数**・依存グラフ DAG。基盤→並列葉→統合）。**上から下へ前進**し（前提ゲート未承認なら次へ進めない）、`/tasks` がタスク群を生成→ゲート③承認→`/build` が並列消化（最大3）。破線=`/revise` による上流への差し戻し（戻し先以降のゲートを連鎖して `pending` に戻す）。
+凡例: 🟦 青=エージェントが実施するフェーズ ／ 🟧 橙=人が承認するゲート①〜⑤ ／ 🟩 緑=人の関与点（構想の記入・完了判断）／ 🟪 薄紫=タスク（**複数**・依存グラフ DAG。基盤→並列葉→統合）。**上から下へ前進**し（前提ゲート未承認なら次へ進めない）、`/tasks` がタスク群を生成→ゲート③承認→`/build` が並列消化（最大3）。赤い点線＝`/revise` による上流への差し戻し（build/verify から design/req へ。戻し先以降のゲートを連鎖して `pending` に戻す）。
 
 各ゲートは人だけが開ける。承認の巻き戻し（`/revise`）も人の判断で行う。
 
