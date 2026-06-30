@@ -174,3 +174,113 @@ def test_mermaid_empty_graph() -> None:
     assert "graph TD" in out
     assert 'empty["（タスクなし）"]' in out
     assert out.strip().endswith("```")
+
+
+# ---- 整合性トレース（要件→設計→タスク） ----------------------------------------
+
+
+def test_parse_requirement_ids_from_headings() -> None:
+    text = (
+        "# 要件\n\n## 一覧\n\n### R-1: ログイン\n本文\n### R-2: 検索\n"
+        "<!-- R-3 はコメントなので拾わない -->\n本文に R-9 と書いても拾わない\n"
+    )
+    # 見出しのみ・出現順・重複排除。コメント/本文の R-x は拾わない。
+    assert dag.parse_requirement_ids(text) == ["R-1", "R-2"]
+
+
+def test_parse_requirement_ids_dedupes() -> None:
+    assert dag.parse_requirement_ids("### R-1 → 設計\n### R-1 補足\n### R-2 → 設計\n") == ["R-1", "R-2"]
+
+
+def test_task_req_ids_splits_field() -> None:
+    assert dag.task_req_ids(dag.Task("T-1", "x", "parallel", req="R-1, R-3")) == ["R-1", "R-3"]
+    assert dag.task_req_ids(dag.Task("T-2", "y", "parallel", req="")) == []
+
+
+def _trace_graph() -> dag.Graph:
+    return dag.Graph.from_tasks(
+        [
+            dag.Task("T-001", "基盤", "foundation", req="R-1"),
+            dag.Task("T-002", "葉", "parallel", blocked_by=("T-001",), req="R-2"),
+        ]
+    )
+
+
+def test_trace_all_connected() -> None:
+    report = dag.trace(_trace_graph(), ["R-1", "R-2"], ["R-1", "R-2"])
+    assert report.ok
+    assert report.req_to_tasks == {"R-1": ["T-001"], "R-2": ["T-002"]}
+    assert report.uncovered_requirements == ()
+
+
+def test_trace_detects_uncovered_requirement() -> None:
+    # R-3 はどのタスクも担っていない（要件→タスクが途切れ）。
+    report = dag.trace(_trace_graph(), ["R-1", "R-2", "R-3"], ["R-1", "R-2", "R-3"])
+    assert not report.ok
+    assert report.uncovered_requirements == ("R-3",)
+
+
+def test_trace_detects_requirement_missing_design() -> None:
+    # R-2 が設計に無い（要件→設計が途切れ）。
+    report = dag.trace(_trace_graph(), ["R-1", "R-2"], ["R-1"])
+    assert not report.ok
+    assert report.requirements_missing_design == ("R-2",)
+
+
+def test_trace_detects_unknown_refs() -> None:
+    g = dag.Graph.from_tasks([dag.Task("T-001", "x", "foundation", req="R-9")])
+    report = dag.trace(g, ["R-1"], ["R-1", "R-7"])
+    assert not report.ok
+    assert report.unknown_in_tasks == (("T-001", "R-9"),)
+    assert report.unknown_in_design == ("R-7",)
+
+
+def test_trace_warns_build_task_without_req_but_stays_ok() -> None:
+    # req 未設定の build タスクは WARN（ok は崩さない）。verify 工程は対象外。
+    g = dag.Graph.from_tasks(
+        [
+            dag.Task("T-001", "x", "foundation", req="R-1"),
+            dag.Task("T-002", "build無req", "parallel", blocked_by=("T-001",)),
+            dag.Task("T-003", "verify無req", "parallel", blocked_by=("T-001",), phase="verify"),
+        ]
+    )
+    report = dag.trace(g, ["R-1"], ["R-1"])
+    assert report.ok  # WARN だけなら ok
+    assert report.tasks_without_req == ("T-002",)
+
+
+def test_trace_skips_design_dimension_when_absent() -> None:
+    report = dag.trace(_trace_graph(), ["R-1", "R-2"], None)
+    assert report.design_ids is None
+    assert report.requirements_missing_design == ()
+    assert report.ok
+
+
+def test_trace_cli_returns_nonzero_on_gap(tmp_path: object) -> None:
+    base = tmp_path  # type: ignore[assignment]
+    tasks = base / "tasks.yaml"  # type: ignore[operator]
+    tasks.write_text(
+        "tasks:\n  - id: T-001\n    title: x\n    kind: foundation\n    blockedBy: []\n    req: R-1\n",
+        encoding="utf-8",
+    )
+    reqs = base / "req.md"  # type: ignore[operator]
+    reqs.write_text("### R-1: a\n### R-2: b\n", encoding="utf-8")  # R-2 は未カバー
+    design = base / "design.md"  # type: ignore[operator]
+    design.write_text("### R-1 → 設計\n### R-2 → 設計\n", encoding="utf-8")
+    rc = dag.main([str(tasks), "--trace", "--requirements", str(reqs), "--design", str(design)])
+    assert rc == 1
+
+
+def test_trace_cli_ok_when_connected(tmp_path: object) -> None:
+    base = tmp_path  # type: ignore[assignment]
+    tasks = base / "tasks.yaml"  # type: ignore[operator]
+    tasks.write_text(
+        "tasks:\n  - id: T-001\n    title: x\n    kind: foundation\n    blockedBy: []\n    req: R-1\n",
+        encoding="utf-8",
+    )
+    reqs = base / "req.md"  # type: ignore[operator]
+    reqs.write_text("### R-1: a\n", encoding="utf-8")
+    design = base / "design.md"  # type: ignore[operator]
+    design.write_text("### R-1 → 設計\n", encoding="utf-8")
+    rc = dag.main([str(tasks), "--trace", "--requirements", str(reqs), "--design", str(design)])
+    assert rc == 0

@@ -27,7 +27,7 @@ brief → requirements → design → tasks → build → verify → done
 真実は次の3ファイルに分かれる。役割が違うので混同しない:
 
 - **`.agentloop/state.md`** — フェーズ・各ゲートの承認状況・各種ログ（先回り/エスカレーション）の真実。**作業開始時は必ず読む**。作業後に更新する（フェーズ進行、`updated_at`）。フロントマターの `gates.<name>` は `pending` | `approved`。**人の承認以外でこれを `approved` にしてはならない。**
-- **`.agentloop/tasks.yaml`** — タスクグラフ(DAG)の**機械可読な真実**。`/tasks` が生成し、`/build`（`scripts/agentloop/build_loop.py`）と `/status`（`scripts/agentloop/dag.py`）が読む。各タスクは `id`/`title`/`kind`/`blockedBy`/`status`/`test`（表示・ラベル用の任意メタ `req`/`phase`）。fan-out・フロンティア・実行レイヤ・クリティカルパスは `blockedBy` から導出するので保存しない（drift 防止）。state.md のタスク表は `dag.py --render` の人間向けビュー。**GitHub Issues 連携（opt-in）を有効にしても tasks.yaml が SSOT** で、Issues は `scripts/agentloop/issue_sync.py` による**一方向ミラー**（読み戻さない＝確定駆動・オフライン性を保つ）。
+- **`.agentloop/tasks.yaml`** — タスクグラフ(DAG)の**機械可読な真実**。`/tasks` が生成し、`/build`（`scripts/agentloop/build_loop.py`）と `/status`（`scripts/agentloop/dag.py`）が読む。各タスクは `id`/`title`/`kind`/`blockedBy`/`status`/`test`（表示・ラベル用の任意メタ `req`/`phase`）。`req`（対応要件）は **要件→設計→タスクのトレーサビリティの糸**で、`dag.py --trace` が要件ドキュメント・設計と機械突合し、未カバー要件・宙吊り参照を確定検出する（`/tasks` ゲートと `/status`）。fan-out・フロンティア・実行レイヤ・クリティカルパスは `blockedBy` から導出するので保存しない（drift 防止）。state.md のタスク表は `dag.py --render` の人間向けビュー。**GitHub Issues 連携（opt-in）を有効にしても tasks.yaml が SSOT** で、Issues は `scripts/agentloop/issue_sync.py` による**一方向ミラー**（読み戻さない＝確定駆動・オフライン性を保つ）。
 - **`.agentloop/config.yaml`** — 確定実行のノブ源（並列数・retry・worktree・ゲート強制）。`build_loop.py`/`gate_guard.py` が読む。
 
 ## ゲート規則（厳守）
@@ -149,7 +149,7 @@ brief → requirements → design → tasks → build → verify → done
 - `.agentloop/state.md` — フェーズ・ゲート・ログの SSOT
 - `.agentloop/tasks.yaml` — タスクグラフ(DAG)の機械可読 SSOT
 - `.agentloop/config.yaml` — 確定実行のノブ源（並列・retry・worktree・ゲート強制）
-- `scripts/agentloop/` — 確定オーケストレーション（`dag.py` 導出 / `build_loop.py` 実装ループ / `gate_guard.py` ゲートフック / `issue_sync.py` Issues 一方向ミラー）。**プロダクト用スクリプトは `scripts/` 直下に置き、基盤ツールと混在させない**
+- `scripts/agentloop/` — 確定オーケストレーション（`dag.py` 導出＋整合性トレース（`--trace`） / `build_loop.py` 実装ループ / `gate_guard.py` ゲートフック / `issue_sync.py` Issues 一方向ミラー）。**プロダクト用スクリプトは `scripts/` 直下に置き、基盤ツールと混在させない**
 - `docs/` — 工程成果物（要件・設計・ADR・タスク票・テスト計画）。`docs/retrospective.md` に done 時の振り返り（メタ認知の回収）を残す
 - `.claude/commands/` — 各工程の入口（slash command）
 - `.claude/agents/` — 専門サブエージェント
