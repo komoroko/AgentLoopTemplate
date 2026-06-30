@@ -16,7 +16,9 @@
 #   blockedBy: 先に done が必要なタスクIDの配列（DAG の辺）。循環は不可。
 #   status:    todo | in_progress | blocked | needs-revision | done
 #   test:      green 判定に使うコマンド/対象（例: "make test" や "pytest backend/foo"）
-#   req:       （任意）対応要件。例 "R-1" / "R-1,R-3"。Issues ミラー時に req:* ラベルになる
+#   req:       （任意）対応要件ID。R-<番号> 形式。複数はカンマ/空白区切り 例 "R-1" / "R-1,R-3" / "R-1 R-3"。
+#              不正形式（R1 / Req-1 等）は dag.py --validate が弾く。dag.py --trace が要件/設計と機械突合し
+#              未カバー要件・宙吊り参照を検出する。Issues ミラー時に req:* ラベルになる
 #   phase:     （任意）工程 requirements|design|build|verify（既定 build。verify=バグ修正起票など）。
 #              Issues ミラー時に phase:* ラベルになる
 

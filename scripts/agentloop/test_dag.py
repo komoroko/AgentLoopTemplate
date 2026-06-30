@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import dag
 import pytest
 
@@ -192,9 +194,40 @@ def test_parse_requirement_ids_dedupes() -> None:
     assert dag.parse_requirement_ids("### R-1 → 設計\n### R-1 補足\n### R-2 → 設計\n") == ["R-1", "R-2"]
 
 
+def test_parse_requirement_ids_multiple_per_heading() -> None:
+    # 1見出しが複数要件を束ねる場合（共通設計節）は全IDを拾う。
+    assert dag.parse_requirement_ids("### R-1, R-2 → 共通設計\n") == ["R-1", "R-2"]
+
+
+def test_parse_requirement_ids_any_heading_level() -> None:
+    # 見出しの深さ(# の数)には結合しない（H1〜H6 のいずれでも拾う）。
+    assert dag.parse_requirement_ids("# R-1\n###### R-2\n") == ["R-1", "R-2"]
+
+
+def test_parse_requirement_ids_ignores_code_fences() -> None:
+    # コードフェンス内の例示見出しは実IDと誤認しない。
+    text = "### R-1: 本物\n\n```\n### R-99 → 設計（ドキュメント例）\n```\n"
+    assert dag.parse_requirement_ids(text) == ["R-1"]
+
+
+def test_parse_requirement_ids_matches_before_cjk() -> None:
+    # 区切り無しで CJK が続いても拾う（末尾 \b に依存しない）。R-12 を R-1 と取り違えない。
+    assert dag.parse_requirement_ids("### R-1ログイン\n### R-12 検索\n") == ["R-1", "R-12"]
+
+
 def test_task_req_ids_splits_field() -> None:
+    # カンマ・空白いずれの区切りも受け、重複は排除する。
     assert dag.task_req_ids(dag.Task("T-1", "x", "parallel", req="R-1, R-3")) == ["R-1", "R-3"]
-    assert dag.task_req_ids(dag.Task("T-2", "y", "parallel", req="")) == []
+    assert dag.task_req_ids(dag.Task("T-2", "y", "parallel", req="R-1 R-3")) == ["R-1", "R-3"]
+    assert dag.task_req_ids(dag.Task("T-3", "z", "parallel", req="R-1, R-1")) == ["R-1"]
+    assert dag.task_req_ids(dag.Task("T-4", "w", "parallel", req="")) == []
+
+
+def test_from_tasks_rejects_malformed_req() -> None:
+    # req トークンは load 時に R-<番号> 形式を検証（typo を見逃さない）。
+    for bad in ("R1", "Req-1", "R-", "R-1x"):
+        with pytest.raises(dag.DagError, match="req"):
+            dag.Graph.from_tasks([dag.Task("T-001", "x", "foundation", req=bad)])
 
 
 def _trace_graph() -> dag.Graph:
@@ -251,36 +284,108 @@ def test_trace_warns_build_task_without_req_but_stays_ok() -> None:
 
 def test_trace_skips_design_dimension_when_absent() -> None:
     report = dag.trace(_trace_graph(), ["R-1", "R-2"], None)
-    assert report.design_ids is None
+    assert report.design_checked is False
     assert report.requirements_missing_design == ()
     assert report.ok
 
 
-def test_trace_cli_returns_nonzero_on_gap(tmp_path: object) -> None:
-    base = tmp_path  # type: ignore[assignment]
-    tasks = base / "tasks.yaml"  # type: ignore[operator]
+def test_trace_verify_task_does_not_cover_requirement() -> None:
+    # verify 工程のタスクだけが req を持つ要件は「実装計画に落ちていない」＝未カバー。
+    g = dag.Graph.from_tasks(
+        [
+            dag.Task("T-001", "build", "foundation", req="R-1"),
+            dag.Task("T-002", "verifyのみ", "parallel", blocked_by=("T-001",), req="R-2", phase="verify"),
+        ]
+    )
+    report = dag.trace(g, ["R-1", "R-2"], ["R-1", "R-2"])
+    assert not report.ok
+    assert report.uncovered_requirements == ("R-2",)  # verify タスクはカバレッジに数えない
+    assert report.req_to_tasks == {"R-1": ["T-001"], "R-2": []}
+
+
+def test_trace_unknown_ref_flagged_regardless_of_phase() -> None:
+    # 宙吊り参照（要件に無い R）は工程に関わらず ERROR。
+    g = dag.Graph.from_tasks([dag.Task("T-001", "verify", "foundation", req="R-9", phase="verify")])
+    report = dag.trace(g, ["R-1"], ["R-1"])
+    assert report.unknown_in_tasks == (("T-001", "R-9"),)
+
+
+def test_trace_cli_returns_nonzero_on_gap(tmp_path: Path) -> None:
+    tasks = tmp_path / "tasks.yaml"
     tasks.write_text(
         "tasks:\n  - id: T-001\n    title: x\n    kind: foundation\n    blockedBy: []\n    req: R-1\n",
         encoding="utf-8",
     )
-    reqs = base / "req.md"  # type: ignore[operator]
+    reqs = tmp_path / "req.md"
     reqs.write_text("### R-1: a\n### R-2: b\n", encoding="utf-8")  # R-2 は未カバー
-    design = base / "design.md"  # type: ignore[operator]
+    design = tmp_path / "design.md"
     design.write_text("### R-1 → 設計\n### R-2 → 設計\n", encoding="utf-8")
     rc = dag.main([str(tasks), "--trace", "--requirements", str(reqs), "--design", str(design)])
     assert rc == 1
 
 
-def test_trace_cli_ok_when_connected(tmp_path: object) -> None:
-    base = tmp_path  # type: ignore[assignment]
-    tasks = base / "tasks.yaml"  # type: ignore[operator]
+def test_trace_cli_ok_when_connected(tmp_path: Path) -> None:
+    tasks = tmp_path / "tasks.yaml"
     tasks.write_text(
         "tasks:\n  - id: T-001\n    title: x\n    kind: foundation\n    blockedBy: []\n    req: R-1\n",
         encoding="utf-8",
     )
-    reqs = base / "req.md"  # type: ignore[operator]
+    reqs = tmp_path / "req.md"
     reqs.write_text("### R-1: a\n", encoding="utf-8")
-    design = base / "design.md"  # type: ignore[operator]
+    design = tmp_path / "design.md"
     design.write_text("### R-1 → 設計\n", encoding="utf-8")
     rc = dag.main([str(tasks), "--trace", "--requirements", str(reqs), "--design", str(design)])
     assert rc == 0
+
+
+def _trace_tasks_file(tmp_path: Path) -> Path:
+    tasks = tmp_path / "tasks.yaml"
+    tasks.write_text(
+        "tasks:\n  - id: T-001\n    title: x\n    kind: foundation\n    blockedBy: []\n    req: R-1\n",
+        encoding="utf-8",
+    )
+    return tasks
+
+
+def test_trace_cli_exit2_when_requirements_missing(tmp_path: Path) -> None:
+    # 要件ドキュメント不在は「検査不能」＝終了2（欠落の 1 と区別）。
+    tasks = _trace_tasks_file(tmp_path)
+    rc = dag.main([str(tasks), "--trace", "--requirements", str(tmp_path / "missing.md")])
+    assert rc == 2
+
+
+def test_trace_cli_exit2_when_no_requirement_ids(tmp_path: Path) -> None:
+    # 要件ファイルは在るが要件ID を1件も抽出できない＝検査不能＝終了2。
+    tasks = _trace_tasks_file(tmp_path)
+    reqs = tmp_path / "req.md"
+    reqs.write_text("# 要件\n本文だけで R 見出しが無い\n", encoding="utf-8")
+    rc = dag.main([str(tasks), "--trace", "--requirements", str(reqs)])
+    assert rc == 2
+
+
+def test_trace_cli_design_absent_skips_with_exit0(tmp_path: Path) -> None:
+    # 設計不在は既定ではスキップ（要件カバレッジが OK なら終了0）。
+    tasks = _trace_tasks_file(tmp_path)
+    reqs = tmp_path / "req.md"
+    reqs.write_text("### R-1: a\n", encoding="utf-8")
+    rc = dag.main([str(tasks), "--trace", "--requirements", str(reqs), "--design", str(tmp_path / "none.md")])
+    assert rc == 0
+
+
+def test_trace_cli_require_design_exit2_when_design_missing(tmp_path: Path) -> None:
+    # --require-design 指定時は設計不在を許さず終了2（設計承認済みフェーズのゲート用）。
+    tasks = _trace_tasks_file(tmp_path)
+    reqs = tmp_path / "req.md"
+    reqs.write_text("### R-1: a\n", encoding="utf-8")
+    rc = dag.main(
+        [str(tasks), "--trace", "--requirements", str(reqs), "--design", str(tmp_path / "none.md"), "--require-design"]
+    )
+    assert rc == 2
+
+
+def test_trace_cli_exit2_when_tasks_yaml_missing(tmp_path: Path) -> None:
+    # tasks.yaml が読めない＝トレース不成立＝終了2（render 等の汎用 1 と区別）。
+    reqs = tmp_path / "req.md"
+    reqs.write_text("### R-1: a\n", encoding="utf-8")
+    rc = dag.main([str(tmp_path / "none.yaml"), "--trace", "--requirements", str(reqs)])
+    assert rc == 2

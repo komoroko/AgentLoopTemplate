@@ -93,11 +93,6 @@ def _managed(label: str, base_label: str) -> bool:
     return label == base_label or label.startswith(("kind:", "status:", "phase:", "req:"))
 
 
-def _req_tokens(req: str) -> list[str]:
-    """対応要件フィールドをラベル用トークンに分解する（カンマ区切り対応、空は除外）。"""
-    return [tok.strip() for tok in req.split(",") if tok.strip()]
-
-
 def _issue_body(task: dag.Task) -> str:
     deps = ", ".join(task.blocked_by) if task.blocked_by else "なし"
     return "\n".join(
@@ -117,7 +112,7 @@ def _issue_body(task: dag.Task) -> str:
 
 def desired_issue(task: dag.Task, *, base_label: str, close_on_done: bool) -> DesiredIssue:
     labels = [base_label, f"kind:{task.kind}", f"status:{task.status}", f"phase:{task.phase}"]
-    labels += [f"req:{token}" for token in _req_tokens(task.req)]
+    labels += [f"req:{token}" for token in dag.task_req_ids(task)]
     return DesiredIssue(
         title=f"{task.id}: {task.title}",
         body=_issue_body(task),
@@ -200,7 +195,7 @@ def label_specs(graph: dag.Graph, base_label: str) -> list[LabelSpec]:
         specs.append(LabelSpec(f"phase:{phase}", _PHASE_COLORS.get(phase, _DEFAULT_COLOR), f"工程: {phase}"))
     reqs: set[str] = set()
     for task in graph.tasks:
-        reqs.update(_req_tokens(task.req))
+        reqs.update(dag.task_req_ids(task))
     for token in sorted(reqs):
         specs.append(LabelSpec(f"req:{token}", _REQ_COLOR, f"対応要件: {token}"))
     return specs

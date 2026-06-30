@@ -23,6 +23,15 @@ STATUS_VALUES = frozenset({"todo", "in_progress", "blocked", "needs-revision", "
 STATUS_ORDER = ("todo", "in_progress", "blocked", "needs-revision", "done")
 KIND_VALUES = frozenset({"foundation", "parallel", "integration"})
 
+# 要件ID は `R-<番号>`（R-1, R-2, …）。要件/設計ドキュメントとタスクの req で共通の語彙。
+# タスクの req は1トークン全体がこの形であることを load 時に検証する（R1 / Req-1 等の誤記を弾く）。
+_REQ_ID_EXACT_RE = re.compile(r"^R-\d+$")
+
+
+def _split_req(req: str) -> list[str]:
+    """req フィールド（"R-1" / "R-1,R-3" / "R-1 R-3"）をトークン列に分解する（カンマ・空白両対応）。"""
+    return [tok for tok in re.split(r"[,\s]+", req.strip()) if tok]
+
 
 class DagError(ValueError):
     """tasks.yaml の不整合（循環・未知の依存・重複ID・不正値）を表す。"""
@@ -65,6 +74,9 @@ class Graph:
                 raise DagError(f"{t.id}: 不正な kind '{t.kind}'（{sorted(KIND_VALUES)} のいずれか）")
             if t.status not in STATUS_VALUES:
                 raise DagError(f"{t.id}: 不正な status '{t.status}'（{sorted(STATUS_VALUES)} のいずれか）")
+            for tok in _split_req(t.req):
+                if not _REQ_ID_EXACT_RE.match(tok):
+                    raise DagError(f"{t.id}: 不正な req トークン '{tok}'（R-<番号> 形式である必要があります）")
             by_id[t.id] = t
         for t in tasks:
             for dep in t.blocked_by:
@@ -308,38 +320,61 @@ def mermaid(graph: Graph) -> str:
 # 確定的に検査する。fan-out 等と同じく「LLM 裁量に委ねない機械チェック」。/tasks ゲートと
 # CI で回し、人のレビュー前に「全要件が設計とタスクに連結しているか」を可視化する。
 
-# `### R-1: ...`（要件）や `### R-1 → 設計`（設計）の見出しから要件ID を拾う。
-# 見出し行に限定するので本文・コメント中の R-x 言及は拾わない（誤検出を避ける）。
-_REQ_HEADING_RE = re.compile(r"^#{2,4}\s+(R-\d+)\b", re.MULTILINE)
-# タスクの req フィールド（"R-1" / "R-1,R-3" / "R-1, R-3"）から要件ID を分解する。
-_REQ_TOKEN_RE = re.compile(r"\bR-\d+\b")
+# 要件/設計ドキュメントの **見出し行** から要件ID を拾う。見出し行に限定するので本文・
+# コメント中の R-x 言及は拾わない（誤検出を避ける）。見出しの深さ(# の数)には結合しない
+# （H1〜H6 のいずれでも拾う）。1見出しに複数IDを書いた場合（例 `### R-1, R-2 → 共通設計`）は
+# 全IDを拾う。要件文書とタスク req とで同じ抽出規則を共有する。
+_HEADING_RE = re.compile(r"^[ \t]*#{1,6}\s+(.*)$", re.MULTILINE)
+# 見出しテキスト中の要件ID。前は語中混入を避け（FOOR-1 を弾く）、後は末尾を数字で切らない
+# （R-12 を R-1 と取り違えない）。直後が CJK 等でも拾えるよう末尾 \b は使わない。
+_REQ_ID_RE = re.compile(r"(?<![0-9A-Za-z_])R-\d+(?!\d)")
+# ``` または ~~~ で囲まれたコードフェンス（例示の見出しを実IDと誤認しないため抽出前に除去する）。
+_CODE_FENCE_RE = re.compile(r"^[ \t]*(```|~~~)[^\n]*$.*?^[ \t]*\1[ \t]*$", re.MULTILINE | re.DOTALL)
 
 
 def parse_requirement_ids(text: str) -> list[str]:
-    """要件/設計ドキュメントの見出しから要件ID を **出現順・重複排除** で抽出する。"""
-    seen: dict[str, None] = {}
-    for m in _REQ_HEADING_RE.finditer(text):
-        seen.setdefault(m.group(1), None)
-    return list(seen)
+    """要件/設計ドキュメントの見出しから要件ID を **出現順・重複排除** で抽出する。
+
+    コードフェンス内の例示見出しは実IDと誤認しないよう除去してから走査する。
+    """
+    body = _CODE_FENCE_RE.sub("", text)
+    ids = (rid for heading in _HEADING_RE.findall(body) for rid in _REQ_ID_RE.findall(heading))
+    return list(dict.fromkeys(ids))  # 出現順を保ったまま重複排除
 
 
 def task_req_ids(task: Task) -> list[str]:
-    """タスクの req フィールドを要件ID のリストに分解する（出現順）。"""
-    return _REQ_TOKEN_RE.findall(task.req)
+    """タスクの req フィールドを要件ID のリストに分解する（出現順・重複排除）。
+
+    カンマ・空白いずれの区切りも受ける。各トークンの形式（R-<番号>）は load 時に
+    `Graph.from_tasks` が検証済みなので、ここに来る時点で不正トークンは無い。
+    """
+    return list(dict.fromkeys(_split_req(task.req)))
 
 
 @dataclass(frozen=True)
 class TraceReport:
-    """要件→設計→タスクの整合（トレーサビリティ）検査結果。"""
+    """要件→設計→タスクの整合（トレーサビリティ）検査結果。
 
-    requirement_ids: tuple[str, ...]  # 要件ドキュメント由来（出現順）
-    design_ids: tuple[str, ...] | None  # 設計ドキュメント由来（None=設計未検査）
-    req_to_tasks: dict[str, list[str]]  # 要件ID -> それを担うタスクID（id 昇順）
-    uncovered_requirements: tuple[str, ...]  # ERROR: 担うタスクが無い要件
+    要件IDの集合・カバレッジ・未カバーは `req_to_tasks` 一つから導出する（状態を二重化
+    しない）。要件順は `req_to_tasks` の挿入順（=要件ドキュメント出現順）が保持する。
+    """
+
+    req_to_tasks: dict[str, list[str]]  # 要件ID -> それを実装する build タスクID（要件順 / 値=id昇順）
+    design_checked: bool  # 設計次元を検査したか（False=設計ドキュメント未検査）
     requirements_missing_design: tuple[str, ...]  # ERROR: 設計に対応節が無い要件（設計検査時のみ）
     unknown_in_design: tuple[str, ...]  # ERROR: 要件に存在しない R を設計が参照
     unknown_in_tasks: tuple[tuple[str, str], ...]  # ERROR: 要件に存在しない R をタスクが参照 (task_id, R)
     tasks_without_req: tuple[str, ...]  # WARN: req 未設定の build タスク
+
+    @property
+    def requirement_ids(self) -> tuple[str, ...]:
+        """要件ドキュメント由来の要件ID（出現順）。"""
+        return tuple(self.req_to_tasks)
+
+    @property
+    def uncovered_requirements(self) -> tuple[str, ...]:
+        """ERROR: 担う build タスクが無い要件。"""
+        return tuple(r for r, tasks in self.req_to_tasks.items() if not tasks)
 
     @property
     def ok(self) -> bool:
@@ -355,7 +390,9 @@ class TraceReport:
 def trace(graph: Graph, requirement_ids: list[str], design_ids: list[str] | None) -> TraceReport:
     """要件ID・設計ID・タスクの req を突合し、糸の途切れ（カバレッジ欠落・宙吊り参照）を検出する。
 
-    design_ids=None なら設計ドキュメント不在として設計次元の検査をスキップする
+    カバレッジは **build 工程のタスク**だけで判定する（verify 由来のバグ修正等は実装計画
+    ではないのでカバレッジに数えない）。要件に存在しない R の参照（宙吊り）は工程に関わらず
+    ERROR。design_ids=None なら設計ドキュメント不在として設計次元の検査をスキップする
     （早期フェーズや設計差し戻し直後でも落ちないように）。
     """
     req_set = set(requirement_ids)
@@ -370,27 +407,21 @@ def trace(graph: Graph, requirement_ids: list[str], design_ids: list[str] | None
                 tasks_without_req.append(t.id)
             continue
         for r in ids:
-            if r in req_set:
-                req_to_tasks[r].append(t.id)
-            else:
-                unknown_in_tasks.append((t.id, r))
-    uncovered = tuple(r for r in requirement_ids if not req_to_tasks[r])
+            if r not in req_set:
+                unknown_in_tasks.append((t.id, r))  # 宙吊り参照（工程に関わらず ERROR）
+            elif t.phase == "build":
+                req_to_tasks[r].append(t.id)  # カバレッジは build タスクのみ
 
-    if design_ids is None:
-        requirements_missing_design: tuple[str, ...] = ()
-        unknown_in_design: tuple[str, ...] = ()
-        normalized_design: tuple[str, ...] | None = None
-    else:
+    requirements_missing_design: tuple[str, ...] = ()
+    unknown_in_design: tuple[str, ...] = ()
+    if design_ids is not None:
         design_set = set(design_ids)
         requirements_missing_design = tuple(r for r in requirement_ids if r not in design_set)
         unknown_in_design = tuple(d for d in design_ids if d not in req_set)
-        normalized_design = tuple(design_ids)
 
     return TraceReport(
-        requirement_ids=tuple(requirement_ids),
-        design_ids=normalized_design,
         req_to_tasks=req_to_tasks,
-        uncovered_requirements=uncovered,
+        design_checked=design_ids is not None,
         requirements_missing_design=requirements_missing_design,
         unknown_in_design=unknown_in_design,
         unknown_in_tasks=tuple(unknown_in_tasks),
@@ -402,12 +433,11 @@ def render_trace(report: TraceReport) -> str:
     """整合性トレースの人間向けレポート（カバレッジ表＋検出一覧）を確定出力する。"""
     lines: list[str] = ["## 整合性トレース（要件→設計→タスク）", ""]
     lines.append("### 要件カバレッジ")
-    if report.requirement_ids:
+    if report.req_to_tasks:
         missing_design = set(report.requirements_missing_design)
-        for r in report.requirement_ids:
-            tasks = report.req_to_tasks.get(r, [])
+        for r, tasks in report.req_to_tasks.items():
             design_mark = ""
-            if report.design_ids is not None:
+            if report.design_checked:
                 design_mark = "設計✗ " if r in missing_design else "設計✓ "
             task_mark = ", ".join(tasks) if tasks else "（タスク無し）"
             lines.append(f"- {r}: {design_mark}{task_mark}")
@@ -436,11 +466,56 @@ def render_trace(report: TraceReport) -> str:
 
 
 def _read_optional(path: str | Path) -> str | None:
-    """存在すれば本文を返し、無ければ None（トレースの次元スキップ用）。"""
+    """存在すれば本文を返し、無ければ None（トレースの次元スキップ用）。
+
+    読めない（不在・ディレクトリ・権限不足など）はすべて None に畳む。--trace 分岐の
+    呼び出しは load() を包む try/except の外にあるため、ここで OSError を握らないと
+    要件/設計パスのディレクトリ指定・権限エラーが未捕捉のまま main を抜けてしまう。
+    """
     try:
         return Path(path).read_text(encoding="utf-8")
     except OSError:
         return None
+
+
+# --trace の既定ドキュメントパス（明示指定が無いときに使う）。
+_DEFAULT_REQUIREMENTS = "docs/10-requirements.md"
+_DEFAULT_DESIGN = "docs/20-design.md"
+
+
+def _run_trace(graph: Graph, *, requirements_path: str, design_path: str, require_design: bool) -> int:
+    """--trace の実行と終了コード決定。
+
+    終了コードは原因を区別する（CI/ゲートが「何が問題か」を取り違えないため）:
+      0 = 整合OK
+      1 = トレース欠落（未カバー要件・宙吊り参照など。**要対応**）
+      2 = 検査を実施できない（要件ドキュメント不在/要件ID 0件、または設計必須なのに設計不在）
+    """
+    req_text = _read_optional(requirements_path)
+    if req_text is None:
+        print(f"error: 要件ドキュメントが読めません: {requirements_path}", file=sys.stderr)
+        return 2
+    requirement_ids = parse_requirement_ids(req_text)
+    if not requirement_ids:
+        print(
+            f"error: 要件ドキュメントから要件ID(R-N)を抽出できません: {requirements_path}"
+            "（見出し行に `### R-1: ...` のように書く）",
+            file=sys.stderr,
+        )
+        return 2
+    design_text = _read_optional(design_path)
+    if design_text is None and require_design:
+        print(
+            f"error: 設計ドキュメントが読めません: {design_path}（--require-design 指定時は必須）",
+            file=sys.stderr,
+        )
+        return 2
+    design_ids = parse_requirement_ids(design_text) if design_text is not None else None
+    report = trace(graph, requirement_ids, design_ids)
+    print(render_trace(report))
+    if design_ids is None:
+        print(f"note: 設計 {design_path} が無いため設計カバレッジは未検査", file=sys.stderr)
+    return 0 if report.ok else 1
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -459,25 +534,37 @@ def main(argv: list[str] | None = None) -> int:
     group.add_argument(
         "--trace",
         action="store_true",
-        help="要件→設計→タスクの整合（トレーサビリティ）を検査。欠落・宙吊り参照があれば非0",
+        help="要件→設計→タスクの整合を検査（終了コード 0=OK / 1=欠落 / 2=検査不能）",
     )
     parser.add_argument(
         "--requirements",
-        default="docs/10-requirements.md",
-        help="要件ドキュメントのパス（--trace 用）",
+        default=None,
+        help=f"要件ドキュメントのパス（--trace 用。既定 {_DEFAULT_REQUIREMENTS}）",
     )
     parser.add_argument(
         "--design",
-        default="docs/20-design.md",
-        help="設計ドキュメントのパス（--trace 用。無ければ設計次元はスキップ）",
+        default=None,
+        help=f"設計ドキュメントのパス（--trace 用。既定 {_DEFAULT_DESIGN}。無ければ設計次元はスキップ）",
+    )
+    parser.add_argument(
+        "--require-design",
+        action="store_true",
+        help="--trace で設計ドキュメント不在を許さず終了2にする（設計承認済みフェーズのゲート用）",
     )
     args = parser.parse_args(argv)
+
+    if not args.trace and (args.requirements is not None or args.design is not None or args.require_design):
+        print(
+            "warning: --requirements/--design/--require-design は --trace でのみ有効（無視します）",
+            file=sys.stderr,
+        )
 
     try:
         graph = load(args.path)
     except (OSError, DagError, yaml.YAMLError) as exc:
         print(f"error: {exc}", file=sys.stderr)
-        return 1
+        # --trace のときは「検査不能」を 2 で表す（tasks.yaml が読めない＝トレース不成立）。
+        return 2 if args.trace else 1
 
     if args.frontier:
         print("\n".join(t.id for t in graph.order_frontier()))
@@ -489,17 +576,12 @@ def main(argv: list[str] | None = None) -> int:
         seeds = [s.strip() for s in args.impacted.split(",") if s.strip()]
         print("\n".join(sorted(graph.dependents_closure(seeds))))
     elif args.trace:
-        req_text = _read_optional(args.requirements)
-        if req_text is None:
-            print(f"error: 要件ドキュメントが見つかりません: {args.requirements}", file=sys.stderr)
-            return 1
-        design_text = _read_optional(args.design)
-        design_ids = parse_requirement_ids(design_text) if design_text is not None else None
-        report = trace(graph, parse_requirement_ids(req_text), design_ids)
-        print(render_trace(report))
-        if design_text is None:
-            print(f"note: 設計 {args.design} が無いため設計カバレッジは未検査", file=sys.stderr)
-        return 0 if report.ok else 1
+        return _run_trace(
+            graph,
+            requirements_path=args.requirements or _DEFAULT_REQUIREMENTS,
+            design_path=args.design or _DEFAULT_DESIGN,
+            require_design=args.require_design,
+        )
     else:  # --render（既定）
         print(render(graph))
     return 0
