@@ -1,16 +1,16 @@
-"""差し戻し（上流への後戻り）の確定ヘルパ。
+"""Deterministic helper for rolling back (returning upstream).
 
-人が承認を巻き戻す**一級操作**。戻し先 phase のゲート以降を**連鎖**して pending に戻し、
-`current_phase` と `updated_at` を更新し、差し戻しログに1行追記する。これにより
-「上流が pending なのに下流が approved のまま」という stale 承認の不整合を機構的に防ぐ
-（以後の編集順は gate_guard が強制する）。
+The **first-class operation** for a human rewinding approval. Resets every gate from the target phase's gate onward
+to pending **in a chain**, updates `current_phase` and `updated_at`, and appends one line to the roll-back log. This
+mechanically prevents the stale-approval inconsistency of "upstream pending while downstream still approved"
+(the editing order from then on is enforced by gate_guard).
 
-state.md はコメント・体裁を保つため、**対象行だけ正規表現で手術的に書き換える**
-（yaml 全書き換えはしない）。タスク状態には触らない——タスク影響分析は
-`/revise`→`/design`・`/tasks` の手順と `dag.py --impacted`（推移的被依存）が担当する。
+To preserve state.md's comments and formatting, it **surgically rewrites only the target lines with regex**
+(it does not rewrite the whole YAML). It does not touch task state — task impact analysis is handled by
+the `/revise`→`/design`,`/tasks` flow and `dag.py --impacted` (transitive dependents).
 
-使い方:
-  uv run python scripts/agentloop/revise.py --to design --reason "認証方式の見直し"
+Usage:
+  uv run python scripts/agentloop/revise.py --to design --reason "rethink the auth method"
   uv run python scripts/agentloop/revise.py --to requirements --dry-run
 """
 
@@ -23,27 +23,27 @@ from datetime import date
 from pathlib import Path
 
 STATE_PATH = ".agentloop/state.md"
-# 前進ゲートの順序。戻し先以降を連鎖して pending に戻す。
+# The forward gate order. Reset the target onward to pending in a chain.
 GATE_ORDER = ("requirements", "design", "tasks", "build", "release")
-# 差し戻し先 phase -> 連鎖開始ゲート（verify は release ゲートの前段なので戻し先には取らない）。
+# Roll-back target phase -> the gate the chain starts at (verify precedes the release gate, so it is not a target).
 _PHASE_GATE = {"requirements": "requirements", "design": "design", "tasks": "tasks", "build": "build"}
 REVISE_MARKER = "<!-- REVISE-LOG -->"
 
 
 class ReviseError(ValueError):
-    """不正な戻し先など、差し戻し操作の失敗。"""
+    """A roll-back operation failure, such as an invalid target."""
 
 
 def cascade_gates(target_phase: str) -> list[str]:
-    """戻し先 phase に対応するゲート以降（pending へ戻す対象）を返す。"""
+    """Return the gates from the target phase's gate onward (the ones to reset to pending)."""
     if target_phase not in _PHASE_GATE:
-        raise ReviseError(f"不正な戻し先 '{target_phase}'（{sorted(_PHASE_GATE)} のいずれか）")
+        raise ReviseError(f"invalid target '{target_phase}' (one of {sorted(_PHASE_GATE)})")
     start = GATE_ORDER.index(_PHASE_GATE[target_phase])
     return list(GATE_ORDER[start:])
 
 
 def _set_gate_pending(text: str, gate: str) -> str:
-    """フロントマターの "  <gate>: approved   # コメント" の値だけ pending に（コメント保持）。"""
+    """Set just the value of the front-matter "  <gate>: approved   # comment" to pending (preserving the comment)."""
     pattern = re.compile(rf"^(\s*{re.escape(gate)}:\s*)approved(.*)$", re.MULTILINE)
     return pattern.sub(r"\1pending\2", text)
 
@@ -59,7 +59,7 @@ def _set_updated_at(text: str, today: str) -> str:
 
 
 def _insert_log(text: str, target: str, gates: list[str], reason: str, today: str) -> str:
-    """差し戻しログ表へ1行追記（マーカー直前）。マーカーが無ければ何もしない。"""
+    """Append one row to the roll-back log table (right before the marker). Do nothing if the marker is absent."""
     if REVISE_MARKER not in text:
         return text
     row = f"| {today} | {target} | {', '.join(gates)} | {reason or '-'} |"
@@ -67,7 +67,7 @@ def _insert_log(text: str, target: str, gates: list[str], reason: str, today: st
 
 
 def apply_revision(text: str, target: str, reason: str, today: str) -> str:
-    """state.md テキストへ差し戻しを適用して新テキストを返す（純粋関数）。"""
+    """Apply the roll-back to the state.md text and return the new text (pure function)."""
     gates = cascade_gates(target)
     new = text
     for gate in gates:
@@ -79,31 +79,31 @@ def apply_revision(text: str, target: str, reason: str, today: str) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="差し戻し（上流ゲートを連鎖して pending に戻す）")
-    parser.add_argument("--to", required=True, choices=sorted(_PHASE_GATE), help="戻し先フェーズ")
-    parser.add_argument("--reason", default="", help="差し戻し理由（差し戻しログに記録）")
-    parser.add_argument("--dry-run", action="store_true", help="state.md を書かず計画のみ表示")
+    parser = argparse.ArgumentParser(description="Roll back (reset upstream gates to pending in a chain)")
+    parser.add_argument("--to", required=True, choices=sorted(_PHASE_GATE), help="the target phase to roll back to")
+    parser.add_argument("--reason", default="", help="the roll-back reason (recorded in the roll-back log)")
+    parser.add_argument("--dry-run", action="store_true", help="show the plan only without writing state.md")
     args = parser.parse_args(argv)
 
     gates = cascade_gates(args.to)
     today = date.today().isoformat()
 
     if args.dry_run:
-        print(f"[dry-run] 戻し先 phase: {args.to}")
-        print(f"[dry-run] pending に戻すゲート: {', '.join(gates)}")
+        print(f"[dry-run] target phase: {args.to}")
+        print(f"[dry-run] gates reset to pending: {', '.join(gates)}")
         print(f"[dry-run] current_phase -> {args.to} / updated_at -> {today}")
         return 0
 
     try:
         text = Path(STATE_PATH).read_text(encoding="utf-8")
     except OSError as exc:
-        print(f"state.md を読めません: {exc}", file=sys.stderr)
+        print(f"cannot read state.md: {exc}", file=sys.stderr)
         return 1
     Path(STATE_PATH).write_text(apply_revision(text, args.to, args.reason, today), encoding="utf-8")
-    print(f"差し戻し完了: phase={args.to}。pending に戻したゲート: {', '.join(gates)}")
+    print(f"roll-back complete: phase={args.to}. gates reset to pending: {', '.join(gates)}")
     print(
-        "次の手順: 該当フェーズのコマンドで作り直し→再承認。"
-        "既存タスクは破棄せず、dag.py --impacted で波及を洗い出して reconcile してください。"
+        "Next: rebuild with the command for that phase → re-approve. "
+        "Do not discard existing tasks; enumerate the ripple with dag.py --impacted and reconcile."
     )
     return 0
 

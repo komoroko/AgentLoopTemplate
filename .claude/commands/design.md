@@ -1,32 +1,34 @@
 ---
-description: フェーズ2 設計。承認済み要件から設計し、技術選定を人に決めてもらいゲート②で承認を仰ぐ。
+description: Phase 2 design. Design from approved requirements, let the human decide technical choices, and ask for approval at gate ②.
 ---
 
-# /design — 設計フェーズ
+# /design — Design phase
 
-## 前提ゲート確認（最初に必ず）
-`.agentloop/state.md` を読み、`gates.requirements == approved` を確認する。
-**未承認なら作業せず**、「先に `/req` で要件を承認してください」と伝えて止まる。
-すでに `gates.design == approved` なら「設計は承認済み。変更するなら再承認が必要」と伝え、人の指示を待つ（上流からの差し戻しは `/revise`。`/revise` 後は design ゲートが `pending` に戻っているので通常どおり進める）。
+## Prerequisite gate check (always first)
+Read `.agentloop/state.md` and confirm `gates.requirements == approved`.
+**If unapproved, do not work**; say "please approve the requirements with `/req` first" and stop.
+If `gates.design == approved` already, say "Design is approved; changing it needs re-approval" and wait for the human's instruction (an upstream roll back is done with `/revise`; after `/revise` the design gate is back to `pending`, so proceed normally).
 
-## 手順
-1. `docs/10-requirements.md` と既存コード・資産を読む。
-2. `architect` サブエージェントに委譲し、(a) 各要件の実装方針、(b) **再利用できる既存資産**、(c) 重要な技術選定の選択肢（コスト/セキュリティ/非機能/工数のトレードオフ付き）を出す。
-3. 技術選定は **AskUserQuestion** で選択肢を提示し、**人に決めてもらう**。決定ごとに `docs/decisions/ADR-NNN.md` を起こす。
-4. 確定内容を `docs/20-design.md` に書き出す。`docs/10-requirements.md` の **全要件（R-x）に対応する設計節（`### R-x → 設計`）を漏れなく置く**。要件に無い設計（スコープ外の作り込み）を勝手に増やさない——必要なら要件側へ戻す（`/revise`）。
-5. **前向きカバレッジ確認**: 設計が **全要件を覆い、かつ要件に無いものを足していない** ことを突合する。`docs/20-design.md` に各要件の設計節が揃ったら、見出しの要件ID と要件ドキュメントの要件ID が一致することを確認する（この要件↔設計の連結は後段 `/tasks` の `dag.py --trace` が機械再検査する）。
-6. **ゲート②**: plan mode なら ExitPlanMode、そうでなければ設計サマリ＋確定した技術選定＋**要件カバレッジ（全 R-x に設計節が対応している／スコープ外を増やしていない）** を提示し「この設計で進めてよいか」を確認する。技術選定の確認は **1回の AskUserQuestion にまとめて** 聞く。
-   - **自己評価を必ず併せて提示**する（CLAUDE.md「ゲート自己評価」）: 置いた前提・領域別の確信度（アーキ/技術選定/非機能など）・未解決の論点・リスク/トレードオフ。`20-design.md` の該当節にも残す。確信度の低い設計箇所を明示する。
+## Steps
+1. Read `docs/10-requirements.md` and the existing code/assets.
+2. Delegate to the `architect` subagent to produce (a) an implementation approach for each requirement, (b) **existing assets that can be reused**, and (c) options for important technical choices (with trade-offs across cost/security/non-functional/effort).
+3. Present the technical choices as options via **AskUserQuestion** and **let the human decide**. Create a `docs/decisions/ADR-NNN.md` for each decision.
+4. Write the finalized content into `docs/20-design.md`. **Place a design section (`### R-x → design`) covering every requirement (R-x) in `docs/10-requirements.md`, with none missing.** Do not add design with no backing requirement (out-of-scope build-out) on your own — if needed, return it to the requirements side (`/revise`).
+5. **Forward-coverage check**: cross-check that the design **covers all requirements and adds nothing not in the requirements**. Once `docs/20-design.md` has a design section for each requirement, confirm the requirement IDs in the headings match the requirement IDs in the requirements document (this requirement↔design linkage is mechanically re-checked later by `/tasks`'s `dag.py --trace`).
+6. **Gate ②**: present via ExitPlanMode in plan mode; otherwise present the design summary + the finalized technical choices + **requirement coverage (every R-x has a corresponding design section / nothing out-of-scope was added)** and confirm "may we proceed with this design?". Ask the technical-choice confirmations **in a single AskUserQuestion**.
+   - **Always present a self-assessment as well** (CLAUDE.md "Gate self-assessment"): assumptions made, per-area confidence (architecture/technical choices/non-functional, etc.), open questions, risks/trade-offs. Also leave it in the relevant section of `20-design.md`. Make low-confidence design spots explicit.
 
-## 承認待ち中（ボトルネック最小化）
-ゲート②提示後、承認を待つ間に以下を進めてよい（**結果非依存・破棄前提**）。`state.md` の「先回り作業ログ」に記録する。
-- `PushNotification` で人へ承認待ちを通知。
-- 開発環境・テストハーネス・CI の骨組み整備、Lint/静的解析の設定。
-- 候補ライブラリの **読み取り調査**（インストールは確定後）。
-- **禁止**: 設計/技術選定を先取りしたタスクの確定や本実装。
+Write the deliverables (`docs/20-design.md`, `docs/decisions/ADR-*.md`) in the user's language.
 
-## 承認されたら
-- `state.md` の `gates.design` を `approved`、`current_phase` を `tasks`、`updated_at` を更新。
-- 「次は `/tasks`」と案内する。
+## While waiting for approval (minimizing the bottleneck)
+After presenting gate ②, while waiting you may proceed with the following (**outcome-independent, throwaway-by-default**). Record in the "speculative work log" of `state.md`.
+- Notify the human of the pending approval via `PushNotification`.
+- Setting up the skeleton of the dev environment / test harness / CI, lint/static-analysis config.
+- **Read-only investigation** of candidate libraries (install only after finalizing).
+- **Forbidden**: finalizing tasks or doing real implementation that pre-empts the design/technical choices.
 
-技術選定をあなたの独断で確定しない。必ず人の決定を経る。
+## Once approved
+- Set `gates.design` to `approved`, `current_phase` to `tasks`, and update `updated_at` in `state.md`.
+- Point to "next is `/tasks`".
+
+Do not finalize technical choices on your own. Always go through the human's decision.

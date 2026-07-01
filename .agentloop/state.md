@@ -1,70 +1,71 @@
 ---
-# .agentloop/state.md — このプロジェクトの「単一情報源（Single Source of Truth）」
-# 全コマンド／エージェントはまずこのファイルを読み、作業後に更新する。
-# gates の値は pending | approved のいずれか。前提ゲートが approved でない限り
-# 次フェーズには進めない（CLAUDE.md「ゲート規則」を参照）。
-project: "<プロダクト名を記入>"
-branch: "<作業ブランチ名を記入>"  # 例: build/<product>。実装はこのブランチ上で行う
+# .agentloop/state.md — this project's "Single Source of Truth"
+# Every command/agent reads this file first and updates it after working.
+# gates values are one of pending | approved. You cannot advance to the next phase
+# unless the prerequisite gate is approved (see CLAUDE.md "Gate rules").
+project: "<enter the product name>"
+branch: "<enter the work branch name>"  # e.g. build/<product>. Implement on this branch.
 current_phase: brief          # brief | requirements | design | tasks | build | verify | done
 gates:
-  requirements: pending       # /req の成果を人が承認したら approved
-  design: pending             # /design の技術選定を人が承認したら approved
-  tasks: pending              # /tasks のタスク計画を人が承認したら approved
-  build: pending              # /build 実装完了レビューを人が承認したら approved
-  release: pending            # /verify のリリース可否を人が承認したら approved
+  requirements: pending       # set approved once the human approves the /req result
+  design: pending             # set approved once the human approves the /design technical choices
+  tasks: pending              # set approved once the human approves the /tasks plan
+  build: pending              # set approved once the human approves the /build implementation review
+  release: pending            # set approved once the human approves the /verify release decision
 updated_at: "<YYYY-MM-DD>"
 ---
 
-# 進捗ボード
+# Progress board
 
-## フェーズ進行
-- [ ] brief        — `docs/00-product-brief.md` を人が記入
-- [ ] requirements — `/req`    → ゲート①
-- [ ] design       — `/design` → ゲート②
-- [ ] tasks        — `/tasks`  → ゲート③
-- [ ] build        — `/build`  → ゲート④
-- [ ] verify       — `/verify` → ゲート⑤
+## Phase progress
+- [ ] brief        — the human fills in `docs/00-product-brief.md`
+- [ ] requirements — `/req`    → gate ①
+- [ ] design       — `/design` → gate ②
+- [ ] tasks        — `/tasks`  → gate ③
+- [ ] build        — `/build`  → gate ④
+- [ ] verify       — `/verify` → gate ⑤
 
-## タスク表（依存グラフ）
-タスクの真実は `.agentloop/tasks.yaml`（タスクグラフの機械可読 SSOT）。ここは**人間向けビュー**で、
-`uv run python scripts/agentloop/dag.py --render` の出力を貼って更新する（手書きで真実を持たない）。
-`種別`・`status` の語彙と意味は tasks.yaml のスキーマ／CLAUDE.md を参照。`被依存(fan-out)` は導出値。
+## Task table (dependency graph)
+The truth of tasks is `.agentloop/tasks.yaml` (the machine-readable SSOT of the task graph). This is a **human-facing view**;
+update it by pasting the output of `uv run python scripts/agentloop/dag.py --render` (do not hold the truth by hand).
+For the vocabulary and meaning of `kind`/`status`, see the tasks.yaml schema / CLAUDE.md. `fan-out` is a derived value.
 
-| ID    | タイトル | 種別 | 依存(blockedBy) | 被依存(fan-out) | status | テスト | 備考 |
+| ID    | Title | Kind | blockedBy | fan-out | status | Test | Notes |
 |-------|----------|------|-----------------|-----------------|--------|--------|------|
-| _（/tasks 実行後に dag.py --render から生成）_ |
+| _(generated from dag.py --render after running /tasks)_ |
 
-## 実行プラン（依存チェーン）
-DAG から導出した消化順。`/tasks` で初期構築し、**`/build` で1タスク完了するたびに再導出**する。
+## Execution plan (dependency chain)
+The consumption order derived from the DAG. Initialized by `/tasks`, and **re-derived each time one task completes** in `/build`.
 
-- **実行レイヤ**（トポロジカル順。同一レイヤ内は並列可能）:
-  - L0: _（依存なし。多くは基盤タスク）_
-  - L1: _（L0 完了で着手可能）_
+- **Execution layers** (topological order; within a layer, parallel is possible):
+  - L0: _(no dependencies; mostly foundation tasks)_
+  - L1: _(startable once L0 is done)_
   - L2: …
-- **クリティカルパス**（最長チェーン＝全体所要を決める経路。最優先で詰める）:
-  - _（例: T-001 → T-004 → T-007）_
-- **現在の実行可能フロンティア**（今すぐ着手できる todo）:
-  - _（/build が毎周更新）_
+- **Critical path** (the longest chain = the path that determines the overall duration; fill it first):
+  - _(e.g. T-001 → T-004 → T-007)_
+- **Current executable frontier** (todo startable right now):
+  - _(updated each iteration by /build)_
 
-## 先回り作業ログ（暫定・破棄前提）
-承認待ち中に進めた「結果非依存の先回り作業」を記録する。人が破棄/採用を判断する材料。
-gate を `approved` にする根拠にはしない。
+## Speculative work log (provisional, throwaway-by-default)
+Record the "outcome-independent speculative work" done while waiting for approval. Material for the human to decide to discard/adopt.
+Do not use it as grounds to set a gate to `approved`.
 
-| 日付 | 待っていたゲート | 内容 | 成果物/場所 | 採否(人) |
+| Date | Gate awaited | Content | Deliverable/location | Adopt? (human) |
 |------|------------------|------|-------------|----------|
-| _（随時追記）_ |
+| _(append as needed)_ |
 
-## エスカレーション・ログ
-`blocked` / `needs-revision` が発生したらここに1行追記し、人の判断を仰ぐ。
+## Escalation log
+When a `blocked` / `needs-revision` occurs, append one line here and ask for the human's decision.
 
-| 日付 | タスクID | 種別 | 内容 | 解決 |
+| Date | Task ID | Kind | Content | Resolution |
 |------|----------|------|------|------|
-| _（随時追記）_ |
+| _(append as needed)_ |
 
-## 差し戻し（リビジョン）ログ
-`/revise`（`make revise`）が上流ゲートを連鎖して `pending` に戻した記録。**人が承認を巻き戻した**履歴。
-タスクへの波及は `dag.py --impacted` で洗い出し、reconcile（keep/modify/obsolete/new）した結果を該当タスク票へ。
+## Roll-back (revision) log
+The record of `/revise` (`make revise`) resetting upstream gates to `pending` in a chain. The history of **the human rewinding approval**.
+Identify the task ripple with `dag.py --impacted` and reconcile (keep/modify/obsolete/new); record the result in the relevant task ticket.
 
-| 日付 | 戻し先(phase) | 連鎖して pending にしたゲート | 理由 |
+| Date | Target (phase) | Gates reset to pending in chain | Reason |
 |------|---------------|-------------------------------|------|
 <!-- REVISE-LOG -->
+</content>

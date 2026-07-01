@@ -1,4 +1,4 @@
-"""issue_sync.py の純粋ロジックと dry-run（オフライン・gh 非依存）を検証する。"""
+"""Verify issue_sync.py's pure logic and dry-run (offline, gh-independent)."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ import pytest
 def _task(tid: str, kind: str = "parallel", status: str = "todo", req: str = "", phase: str = "build") -> dag.Task:
     return dag.Task(
         id=tid,
-        title=f"{tid} のタイトル",
+        title=f"{tid} title",
         kind=kind,
         blocked_by=(),
         status=status,
@@ -26,10 +26,10 @@ def _task(tid: str, kind: str = "parallel", status: str = "todo", req: str = "",
 
 def test_desired_issue_fields() -> None:
     d = issue_sync.desired_issue(_task("T-001", kind="foundation"), base_label="agentloop", close_on_done=True)
-    assert d.title == "T-001: T-001 のタイトル"
+    assert d.title == "T-001: T-001 title"
     assert d.labels == ("agentloop", "kind:foundation", "status:todo", "phase:build")
     assert d.closed is False
-    assert "一方向ミラー" in d.body
+    assert "one-way mirror" in d.body
 
 
 def test_desired_issue_includes_req_and_phase() -> None:
@@ -37,9 +37,9 @@ def test_desired_issue_includes_req_and_phase() -> None:
         _task("T-001", req="R-1, R-3", phase="verify"), base_label="agentloop", close_on_done=False
     )
     assert "phase:verify" in d.labels
-    assert "req:R-1" in d.labels and "req:R-3" in d.labels  # カンマ区切りは複数ラベル
-    assert "工程(phase): verify" in d.body
-    assert "対応要件(req): R-1, R-3" in d.body
+    assert "req:R-1" in d.labels and "req:R-3" in d.labels  # comma-separated becomes multiple labels
+    assert "phase: verify" in d.body
+    assert "req: R-1, R-3" in d.body
 
 
 def test_done_task_is_desired_closed_only_when_enabled() -> None:
@@ -51,7 +51,7 @@ def test_done_task_is_desired_closed_only_when_enabled() -> None:
 def test_plan_creates_when_no_existing() -> None:
     tasks = (_task("T-002"), _task("T-001"))
     actions = issue_sync.plan_actions(tasks, {}, base_label="agentloop", close_on_done=True)
-    assert [(a.op, a.task_id) for a in actions] == [("create", "T-001"), ("create", "T-002")]  # id 昇順
+    assert [(a.op, a.task_id) for a in actions] == [("create", "T-001"), ("create", "T-002")]  # ascending id
     assert actions[0].add_labels == ("agentloop", "kind:parallel", "status:todo", "phase:build")
 
 
@@ -63,7 +63,7 @@ def test_label_specs_cover_families_and_dynamic_req() -> None:
     assert {f"kind:{k}" for k in dag.KIND_VALUES} <= names
     assert {f"status:{s}" for s in dag.STATUS_VALUES} <= names
     assert {"phase:requirements", "phase:design", "phase:build", "phase:verify"} <= names
-    assert {"req:R-1", "req:R-2"} <= names  # 動的（現タスクの req から）
+    assert {"req:R-1", "req:R-2"} <= names  # dynamic (from the current tasks' req)
     assert all(len(s.color) == 6 and all(c in "0123456789abcdef" for c in s.color) for s in specs)
 
 
@@ -86,7 +86,7 @@ def test_plan_updates_status_label_diff() -> None:
             number=5,
             title=desired.title,
             state="OPEN",
-            labels=("agentloop", "kind:parallel", "status:todo", "phase:build"),  # 古い status
+            labels=("agentloop", "kind:parallel", "status:todo", "phase:build"),  # stale status
             body=desired.body,
         )
     }
@@ -129,8 +129,8 @@ def test_preflight_skips_when_disabled() -> None:
 
 _CONFIG = "build:\n  max_parallel: 3\ngithub:\n  enabled: false\n  label: agentloop\n  close_on_done: true\n"
 _TASKS = """tasks:
-  - {id: T-001, title: 基盤, kind: foundation, blockedBy: [], status: todo, test: make test, req: R-1}
-  - {id: T-002, title: 葉, kind: parallel, blockedBy: [T-001], status: todo, test: make test}
+  - {id: T-001, title: base, kind: foundation, blockedBy: [], status: todo, test: make test, req: R-1}
+  - {id: T-002, title: leaf, kind: parallel, blockedBy: [T-001], status: todo, test: make test}
 """
 
 
@@ -148,13 +148,13 @@ def project(tmp_path: Path) -> Iterator[Path]:
 
 
 def test_dry_run_is_offline_and_plans_creates(project: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    # --dry-run は gh を呼ばず（無効設定でも）ラベル一覧と作成予定を出す。
+    # --dry-run outputs the label list and planned creations without calling gh (even when disabled).
     rc = issue_sync.main(["--dry-run"])
     assert rc == 0
     out = capsys.readouterr().out
     assert "create T-001" in out
     assert "create T-002" in out
-    # 作成/確認するラベル（固定 kind/status/phase ＋ 動的 req）。
+    # Labels to create/ensure (fixed kind/status/phase + dynamic req).
     assert "kind:foundation" in out
     assert "phase:build" in out
     assert "req:R-1" in out

@@ -1,23 +1,23 @@
-# プロダクト構想 (Product Brief)
+# Product Brief
 
-> このファイルは **人間が最初に数行書く** 唯一の出発点。ここを起点に `/req` で要件を固める。
+> This file is the only starting point **a human writes first (a few lines)**. From here, `/req` firms up the requirements.
 
-## 何を作りたいか（1〜3行）
-<!-- 例: 個人のタスクを管理する CLI ツール。ローカルで完結し、サクサク動くこと。 -->
-
-
-## 誰のためか / 解きたい課題
-<!-- 想定ユーザーと、今困っていること -->
+## What do you want to build? (1–3 lines)
+<!-- e.g. A CLI tool to manage personal tasks. Self-contained locally, snappy. -->
 
 
-## できると嬉しいこと（箇条書きで大まかに）
+## For whom / what problem to solve
+<!-- The intended users and what is troubling them now -->
+
+
+## Nice-to-haves (rough bullets)
 -
 -
 -
 
-## やらないこと（あれば）
+## Non-goals (if any)
 -
 
-## 制約・前提（あれば）
-<!-- 予算、対応環境、使いたい/使えない技術、期限など -->
+## Constraints / assumptions (if any)
+<!-- Budget, target environments, technologies you want/cannot use, deadlines, etc. -->
 -

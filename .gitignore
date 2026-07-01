@@ -8,7 +8,7 @@ __pycache__/
 .pytest_cache/
 build/
 dist/
-# uv.lock は再現性のためコミットする（ignore しない）
+# Commit uv.lock for reproducibility (do not ignore it)
 
 # ---- frontend / pnpm ----
 frontend/node_modules/
@@ -18,23 +18,23 @@ frontend/.vite/
 # ---- mkdocs ----
 site/
 
-# ---- ログ ----
+# ---- logs ----
 backend/logfiles/*.log
 !backend/logfiles/.gitkeep
 
-# ---- AgentLoop 実行時生成物 ----
-.worktrees/                 # build_loop.py が並列タスク用に作る一時 worktree
-.agentloop/build-loop.log   # オーケストレータのエスカレーション・ログ
+# ---- AgentLoop runtime artifacts ----
+.worktrees/                 # temporary worktrees build_loop.py creates for parallel tasks
+.agentloop/build-loop.log   # the orchestrator's escalation log
 
-# ---- 環境変数・秘匿情報 ----
+# ---- environment variables / secrets ----
 .env
 .env.*
 !.env.example
 
-# ---- OS / エディタ ----
+# ---- OS / editor ----
 .DS_Store
 .idea/
 .vscode/
 
-# ---- Claude Code ローカル設定 ----
+# ---- Claude Code local settings ----
 .claude/settings.local.json

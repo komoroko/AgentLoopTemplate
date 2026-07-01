@@ -1,37 +1,37 @@
 # Utils Directory
 
-プロジェクト全体で共有する、再利用可能なユーティリティ関数・スクリプトの置き場です。
+Where reusable utility functions/scripts shared across the whole project live.
 
-## ディレクトリ構成
+## Directory structure
 
 ```
 utils/
-├── README.md: このファイルです。フォルダの説明を記載しています。
-└── その他のユーティリティファイルやサブフォルダをここに追加してください。
+├── README.md: this file. Describes the folder.
+└── Add other utility files or subfolders here.
 ```
 
-## 使用方法
+## Usage
 
-各ユーティリティファイルの使用方法や詳細な説明は、それぞれのファイル内にコメントとして記載してください。
+Document each utility file's usage and details as comments within the file itself.
 
-## 例
+## Example
 
-以下は、ユーティリティ関数の例です。
+Here is an example utility function.
 
 ```python
 def example_utility_function(param1, param2):
     """
-    この関数は例です。
+    This function is an example.
 
     Args:
-        param1 (type): 説明
-        param2 (type): 説明
+        param1 (type): description
+        param2 (type): description
 
     Returns:
-        type: 説明
+        type: description
     """
-    # 処理内容
+    # processing
     return param1 + param2
 ```
 
-新しいユーティリティを追加する際は、このREADMEを更新し、適切な説明を追加してください。
+When adding a new utility, update this README and add an appropriate description.

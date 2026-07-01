@@ -1,18 +1,18 @@
 ---
-description: 進捗ダッシュボード。現在フェーズ・ゲート承認状況・タスク進捗を一覧表示する。
+description: Progress dashboard. Show current phase, gate approval status, and task progress at a glance.
 ---
 
-# /status — 進捗ダッシュボード
+# /status — Progress dashboard
 
-`.agentloop/state.md`（phase/gates/ログ）と `.agentloop/tasks.yaml`（タスクグラフ）を読み、Human on the Loop の監視ビューとして以下を簡潔に表示する。**state は変更しない（読み取り専用）。**
+Read `.agentloop/state.md` (phase/gates/logs) and `.agentloop/tasks.yaml` (task graph), and concisely show the following as a Human-on-the-Loop monitoring view. **Do not change state (read-only).**
 
-1. **プロジェクト / 作業ブランチ**（`project`・`branch`）と **現在フェーズ**、次に実行すべきコマンド。
-2. **ゲート状況**: requirements / design / tasks / build / release を `approved`/`pending` で一覧。
-3. **タスク進捗**: `uv run python scripts/agentloop/dag.py --render` を実行し、その確定出力（件数・実行レイヤ・クリティカルパス・実行可能フロンティア）を表示する。加えて `blocked`・`needs-revision` のタスクは個別に列挙（人の介入が必要なため）。tasks.yaml が未生成（`/tasks` 前）ならスキップ。
-   - **依存図**: `uv run python scripts/agentloop/dag.py --mermaid` を実行し、その Mermaid（`graph TD`・status 色分け・クリティカルパス太枠）を併せて提示する。GitHub/VS Code/Markdown でそのまま全体像が描画される。
-   - **整合性トレース**: tasks.yaml 生成済み（`/tasks` 後）かつ要件ドキュメント（`docs/10-requirements.md`）があるときだけ `uv run python scripts/agentloop/dag.py --trace` を実行する（render と同じく未生成ならスキップ）。要件→設計→タスクの連結欠落（未カバー要件・宙吊り参照）を強調する。終了コードで原因を分ける: **1=欠落（「要対応」に含める）/ 2=検査不能（要件ドキュメント不在・要件ID 0件・tasks.yaml 不在 → パス・記法のセットアップ問題として案内）**。
-4. **要対応**: 人の承認待ちのゲート、エスカレーション・ログの未解決項目があれば強調。`done` 到達済みなのに `docs/retrospective.md` 未記入や各ログの未回収（解決欄・採否欄の空白）が残っていれば促す。
-5. **先回り作業**: 承認待ち中に進めた暫定作業（先回り作業ログ）があれば、採否未判断のものを示す。
-6. **（GitHub 連携時のみ）** `.agentloop/config.yaml` の `github.enabled: true` なら、`make issue-sync` で Issues をこのダッシュボード（tasks.yaml）に一致させられる旨を1行案内する（Issues は SSOT ではなく一方向ミラー）。
+1. **Project / work branch** (`project`/`branch`), the **current phase**, and the command to run next.
+2. **Gate status**: list requirements / design / tasks / build / release as `approved`/`pending`.
+3. **Task progress**: run `uv run python scripts/agentloop/dag.py --render` and show its deterministic output (counts, execution layers, critical path, executable frontier). Also list `blocked`/`needs-revision` tasks individually (they need human intervention). Skip if tasks.yaml is not generated yet (before `/tasks`).
+   - **Dependency graph**: run `uv run python scripts/agentloop/dag.py --mermaid` and present its Mermaid (`graph TD`, status color-coding, critical-path bold border) as well. The whole picture renders directly in GitHub/VS Code/Markdown.
+   - **Consistency trace**: only when tasks.yaml is generated (after `/tasks`) and the requirements document (`docs/10-requirements.md`) exists, run `uv run python scripts/agentloop/dag.py --trace` (skip if not generated, same as render). Highlight broken requirement → design → task linkage (uncovered requirements, dangling references). Distinguish the cause by exit code: **1=missing (include in "needs attention") / 2=cannot check (requirements document absent, 0 requirement IDs, tasks.yaml absent → guide as a path/notation setup problem)**.
+4. **Needs attention**: highlight gates awaiting human approval and unresolved items in the escalation log. If `done` is reached but `docs/retrospective.md` is unfilled or logs have open items (blank resolution/adoption columns), prompt about them.
+5. **Speculative work**: if there is provisional work done while waiting for approval (the speculative work log), show the ones whose adoption is undecided.
+6. **(Only with GitHub integration)** If `github.enabled: true` in `.agentloop/config.yaml`, give a one-line note that `make issue-sync` can bring Issues into line with this dashboard (tasks.yaml) (Issues are a one-way mirror, not the SSOT).
 
-最後に「今あなた（人）がすべきこと」を1〜2行で示す。
+End with 1–2 lines on "what you (the human) should do now".

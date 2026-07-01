@@ -1,32 +1,32 @@
-# T-NNN: <タスクタイトル>
+# T-NNN: <task title>
 
-- **対応要件/設計**: R-x / 20-design.md の該当節   <!-- tasks.yaml の req に転記。例: R-1, R-3 -->
-- **種別**: 並列          <!-- 基盤 | 並列 | 統合。基盤=多数が依存する共通土台 / 並列=独立同時進行できる葉 / 統合=複数の合流 -->
-- **工程 (phase)**: build   <!-- requirements | design | build | verify。既定 build。/verify 由来のバグ修正は verify。tasks.yaml の phase に転記 -->
-- **status**: todo            <!-- todo | in_progress | blocked | needs-revision | done。真実は state.md 側 -->
-- **依存 (blockedBy)**: なし   <!-- 先に done が必要なタスク。例: T-001, T-002 -->
-- **被依存 (このタスクを待つもの)**: なし  <!-- 例: T-005, T-006。多いほど早く消すと並列度が上がる -->
-- **担当**: implementer
+- **Covers requirement/design**: R-x / the relevant section of 20-design.md   <!-- transcribe to req in tasks.yaml. e.g. R-1, R-3 -->
+- **Kind**: parallel          <!-- foundation | parallel | integration. foundation=a base many depend on / parallel=independent leaves that run concurrently / integration=a join of several -->
+- **Phase**: build   <!-- requirements | design | build | verify. Default build. A bug fix originating from /verify is verify. Transcribe to phase in tasks.yaml -->
+- **status**: todo            <!-- todo | in_progress | blocked | needs-revision | done. The truth is in state.md -->
+- **blockedBy**: none   <!-- tasks that must be done first. e.g. T-001, T-002 -->
+- **Dependents (what waits on this task)**: none  <!-- e.g. T-005, T-006. The more there are, the more parallelism is freed by finishing it early -->
+- **Owner**: implementer
 
-## やること
-<!-- 実装の具体的な内容。1タスク=レビュー可能な小さい単位 -->
+## To do
+<!-- The concrete content to implement. One task = a small, reviewable unit -->
 
 
-## 受入条件（Definition of Done）
+## Acceptance criteria (Definition of Done)
 - [ ]
 - [ ]
 
-## 自動テスト方針（green 判定の根拠）
-> ここが埋まっていないタスクは `/build` で着手しない。loop はこのテストが green になって初めて次へ進む。
-- **テスト種別**: 単体 / 結合
-- **テスト対象 / ケース**:
+## Automated-test approach (the basis for the green decision)
+> A task with this unfilled is not started in `/build`. The loop advances only once this test goes green.
+- **Test kind**: unit / integration
+- **Test target / cases**:
   -
-- **テスト実行コマンド**: <例: `npm test -- <path>`>
+- **Test run command**: <e.g. `npm test -- <path>`>
 
-## メモ / 設計判断
+## Notes / design decisions
 -
 
-## 自己評価（前提・確信度）
-> ゲート③で確信度の低いタスクを人へ明示するための材料。
-- **確信度**: 高 / 中 / 低
-- **置いた前提 / リスク**: <不確実な点・外部依存・大粒度ゆえの読み違いリスクなど>
+## Self-assessment (assumptions, confidence)
+> Material for making low-confidence tasks explicit to the human at gate ③.
+- **Confidence**: high / medium / low
+- **Assumptions made / risks**: <uncertain points, external dependencies, the risk of misreading due to coarse granularity, etc.>

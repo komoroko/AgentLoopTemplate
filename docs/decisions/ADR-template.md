@@ -1,40 +1,40 @@
-# ADR-NNN: <意思決定のタイトル>
+# ADR-NNN: <decision title>
 
-- **状態**: 提案中 | 承認済み | 棄却 | 置換(ADR-NNN)
-- **日付**: YYYY-MM-DD
-- **決定者**: 人間（ゲート②で確定）
-- **関連要件**: R-x
+- **Status**: proposed | accepted | rejected | superseded (ADR-NNN)
+- **Date**: YYYY-MM-DD
+- **Decider**: human (finalized at gate ②)
+- **Related requirements**: R-x
 
-## 背景 / 課題
-<!-- 何を決める必要があるのか -->
+## Background / problem
+<!-- What needs to be decided -->
 
 
-## 選択肢
+## Options
 
-> `/design` が AskUserQuestion で提示する形と対応させる。各案にトレードオフを必ず付ける。
+> Mirror the form `/design` presents via AskUserQuestion. Always attach trade-offs to each option.
 
-### 案A: <名称>
-- 概要:
-- コスト:
-- セキュリティ:
-- 非機能（性能/運用など）:
-- 実装工数:
-- 長所 / 短所:
+### Option A: <name>
+- Overview:
+- Cost:
+- Security:
+- Non-functional (performance/operations, etc.):
+- Implementation effort:
+- Pros / cons:
 
-### 案B: <名称>
-- 概要:
-- コスト:
-- セキュリティ:
-- 非機能:
-- 実装工数:
-- 長所 / 短所:
+### Option B: <name>
+- Overview:
+- Cost:
+- Security:
+- Non-functional:
+- Implementation effort:
+- Pros / cons:
 
-## 決定
-<!-- 人が選んだ案と、その理由 -->
-**採用**: 案X
+## Decision
+<!-- The option the human chose, and the reason -->
+**Adopted**: Option X
 
-**理由**:
+**Reason**:
 
-## 影響 / 結果
-<!-- この決定が後段に与える制約や前提 -->
+## Consequences / results
+<!-- The constraints or assumptions this decision imposes downstream -->
 -

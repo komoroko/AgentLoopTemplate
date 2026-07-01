@@ -1,17 +1,17 @@
-"""tasks.yaml を GitHub Issues へ一方向ミラーする（人向けの可視化・opt-in）。
+"""One-way-mirror tasks.yaml to GitHub Issues (human-facing visibility, opt-in).
 
-`.agentloop/tasks.yaml`（タスクグラフの SSOT）を**真実**として、各タスク T-NNN を GitHub Issue
-1件へ冪等に射影する。**一方向のみ**——Issues 側の編集は読み戻さない（確定駆動・オフライン性を保つ）。
-orchestrator（build_loop.py）の制御フローには入れず、副作用としてスラッシュコマンドから呼ばれる。
+Treating `.agentloop/tasks.yaml` (the task graph's SSOT) as **truth**, idempotently projects each task T-NNN to one
+GitHub Issue. **One-way only** — Issues-side edits are never read back (preserving deterministic, offline operation).
+Not part of the orchestrator's (build_loop.py) control flow; it is called as a side effect from slash commands.
 
-挙動:
-  - 既定オフ。`.agentloop/config.yaml` の `github.enabled: true` で有効化。
-  - `gh` 不在 / remote 不在 / 無効 のいずれかなら **明示メッセージを出して 0 終了**（自動スキップ）。
-  - issue 番号は tasks.yaml に書かない。`gh issue list` の結果をタイトル接頭辞 `T-NNN:` で突き合わせる
-    （T-NNN は dag が一意性を検証済み）。これで SSOT を汚さず drift を防ぐ。
-  - 無い issue は作成、内容差分があれば更新、`status==done` は close（`close_on_done`）。削除はしない。
+Behavior:
+  - Off by default. Enable with `github.enabled: true` in `.agentloop/config.yaml`.
+  - If `gh` is absent / remote is absent / disabled, **print an explicit message and exit 0** (auto-skip).
+  - The issue number is not written to tasks.yaml. Match `gh issue list` results by the title prefix `T-NNN:`
+    (T-NNN's uniqueness is already validated by dag). This prevents drift without polluting the SSOT.
+  - Create a missing issue, update on content diff, close on `status==done` (`close_on_done`). Never delete.
 
-`--dry-run` は `gh` を一切呼ばず、tasks.yaml から作成予定の plan を出力する（オフライン・テスト用）。
+`--dry-run` calls `gh` not at all and outputs the planned creations from tasks.yaml (for offline/testing).
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ CONFIG_PATH = ".agentloop/config.yaml"
 
 
 class IssueSyncError(RuntimeError):
-    """gh 連携の失敗を表す。"""
+    """A gh integration failure."""
 
 
 @dataclass(frozen=True)
@@ -85,27 +85,27 @@ class Action:
     remove_labels: tuple[str, ...] = field(default=())
 
 
-# --- 純粋ロジック（テスト対象） --------------------------------------------
+# --- pure logic (under test) -----------------------------------------------
 
 
 def _managed(label: str, base_label: str) -> bool:
-    """このツールが管理するラベルか（agentloop / kind: / status: / phase: / req:）。他人のラベルは触らない。"""
+    """Whether this is a label this tool manages (agentloop/kind:/status:/phase:/req:). Others' labels untouched."""
     return label == base_label or label.startswith(("kind:", "status:", "phase:", "req:"))
 
 
 def _issue_body(task: dag.Task) -> str:
-    deps = ", ".join(task.blocked_by) if task.blocked_by else "なし"
+    deps = ", ".join(task.blocked_by) if task.blocked_by else "none"
     return "\n".join(
         [
-            f"`{task.id}` — AgentLoop タスク（SSOT: `.agentloop/tasks.yaml` / 詳細: `docs/tasks/{task.id}.md`）",
+            f"`{task.id}` — AgentLoop task (SSOT: `.agentloop/tasks.yaml` / details: `docs/tasks/{task.id}.md`)",
             "",
-            f"- 種別(kind): {task.kind}",
-            f"- 工程(phase): {task.phase}",
-            f"- 対応要件(req): {task.req or '(未設定)'}",
-            f"- 依存(blockedBy): {deps}",
-            f"- テスト: {task.test or '(未設定)'}",
+            f"- kind: {task.kind}",
+            f"- phase: {task.phase}",
+            f"- req: {task.req or '(unset)'}",
+            f"- blockedBy: {deps}",
+            f"- test: {task.test or '(unset)'}",
             "",
-            "> この issue は tasks.yaml からの **一方向ミラー**。ここを編集しても SSOT には反映されません。",
+            "> This issue is a **one-way mirror** from tasks.yaml. Editing it here is not reflected in the SSOT.",
         ]
     )
 
@@ -133,7 +133,7 @@ def plan_actions(
     base_label: str,
     close_on_done: bool,
 ) -> list[Action]:
-    """tasks と既存 issue 群から、確定的な差分操作リストを導出する（id 昇順）。"""
+    """Derive the deterministic diff-action list from tasks and existing issues (ascending id)."""
     actions: list[Action] = []
     for task in sorted(tasks, key=lambda t: t.id):
         desired = desired_issue(task, base_label=base_label, close_on_done=close_on_done)
@@ -155,11 +155,11 @@ def plan_actions(
 
 def format_plan(actions: list[Action]) -> str:
     if not actions:
-        return "（ミラー差分なし: Issues は tasks.yaml と一致）"
+        return "(no mirror diff: Issues match tasks.yaml)"
     return "\n".join(f"- {a.op:<6} {a.task_id} :: {a.desired.title}" for a in actions)
 
 
-# --- ラベル provisioning（gh issue create は対象ラベルが repo に無いと失敗するため冪等に作る） ----
+# --- label provisioning (gh issue create fails if the target label is absent in the repo, so create idempotently) ----
 
 _DEFAULT_COLOR = "ededed"
 _BASE_COLOR = "cccccc"
@@ -172,7 +172,7 @@ _STATUS_COLORS = {
     "needs-revision": "e16f24",
     "done": "1a7f37",
 }
-# 工程の語彙（既定 build）。requirements/design は「要件・設計そのものを扱う作業」を起票したい場合の受け皿。
+# The phase vocabulary (default build). requirements/design catch the case of filing "work on requirements/design".
 _PHASE_VALUES = ("requirements", "design", "build", "verify")
 _PHASE_COLORS = {"requirements": "8250df", "design": "0969da", "build": "1a7f37", "verify": "cf222e"}
 
@@ -185,23 +185,23 @@ class LabelSpec:
 
 
 def label_specs(graph: dag.Graph, base_label: str) -> list[LabelSpec]:
-    """このツールが使う全ラベルの確定集合。固定（kind/status/phase）＋動的（現タスクの req）。"""
-    specs: list[LabelSpec] = [LabelSpec(base_label, _BASE_COLOR, "AgentLoop タスクのミラー issue")]
+    """The deterministic set of all labels this tool uses. Fixed (kind/status/phase) + dynamic (current tasks' req)."""
+    specs: list[LabelSpec] = [LabelSpec(base_label, _BASE_COLOR, "mirror issue for an AgentLoop task")]
     for kind in sorted(dag.KIND_VALUES):
-        specs.append(LabelSpec(f"kind:{kind}", _KIND_COLORS.get(kind, _DEFAULT_COLOR), f"種別: {kind}"))
+        specs.append(LabelSpec(f"kind:{kind}", _KIND_COLORS.get(kind, _DEFAULT_COLOR), f"kind: {kind}"))
     for status in sorted(dag.STATUS_VALUES):
-        specs.append(LabelSpec(f"status:{status}", _STATUS_COLORS.get(status, _DEFAULT_COLOR), f"状態: {status}"))
+        specs.append(LabelSpec(f"status:{status}", _STATUS_COLORS.get(status, _DEFAULT_COLOR), f"status: {status}"))
     for phase in _PHASE_VALUES:
-        specs.append(LabelSpec(f"phase:{phase}", _PHASE_COLORS.get(phase, _DEFAULT_COLOR), f"工程: {phase}"))
+        specs.append(LabelSpec(f"phase:{phase}", _PHASE_COLORS.get(phase, _DEFAULT_COLOR), f"phase: {phase}"))
     reqs: set[str] = set()
     for task in graph.tasks:
         reqs.update(dag.task_req_ids(task))
     for token in sorted(reqs):
-        specs.append(LabelSpec(f"req:{token}", _REQ_COLOR, f"対応要件: {token}"))
+        specs.append(LabelSpec(f"req:{token}", _REQ_COLOR, f"covered requirement: {token}"))
     return specs
 
 
-# --- gh 実行 ---------------------------------------------------------------
+# --- gh execution ----------------------------------------------------------
 
 
 def _run(cmd: list[str]) -> tuple[int, str]:
@@ -210,15 +210,15 @@ def _run(cmd: list[str]) -> tuple[int, str]:
 
 
 def preflight(cfg: GithubConfig) -> tuple[bool, str]:
-    """連携可能かを判定する。不可なら (False, 理由) を返し、呼び出し側は 0 終了でスキップする。"""
+    """Decide whether integration is possible. If not, return (False, reason); the caller exits 0 and skips."""
     if not cfg.enabled:
-        return False, "github.enabled=false のため Issues ミラーをスキップしました。"
+        return False, "Skipped Issues mirror because github.enabled=false."
     if shutil.which("gh") is None:
-        return False, "gh CLI が見つからないため Issues ミラーをスキップしました。"
+        return False, "Skipped Issues mirror because the gh CLI was not found."
     if not cfg.repo:
         rc, out = _run(["git", "remote"])
         if rc != 0 or not out.strip():
-            return False, "git remote が無いため Issues ミラーをスキップしました（config の github.repo で明示も可）。"
+            return False, "Skipped Issues mirror: no git remote (you can also set github.repo in config)."
     return True, ""
 
 
@@ -240,11 +240,11 @@ def fetch_existing(cfg: GithubConfig) -> dict[str, ExistingIssue]:
         args += ["--repo", cfg.repo]
     rc, out = _run(args)
     if rc != 0:
-        raise IssueSyncError(f"gh issue list に失敗しました:\n{out[-500:]}")
+        raise IssueSyncError(f"gh issue list failed:\n{out[-500:]}")
     try:
         data: Any = json.loads(out or "[]")
     except json.JSONDecodeError as exc:
-        raise IssueSyncError(f"gh issue list の出力を解釈できません: {exc}") from exc
+        raise IssueSyncError(f"cannot parse gh issue list output: {exc}") from exc
     result: dict[str, ExistingIssue] = {}
     for item in data:
         title = str(item.get("title", ""))
@@ -268,7 +268,7 @@ def _gh(args: list[str], cfg: GithubConfig) -> tuple[int, str]:
 
 
 def ensure_labels(graph: dag.Graph, cfg: GithubConfig) -> None:
-    """使用ラベルを冪等に provisioning する（--force で作成/更新）。best-effort（失敗で raise しない）。"""
+    """Idempotently provision the labels used (--force creates/updates). Best-effort (does not raise on failure)."""
     for spec in label_specs(graph, cfg.label):
         _gh(["label", "create", spec.name, "--color", spec.color, "--description", spec.description, "--force"], cfg)
 
@@ -280,10 +280,10 @@ def _apply_one(action: Action, cfg: GithubConfig) -> None:
             args += ["--label", label]
         rc, out = _gh(args, cfg)
         if rc != 0:
-            raise IssueSyncError(f"{action.task_id}: issue 作成に失敗:\n{out[-500:]}")
+            raise IssueSyncError(f"{action.task_id}: issue creation failed:\n{out[-500:]}")
         if action.desired.closed:
-            # gh issue create は URL を出力する。stdout+stderr に警告が混ざっても確実に番号を取るため
-            # /issues/<n> を正規表現で抽出する（末尾分割だと余分な出力で壊れる）。
+            # gh issue create outputs a URL. To reliably get the number even if warnings are mixed into stdout+stderr,
+            # extract /issues/<n> with a regex (splitting on the tail would break with extra output).
             match = re.search(r"/issues/(\d+)", out)
             if match:
                 _gh(["issue", "close", match.group(1)], cfg)
@@ -295,7 +295,7 @@ def _apply_one(action: Action, cfg: GithubConfig) -> None:
             args += ["--remove-label", ",".join(action.remove_labels)]
         rc, out = _gh(args, cfg)
         if rc != 0:
-            raise IssueSyncError(f"{action.task_id}: issue 更新に失敗:\n{out[-500:]}")
+            raise IssueSyncError(f"{action.task_id}: issue update failed:\n{out[-500:]}")
     elif action.op == "close":
         _gh(["issue", "close", str(action.number)], cfg)
     elif action.op == "reopen":
@@ -303,18 +303,18 @@ def _apply_one(action: Action, cfg: GithubConfig) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="tasks.yaml を GitHub Issues へ一方向ミラーする")
-    parser.add_argument("--dry-run", action="store_true", help="gh を呼ばず作成予定を出力（オフライン）")
+    parser = argparse.ArgumentParser(description="one-way-mirror tasks.yaml to GitHub Issues")
+    parser.add_argument("--dry-run", action="store_true", help="output planned creations without calling gh (offline)")
     args = parser.parse_args(argv)
 
     cfg = GithubConfig.load()
 
     if args.dry_run:
         graph = dag.load()
-        print("[dry-run] 作成/確認するラベル:")
+        print("[dry-run] labels to create/ensure:")
         print(", ".join(spec.name for spec in label_specs(graph, cfg.label)))
         actions = plan_actions(graph.tasks, {}, base_label=cfg.label, close_on_done=cfg.close_on_done)
-        print("[dry-run] Issues ミラー予定（既存 issue は未取得＝全件 create 想定）:")
+        print("[dry-run] planned Issues mirror (existing issues not fetched = all assumed create):")
         print(format_plan(actions))
         return 0
 
@@ -325,15 +325,15 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         graph = dag.load()
-        ensure_labels(graph, cfg)  # issue 作成前にラベルを provisioning（無いと create が失敗する）
+        ensure_labels(graph, cfg)  # provision labels before creating issues (create fails if they are absent)
         existing = fetch_existing(cfg)
         actions = plan_actions(graph.tasks, existing, base_label=cfg.label, close_on_done=cfg.close_on_done)
         for action in actions:
             _apply_one(action, cfg)
     except (OSError, dag.DagError, yaml.YAMLError, IssueSyncError) as exc:
-        print(f"Issues ミラーに失敗しました（SSOT には影響しません）: {exc}", file=sys.stderr)
+        print(f"Issues mirror failed (does not affect the SSOT): {exc}", file=sys.stderr)
         return 1
-    print(f"Issues ミラー完了: {len(actions)} 件の操作。" if actions else "Issues は tasks.yaml と一致（操作なし）。")
+    print(f"Issues mirror complete: {len(actions)} operation(s)." if actions else "Issues match tasks.yaml (no ops).")
     return 0
 
 

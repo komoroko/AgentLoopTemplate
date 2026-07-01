@@ -1,26 +1,27 @@
-"""PreToolUse フック: 前提ゲート未承認のまま「次フェーズの成果物」を編集させない機構層。
+"""PreToolUse hook: the mechanism layer that prevents editing a "next-phase deliverable"
+while its prerequisite gate is unapproved.
 
-CLAUDE.md の規約層（各コマンドが自分でゲートを確認する）に依存せず、コードで阻止する。
-Claude Code の PreToolUse フックとして Write/Edit に対し登録し、編集対象パスと
-`.agentloop/state.md` の gates を突き合わせ、前提が approved でなければ **deny** する。
+It blocks in code, not relying on CLAUDE.md's convention layer (each command checks its own gate).
+Registered as a Claude Code PreToolUse hook on Write/Edit, it cross-checks the edit's target path
+against the gates in `.agentloop/state.md` and **denies** unless the prerequisite is approved.
 
-判定:
-  docs/20-design.md, docs/decisions/**        → requirements が approved 必須
-  docs/tasks/**                               → design       が approved 必須
-  backend/**, frontend/**, scripts/**（実装コード） → tasks   が approved 必須
-  docs/test/**（テスト結果記入）               → build        が approved 必須
-ただし scripts/agentloop/**（テンプレート基盤ツール）は **常に許可**（フック自身の保守・
-先回り作業を妨げないため）。上記以外のパスも無条件で許可する。
+Decision:
+  docs/20-design.md, docs/decisions/**           → requirements must be approved
+  docs/tasks/**                                  → design       must be approved
+  backend/**, frontend/**, scripts/** (impl code) → tasks        must be approved
+  docs/test/** (filling in test results)          → build        must be approved
+However, scripts/agentloop/** (the template's foundational tools) is **always allowed** (so as not to block
+the hook's own maintenance / speculative work). Any path not above is also allowed unconditionally.
 
-`.agentloop/config.yaml` の gates.enforce_hook が false なら常に許可する
-（config が読めない場合は既定で有効＝enforce-on とみなす）。
-state.md の gates が読めない等の異常時は **fail-open（許可）** する
-（build フェーズの確実な停止は scripts/agentloop/build_loop.py のコード判定が別途担保する）。
+If gates.enforce_hook in `.agentloop/config.yaml` is false, always allow
+(if config cannot be read, it defaults to enabled = enforce-on).
+On anomalies such as state.md gates being unreadable, **fail open (allow)**
+(reliable stopping in the build phase is separately ensured by the code check in scripts/agentloop/build_loop.py).
 
-入出力は Claude Code フックの規約に従う:
-  stdin  : フックのイベント JSON（tool_name, tool_input.file_path 等）
-  stdout : deny 時に hookSpecificOutput を持つ JSON を出力。許可時は何も出さない。
-  exit   : 常に 0（判定は JSON で伝える）。
+I/O follows the Claude Code hook convention:
+  stdin  : the hook event JSON (tool_name, tool_input.file_path, etc.)
+  stdout : on deny, print JSON with hookSpecificOutput. On allow, print nothing.
+  exit   : always 0 (the decision is conveyed via JSON).
 """
 
 from __future__ import annotations
@@ -35,13 +36,13 @@ import yaml
 STATE_PATH = ".agentloop/state.md"
 CONFIG_PATH = ".agentloop/config.yaml"
 
-# ガード対象外（ゲートに関わらず常に許可）。テンプレート基盤ツールはフック自身が
-# 動く場所であり、build ゲートで保守をブロックしてはならない。
+# Not guarded (always allowed regardless of gates). The template's foundational tools are where
+# the hook itself runs, and the build gate must not block their maintenance.
 _UNGUARDED_PREFIXES: tuple[str, ...] = ("scripts/agentloop/",)
 
-# (パス判定, 必要な gate 名)。先頭から評価し最初に一致したものを使う。
-# scripts/ はプロダクト用スクリプトの実装コードとして tasks 承認を要する
-# （scripts/agentloop/ は上の除外で先に弾かれる）。
+# (path test, required gate name). Evaluated from the top; the first match wins.
+# scripts/ requires tasks approval as product-script implementation code
+# (scripts/agentloop/ is filtered out earlier by the exclusion above).
 _RULES: list[tuple[str, str]] = [
     ("docs/decisions/", "requirements"),
     ("docs/tasks/", "design"),
@@ -55,15 +56,15 @@ _EXACT: dict[str, str] = {
 }
 
 _PHASE_LABEL = {
-    "requirements": "/req（要件）",
-    "design": "/design（設計）",
-    "tasks": "/tasks（タスク計画）",
-    "build": "/build（実装）",
+    "requirements": "/req (requirements)",
+    "design": "/design (design)",
+    "tasks": "/tasks (task plan)",
+    "build": "/build (implementation)",
 }
 
 
 def _repo_relative(file_path: str) -> str | None:
-    """編集対象をリポジトリ相対の posix パスへ正規化する。リポジトリ外なら None。"""
+    """Normalize the edit target to a repo-relative posix path. None if outside the repo."""
     try:
         rel = os.path.relpath(os.path.abspath(file_path), os.getcwd())
     except ValueError:
@@ -74,7 +75,7 @@ def _repo_relative(file_path: str) -> str | None:
 
 
 def required_gate(file_path: str) -> str | None:
-    """この編集が前提とする gate 名。ガード対象外なら None。"""
+    """The gate name this edit requires. None if not guarded."""
     rel = _repo_relative(file_path)
     if rel is None:
         return None
@@ -92,13 +93,13 @@ def _enforce_enabled() -> bool:
     try:
         data = yaml.safe_load(Path(CONFIG_PATH).read_text(encoding="utf-8")) or {}
     except (OSError, yaml.YAMLError):
-        return True  # config が無ければ既定で有効（fail-secure。state 不在時のみ fail-open）
+        return True  # default to enabled if config is absent (fail-secure; fail-open only when state is absent)
     gates = data.get("gates") or {}
     return bool(gates.get("enforce_hook", True))
 
 
 def _read_gates() -> dict[str, str] | None:
-    """state.md フロントマターの gates を読む。読めなければ None（fail-open）。"""
+    """Read the gates from state.md front-matter. None if unreadable (fail-open)."""
     try:
         text = Path(STATE_PATH).read_text(encoding="utf-8")
     except OSError:
@@ -119,7 +120,7 @@ def _read_gates() -> dict[str, str] | None:
 
 
 def evaluate(file_path: str) -> tuple[bool, str]:
-    """(allowed, reason) を返す。allowed=False のとき reason が deny 理由。"""
+    """Return (allowed, reason). When allowed=False, reason is the deny reason."""
     gate = required_gate(file_path)
     if gate is None:
         return True, ""
@@ -127,13 +128,13 @@ def evaluate(file_path: str) -> tuple[bool, str]:
         return True, ""
     gates = _read_gates()
     if gates is None:
-        return True, ""  # state 不明は fail-open
+        return True, ""  # unknown state is fail-open
     if gates.get(gate) == "approved":
         return True, ""
     phase = _PHASE_LABEL.get(gate, gate)
     return False, (
-        f"ゲート未承認のためブロックしました: この編集は前提ゲート '{gate}' の承認を要します。"
-        f" 先に {phase} を完了し人の承認を得てください（.agentloop/state.md の gates.{gate} を確認）。"
+        f"Blocked: gate not approved. This edit requires approval of the prerequisite gate '{gate}'."
+        f" Complete {phase} first and get human approval (check gates.{gate} in .agentloop/state.md)."
     )
 
 
@@ -141,7 +142,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         payload = json.load(sys.stdin)
     except (json.JSONDecodeError, ValueError):
-        return 0  # 解釈できなければ介入しない
+        return 0  # do not intervene if it cannot be parsed
     tool_input = payload.get("tool_input") or {}
     file_path = tool_input.get("file_path")
     if not isinstance(file_path, str) or not file_path:

@@ -1,6 +1,6 @@
 ﻿repos:
-  # gitleaks（シークレットスキャン。秘匿情報のコミットを機構的に防止）
-  # 誤検知は .gitleaksignore で除外する。
+  # gitleaks (secret scanning; mechanically prevents committing secrets)
+  # Exclude false positives with .gitleaksignore.
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.30.1
     hooks:
@@ -17,7 +17,7 @@
     - id: name-tests-test
     - id: requirements-txt-fixer
 
-  # Ruff (lint + format + import sorting。black/isort は ruff に統合済み)
+  # Ruff (lint + format + import sorting; black/isort are consolidated into ruff)
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.15.16
     hooks:
@@ -64,14 +64,14 @@
           - "mypy-extensions>=1.1.0"
           - "annotated-types>=0.7.0"
           - "types-PyYAML>=6.0.12.20260518"
-          # テストの @pytest.fixture を型付き扱いにする（隔離 env に pytest 型が無いと
-          # strict の disallow_untyped_decorators で untyped-decorator エラーになる）。
+          # Treat the tests' @pytest.fixture as typed (without pytest types in the isolated env,
+          # strict's disallow_untyped_decorators raises an untyped-decorator error).
           - "pytest>=9.0.3"
         minimum_pre_commit_version: "4.6.0"
         stages: [pre-push]
 
-  # TypeScript / フロントエンド（frontend/）。pnpm 経由でプロジェクトの設定をそのまま使う。
-  # ruff↔eslint=commit、ruff-format↔prettier・mypy↔tsc=pre-push と Python 側に揃える。
+  # TypeScript / frontend (frontend/). Use the project's own config as-is via pnpm.
+  # Aligned with the Python side: ruff↔eslint=commit, ruff-format↔prettier and mypy↔tsc=pre-push.
   - repo: local
     hooks:
       - id: eslint

@@ -1,4 +1,4 @@
-"""build_loop.py のスケジューリングと dry-run 制御フローを検証する。"""
+"""Verify build_loop.py's scheduling and dry-run control flow."""
 
 from __future__ import annotations
 
@@ -17,11 +17,11 @@ def _graph(done: tuple[str, ...] = ()) -> dag.Graph:
 
     return dag.Graph.from_tasks(
         [
-            dag.Task(id="T-001", title="基盤", kind="foundation", blocked_by=(), status=st("T-001")),
-            dag.Task(id="T-002", title="葉A", kind="parallel", blocked_by=("T-001",), status=st("T-002")),
-            dag.Task(id="T-003", title="葉B", kind="parallel", blocked_by=("T-001",), status=st("T-003")),
-            dag.Task(id="T-004", title="葉C", kind="parallel", blocked_by=("T-001",), status=st("T-004")),
-            dag.Task(id="T-005", title="葉D", kind="parallel", blocked_by=("T-001",), status=st("T-005")),
+            dag.Task(id="T-001", title="base", kind="foundation", blocked_by=(), status=st("T-001")),
+            dag.Task(id="T-002", title="leaf A", kind="parallel", blocked_by=("T-001",), status=st("T-002")),
+            dag.Task(id="T-003", title="leaf B", kind="parallel", blocked_by=("T-001",), status=st("T-003")),
+            dag.Task(id="T-004", title="leaf C", kind="parallel", blocked_by=("T-001",), status=st("T-004")),
+            dag.Task(id="T-005", title="leaf D", kind="parallel", blocked_by=("T-001",), status=st("T-005")),
         ]
     )
 
@@ -39,7 +39,7 @@ def test_plan_batch_parallel_capped_at_max() -> None:
     assert batch is not None
     mode, tasks = batch
     assert mode == "parallel"
-    assert [t.id for t in tasks] == ["T-002", "T-003", "T-004"]  # max_parallel=3 で T-005 は次周
+    assert [t.id for t in tasks] == ["T-002", "T-003", "T-004"]  # with max_parallel=3, T-005 is next iteration
 
 
 def test_plan_batch_none_when_no_frontier() -> None:
@@ -73,9 +73,9 @@ _CONFIG = (
 )
 
 _TASKS = """tasks:
-  - {id: T-001, title: 基盤, kind: foundation, blockedBy: [], status: todo, test: make test}
-  - {id: T-002, title: 葉A, kind: parallel, blockedBy: [T-001], status: todo, test: make test}
-  - {id: T-003, title: 葉B, kind: parallel, blockedBy: [T-001], status: todo, test: make test}
+  - {id: T-001, title: base, kind: foundation, blockedBy: [], status: todo, test: make test}
+  - {id: T-002, title: leaf A, kind: parallel, blockedBy: [T-001], status: todo, test: make test}
+  - {id: T-003, title: leaf B, kind: parallel, blockedBy: [T-001], status: todo, test: make test}
 """
 
 
@@ -107,21 +107,21 @@ def test_dry_run_completes_all_tasks(project: Path) -> None:
 
 
 def test_recovers_stale_in_progress(project: Path) -> None:
-    # 前回の中断で in_progress のまま残ったタスクは起動時に todo へ戻され、再消化される。
-    # 復帰しないと frontier(todo限定) から外れて永久に着手されずデッドロックする。
+    # A task left in in_progress from a previous interruption is reset to todo at startup and re-consumed.
+    # Without recovery it falls out of the frontier (todo-only) and is never started, deadlocking.
     stale = _TASKS.replace(
-        "{id: T-002, title: 葉A, kind: parallel, blockedBy: [T-001], status: todo, test: make test}",
-        "{id: T-002, title: 葉A, kind: parallel, blockedBy: [T-001], status: in_progress, test: make test}",
+        "{id: T-002, title: leaf A, kind: parallel, blockedBy: [T-001], status: todo, test: make test}",
+        "{id: T-002, title: leaf A, kind: parallel, blockedBy: [T-001], status: in_progress, test: make test}",
     )
     (project / ".agentloop" / "state.md").write_text(_STATE.format(tasks="approved"), encoding="utf-8")
     (project / ".agentloop" / "tasks.yaml").write_text(stale, encoding="utf-8")
     rc = build_loop.main(["--dry-run"])
     assert rc == 0
     graph = dag.load(".agentloop/tasks.yaml")
-    assert graph.counts()["done"] == 3  # in_progress だった T-002 も done に到達する
+    assert graph.counts()["done"] == 3  # the previously in_progress T-002 also reaches done
 
 
-# --- 非 dry-run の失敗ハンドリング（git を monkeypatch して擬似） -----------------
+# --- non-dry-run failure handling (git monkeypatched to simulate) -----------------
 
 
 def _provision(project: Path) -> None:
@@ -134,7 +134,7 @@ def _leaf(task_id: str, title: str) -> dag.Task:
 
 
 def test_merge_leaf_conflict_aborts_and_returns_false(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    # work へのマージがコンフリクトしたら merge --abort して False を返す（done にしない）。
+    # If the merge into work conflicts, run merge --abort and return False (do not mark done).
     _provision(project)
     calls: list[list[str]] = []
 
@@ -146,30 +146,30 @@ def test_merge_leaf_conflict_aborts_and_returns_false(project: Path, monkeypatch
 
     monkeypatch.setattr(build_loop, "_run", fake_run)
     orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
-    assert orch.merge_leaf(_leaf("T-002", "葉A"), "build/demo/T-002") is False
-    assert ["git", "merge", "--abort"] in calls  # コンフリクトは abort で巻き戻す
+    assert orch.merge_leaf(_leaf("T-002", "leaf A"), "build/demo/T-002") is False
+    assert ["git", "merge", "--abort"] in calls  # a conflict is rolled back with abort
 
 
 def test_add_worktree_failure_raises_stoploop(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    # worktree add が失敗したら _git 経由で StopLoop を送出し、ループを止めて人へ上げる。
+    # If worktree add fails, raise StopLoop via _git, stopping the loop and raising it to the human.
     _provision(project)
 
     def fake_run(cmd: list[str], cwd: str) -> tuple[int, str]:
         if cmd[:3] == ["git", "worktree", "add"]:
             return 128, "fatal: '.worktrees/T-002' already exists"
-        return 0, ""  # 事前クリーンアップ（remove/branch -D/prune）は rc 無視で no-op
+        return 0, ""  # pre-cleanup (remove/branch -D/prune) is a no-op ignoring rc
 
     monkeypatch.setattr(build_loop, "_run", fake_run)
     orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
     with pytest.raises(build_loop.StopLoop):
-        orch._add_worktree(_leaf("T-002", "葉A"))
+        orch._add_worktree(_leaf("T-002", "leaf A"))
 
 
 def test_consume_parallel_partial_failure_blocks_only_failed(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    # 並列バッチで 1 葉が品質ゲートを通せなくても、成功葉は done までマージされ、
-    # 失敗葉だけ blocked になる（1 葉の失敗が他葉を in_progress に取り残さない）。
+    # Even if one leaf in a parallel batch cannot pass the quality gate, the successful leaves are merged to done
+    # and only the failed leaf becomes blocked (one leaf's failure does not leave other leaves stuck in in_progress).
     _provision(project)
-    monkeypatch.setattr(build_loop, "_run", lambda cmd, cwd: (0, ""))  # git 系は全て成功扱い
+    monkeypatch.setattr(build_loop, "_run", lambda cmd, cwd: (0, ""))  # treat all git calls as success
 
     def fake_run_task(task: dag.Task, cwd: str) -> tuple[bool, str]:
         return (task.id != "T-003"), ("" if task.id != "T-003" else "$ make test (rc=1)")
@@ -177,7 +177,7 @@ def test_consume_parallel_partial_failure_blocks_only_failed(project: Path, monk
     orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
     monkeypatch.setattr(orch, "_run_task_to_done", fake_run_task)
     with pytest.raises(build_loop.StopLoop):
-        orch._consume_parallel([_leaf("T-002", "葉A"), _leaf("T-003", "葉B")])
+        orch._consume_parallel([_leaf("T-002", "leaf A"), _leaf("T-003", "leaf B")])
 
     by_id = {t.id: t.status for t in dag.load(".agentloop/tasks.yaml").tasks}
     assert by_id["T-002"] == "done"

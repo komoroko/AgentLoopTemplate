@@ -1,44 +1,44 @@
-# .agentloop/config.yaml — 確定的オーケストレーションの「唯一のノブ源」
+# .agentloop/config.yaml — the "single source of knobs" for deterministic orchestration
 #
-# scripts/agentloop/build_loop.py（実装ループのオーケストレータ）と
-# scripts/agentloop/gate_guard.py（ゲート機構フック）がこのファイルを読む。並列度・retry・worktree・ゲート強制の
-# 挙動はすべてここで決まる。プロンプト（自然言語）ではなくコードが参照するため、
-# ここを変えると実行の制御フローが確定的に変わる。
+# scripts/agentloop/build_loop.py (the implementation-loop orchestrator) and
+# scripts/agentloop/gate_guard.py (the gate mechanism hook) read this file. The behavior of
+# parallelism, retry, worktree, and gate enforcement is all decided here. Because code (not a
+# natural-language prompt) reads it, changing this deterministically changes the execution control flow.
 
 build:
-  # フロンティア内の独立な葉タスクを同時に何個まで起動するか（worktree 隔離の上限）。
+  # How many independent leaf tasks within the frontier to launch concurrently (the worktree-isolation cap).
   max_parallel: 3
 
   worktree:
-    enabled: true            # false にすると隔離せず work ブランチ上で直列実行する
-    dir: .worktrees          # worktree を作るディレクトリ（.gitignore 済み）
-    branch_pattern: "{branch}/{task_id}"  # 例: build/myproduct/T-003
+    enabled: true            # set false to run serially on the work branch without isolation
+    dir: .worktrees          # the directory to create worktrees in (already .gitignore'd)
+    branch_pattern: "{branch}/{task_id}"  # e.g. build/myproduct/T-003
 
-  # 品質ゲートが fail したときに implementer へ差し戻して再試行する上限。
-  # 超過したタスクは blocked にしてループを止め、人へエスカレーションする。
+  # The cap on sending a task back to implementer to retry when the quality gate fails.
+  # A task that exceeds it is set to blocked, stopping the loop, and escalated to the human.
   retries:
-    test_fix: 2              # make test が red のときの再試行回数
-    check_fix: 2             # make check（lint/format/type）が fail のときの再試行回数
+    test_fix: 2              # number of retries when make test is red
+    check_fix: 2             # number of retries when make check (lint/format/type) fails
 
-  # 確定ゲート判定に使うコマンド。orchestrator が終了コードで pass/fail を判定する。
-  # make の無いプロジェクトにコピーした場合はここを当該プロジェクトのコマンドへ読み替える。
+  # The commands used for the deterministic gate decision. The orchestrator decides pass/fail by exit code.
+  # If copied into a project without make, substitute these with that project's commands.
   quality_gate:
     test_cmd: "make test"
     check_cmd: "make check"
 
   merge:
-    strategy: sequential     # 葉ブランチを done になった順に work へ順次マージする
+    strategy: sequential     # merge leaf branches into work sequentially in the order they became done
 
 gates:
-  # true なら scripts/agentloop/gate_guard.py（PreToolUse フック）が前提ゲート未承認時の
-  # 成果物編集を機構的にブロックする。false で規約層（CLAUDE.md）のみに戻す。
+  # If true, scripts/agentloop/gate_guard.py (the PreToolUse hook) mechanically blocks
+  # deliverable edits while the prerequisite gate is unapproved. Set false to fall back to the convention layer (CLAUDE.md) only.
   enforce_hook: true
 
 github:
-  # tasks.yaml を GitHub Issues へ一方向ミラーする（人向けの可視化）。scripts/agentloop/issue_sync.py
-  # が読む。**既定オフ**＝オフライン安全。true でも gh 不在 / remote 不在なら自動スキップする。
-  # tasks.yaml が常に SSOT で、Issues は読み戻さない射影（確定駆動・オフライン性を保つ）。
+  # One-way-mirror tasks.yaml to GitHub Issues (human-facing visibility). Read by scripts/agentloop/issue_sync.py.
+  # **Off by default** = offline-safe. Even when true, auto-skips if gh / remote is absent.
+  # tasks.yaml is always the SSOT; Issues are a projection that is never read back (preserving deterministic, offline operation).
   enabled: false
-  label: agentloop        # ミラー issue を識別するラベル（このラベルの issue のみ管理対象）
-  close_on_done: true     # status==done のタスクは issue を close する
-  repo: ""                # 空なら gh が origin から推定。owner/repo を指定して固定も可
+  label: agentloop        # the label identifying mirror issues (only issues with this label are managed)
+  close_on_done: true     # close the issue for tasks with status==done
+  repo: ""                # empty: gh infers from origin. Specify owner/repo to fix it explicitly

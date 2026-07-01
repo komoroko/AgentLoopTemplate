@@ -1,48 +1,48 @@
-# 設計 (Design)
+# Design
 
-> `/design` が `docs/10-requirements.md`（承認済み）を起点に生成。
-> 重要な技術選定は **AskUserQuestion で人に決めてもらい**、`docs/decisions/ADR-*.md` に記録する。
-> **ゲート②** で人が承認したら確定。
+> `/design` generates this, starting from `docs/10-requirements.md` (approved).
+> Important technical choices are **decided by the human via AskUserQuestion** and recorded in `docs/decisions/ADR-*.md`.
+> Finalized once a human approves at **gate ②**.
 
-## アーキテクチャ概要
-<!-- 全体構成。コンポーネント図やデータフローを文章/簡易図で -->
+## Architecture overview
+<!-- Overall structure. Component diagram or data flow in prose / a simple diagram -->
 
 
-## 技術スタック（確定したもの）
-| 領域 | 採用 | 根拠(ADR) |
+## Tech stack (finalized)
+| Area | Choice | Rationale (ADR) |
 |------|------|-----------|
-| 言語/ランタイム | | ADR- |
-| 主要ライブラリ | | ADR- |
-| データ永続化 | | ADR- |
-| テスト | | |
+| Language/runtime | | ADR- |
+| Key libraries | | ADR- |
+| Data persistence | | ADR- |
+| Testing | | |
 
-## 各要件の実装方針
+## Implementation approach per requirement
 
-### R-1 → 設計
-- **必要な機能/モジュール**:
-- **実装方法**:
-- **既存で再利用できるもの**:
-- **対応する技術選定**: ADR-
+### R-1 → design
+- **Required features/modules**:
+- **Implementation method**:
+- **Existing assets to reuse**:
+- **Corresponding technical choice**: ADR-
 
-### R-2 → 設計
-- **必要な機能/モジュール**:
-- **実装方法**:
+### R-2 → design
+- **Required features/modules**:
+- **Implementation method**:
 
-<!-- 要件ごとに続ける -->
+<!-- Continue per requirement -->
 
-## 非機能要件の実現方法
-- **性能**:
-- **セキュリティ**:
-- **その他**:
+## How non-functional requirements are met
+- **Performance**:
+- **Security**:
+- **Other**:
 
-## リスク / トレードオフ
-<!-- コスト・工数・運用負荷など、人が判断した観点を残す -->
+## Risks / trade-offs
+<!-- Leave the aspects the human judged: cost, effort, operational load, etc. -->
 -
 
-## 未解決の論点
+## Open questions
 -
 
-## 自己評価（前提・確信度）
-> ゲート②提示時に CLAUDE.md「ゲート自己評価」として人へ伝える。確信度の低い設計箇所を隠さない。
-- **置いた前提**: <要件・既存資産・技術選定について未確認のまま前提にした仮定>
-- **確信度**: 領域別に 高 / 中 / 低（例: アーキ=高 / 技術選定=中 / 非機能=低）。**低い箇所は理由を添える**。
+## Self-assessment (assumptions, confidence)
+> Communicated to the human at gate ② as CLAUDE.md "Gate self-assessment". Do not hide low-confidence design spots.
+- **Assumptions made**: <assumptions taken as given about requirements, existing assets, technical choices>
+- **Confidence**: per area high / medium / low (e.g. architecture=high / technical choices=medium / non-functional=low). **Attach a reason for low spots.**

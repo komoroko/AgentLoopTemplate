@@ -1,49 +1,49 @@
-# 要件定義 (Requirements)
+# Requirements
 
-> `/req` が `docs/00-product-brief.md` を起点に壁打ちして生成・更新する。
-> **ゲート①** で人が承認したら確定。承認後の変更は再承認が必要。
+> `/req` generates/updates this, sounding out from `docs/00-product-brief.md`.
+> Finalized once a human approves at **gate ①**. Changes after approval need re-approval.
 
-## サマリ
-<!-- このプロダクトが提供する価値を3行以内で -->
+## Summary
+<!-- The value this product provides, in 3 lines or fewer -->
 
 
-## 実現したいこと一覧
+## List of things to achieve
 
-各項目は「ユーザーから見て何ができるか」を表す。優先度: Must / Should / Could。
+Each item expresses "what the user can do". Priority: Must / Should / Could.
 
-### R-1: <タイトル>
-- **概要**:
-- **背景 / なぜ必要か**:
-- **優先度**: Must
-- **受入観点（満たせたと言える条件）**:
+### R-1: <title>
+- **Overview**:
+- **Background / why needed**:
+- **Priority**: Must
+- **Acceptance criteria (conditions under which it can be called satisfied)**:
   - [ ]
   - [ ]
 
-### R-2: <タイトル>
-- **概要**:
-- **背景 / なぜ必要か**:
-- **優先度**: Should
-- **受入観点**:
+### R-2: <title>
+- **Overview**:
+- **Background / why needed**:
+- **Priority**: Should
+- **Acceptance criteria**:
   - [ ]
 
-<!-- R-3, R-4... と必要数だけ追加 -->
+<!-- Add R-3, R-4... as many as needed -->
 
-## 非機能要件（観点）
-- **性能**: <例: 主要操作は1秒以内>
-- **セキュリティ**: <例: 機密情報を平文保存しない>
-- **可用性 / 信頼性**:
-- **運用 / 保守性**:
-- **その他**:
+## Non-functional requirements (criteria)
+- **Performance**: <e.g. main operations within 1 second>
+- **Security**: <e.g. do not store secrets in plaintext>
+- **Availability / reliability**:
+- **Operations / maintainability**:
+- **Other**:
 
-## スコープ外（やらないこと）
+## Out of scope (non-goals)
 -
 
-## 未解決の論点
-<!-- 人に確認したい点。ゲート①の前に潰す。 -->
+## Open questions
+<!-- Points to confirm with the human. Resolve before gate ①. -->
 -
 
-## 自己評価（前提・確信度）
-> ゲート①提示時に CLAUDE.md「ゲート自己評価」として人へ伝える。口頭だけにせずここに残す。
-- **置いた前提**: <人に未確認のまま前提にした仮定。外れると要件が崩れる点>
-- **確信度**: 高 / 中 / 低（要件・領域ごとに分けてよい。**低い箇所は理由を添える**）
-- **想定リスク・トレードオフ**:
+## Self-assessment (assumptions, confidence)
+> Communicated to the human at gate ① as CLAUDE.md "Gate self-assessment". Leave it here, not just spoken.
+- **Assumptions made**: <assumptions taken as given without confirming; points where, if wrong, the requirements break>
+- **Confidence**: high / medium / low (may be split per requirement/area; **attach a reason for low spots**)
+- **Anticipated risks / trade-offs**:

@@ -1,48 +1,48 @@
-# テスト計画 (Test Plan)
+# Test Plan
 
-> `/verify` がこの計画に沿って機能テスト（バグ）と非機能要件テストを実行・記録する。
-> **ゲート⑤** で人がリリース可否を判断する材料になる。
+> `/verify` runs and records functional tests (bugs) and non-functional requirement tests following this plan.
+> Material for the human's release decision at **gate ⑤**.
 
-## 1. 機能テスト（要件の充足確認）
+## 1. Functional tests (requirement satisfaction)
 
-各要件の受入観点が満たされているかを確認する。
+Confirm each requirement's acceptance criteria are satisfied.
 
-| 要件 | 確認内容 | 手段（自動/手動） | 結果 | 備考 |
+| Requirement | What to check | Means (auto/manual) | Result | Notes |
 |------|----------|-------------------|------|------|
-| R-1 | | 自動 | ⬜ | |
+| R-1 | | auto | ⬜ | |
 | R-2 | | | ⬜ | |
 
-凡例: ✅ pass / ❌ fail / ⬜ 未実施
+Legend: ✅ pass / ❌ fail / ⬜ not run
 
-## 2. 非機能要件テスト（観点チェックリスト）
+## 2. Non-functional requirement tests (criteria checklist)
 
-> スタック非依存のため観点ベース。プロダクトに合わせて具体化する。
+> Criteria-based since it is stack-independent. Make it concrete for your product.
 
-### 性能
-- [ ] 主要操作の応答時間が要件内
-- [ ] 想定データ量で劣化しない
+### Performance
+- [ ] Main operations' response time within requirement
+- [ ] No degradation at expected data volume
 
-### セキュリティ（`/verify` で必須実行）
-- [ ] **`/security-review`** を実行し、指摘を解消（コード脆弱性レビュー）
-- [ ] **`make audit`** を実行し、依存の既知脆弱性がない（Python: pip-audit / フロント: pnpm audit）
-- [ ] 機密情報の平文保存・ログ出力がない（gitleaks がコミット段階で機構的に防止）
-- [ ] 入力バリデーション / インジェクション対策
+### Security (mandatory in `/verify`)
+- [ ] Run **`/security-review`** and resolve findings (code vulnerability review)
+- [ ] Run **`make audit`** and have no known dependency vulnerabilities (Python: pip-audit / frontend: pnpm audit)
+- [ ] No plaintext storage / log output of secrets (gitleaks mechanically prevents this at the commit stage)
+- [ ] Input validation / injection countermeasures
 
-| 検査 | 結果 | 重大度 | 備考 |
+| Check | Result | Severity | Notes |
 |------|------|--------|------|
 | /security-review | ⬜ | | |
 | make audit (Python) | ⬜ | | |
 | make audit (frontend) | ⬜ | | |
 
-### 信頼性 / 運用
-- [ ] エラー時の挙動が定義通り
-- [ ] ログ・監視に必要な情報が出る
+### Reliability / operations
+- [ ] Behavior on error is as defined
+- [ ] Logs/monitoring emit the necessary information
 
-## 3. 発見した不具合
-| ID | 内容 | 重大度 | 対応タスク | 状態 |
+## 3. Defects found
+| ID | Content | Severity | Task | Status |
 |----|------|--------|-----------|------|
 | | | | | |
 
-## 4. 総合判定（人が記入）
-- **リリース可否**: 保留 / 可 / 条件付き可
-- **残課題**:
+## 4. Overall judgment (filled by the human)
+- **Release decision**: hold / go / conditional go
+- **Remaining issues**:

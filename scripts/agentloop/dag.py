@@ -1,10 +1,10 @@
-"""タスクグラフ(DAG)の確定的な導出ユーティリティ。
+"""Deterministic derivation utilities for the task graph (DAG).
 
-`.agentloop/tasks.yaml` を読み、実行可能フロンティア・実行レイヤ・クリティカルパス・
-fan-out を **blockedBy から決定的に導出** する純粋関数群を提供する。
-scripts/agentloop/build_loop.py（消化順の決定）と /status（`--render`）が共用する。
+Reads `.agentloop/tasks.yaml` and provides pure functions that **deterministically derive from blockedBy**
+the executable frontier, execution layers, critical path, and fan-out.
+Shared by scripts/agentloop/build_loop.py (deciding the consumption order) and /status (`--render`).
 
-導出値（fan-out 等）はファイルに保存しない。常にグラフから計算するため drift しない。
+Derived values (fan-out, etc.) are not saved to the file. They are always computed from the graph, so they never drift.
 """
 
 from __future__ import annotations
@@ -17,29 +17,29 @@ from pathlib import Path
 
 import yaml
 
-# status の取り得る値。done のみが依存解決済みとみなされる。
+# The possible values of status. Only done is considered dependency-satisfied.
 STATUS_VALUES = frozenset({"todo", "in_progress", "blocked", "needs-revision", "done"})
-# STATUS_VALUES の表示順（件数表示・Mermaid 色分けで共用）。
+# The display order of STATUS_VALUES (shared by count display and Mermaid color-coding).
 STATUS_ORDER = ("todo", "in_progress", "blocked", "needs-revision", "done")
 KIND_VALUES = frozenset({"foundation", "parallel", "integration"})
 
-# 要件ID は `R-<番号>`（R-1, R-2, …）。要件/設計ドキュメントとタスクの req で共通の語彙。
-# タスクの req は1トークン全体がこの形であることを load 時に検証する（R1 / Req-1 等の誤記を弾く）。
+# Requirement IDs are `R-<number>` (R-1, R-2, …). Shared vocabulary across requirements/design documents and task `req`.
+# A task's req is validated at load time to ensure the whole token has this form (rejecting typos like R1 / Req-1).
 _REQ_ID_EXACT_RE = re.compile(r"^R-\d+$")
 
 
 def _split_req(req: str) -> list[str]:
-    """req フィールド（"R-1" / "R-1,R-3" / "R-1 R-3"）をトークン列に分解する（カンマ・空白両対応）。"""
+    """Split the req field ("R-1" / "R-1,R-3" / "R-1 R-3") into a token list (comma or whitespace)."""
     return [tok for tok in re.split(r"[,\s]+", req.strip()) if tok]
 
 
 class DagError(ValueError):
-    """tasks.yaml の不整合（循環・未知の依存・重複ID・不正値）を表す。"""
+    """An inconsistency in tasks.yaml (cycle, unknown dependency, duplicate ID, invalid value)."""
 
 
 @dataclass(frozen=True)
 class Task:
-    """tasks.yaml の1タスク。導出値（fan-out 等）は持たない。"""
+    """One task from tasks.yaml. Holds no derived values (fan-out, etc.)."""
 
     id: str
     title: str
@@ -47,8 +47,8 @@ class Task:
     blocked_by: tuple[str, ...] = ()
     status: str = "todo"
     test: str = ""
-    # 表示・ラベル専用のメタ（DAG 導出には使わない）。req=対応要件（例 "R-1" / "R-1,R-3"）、
-    # phase=ライフサイクル工程（requirements|design|build|verify。既定 build）。
+    # Display/label-only metadata (not used for DAG derivation). req=covered requirement (e.g. "R-1" / "R-1,R-3"),
+    # phase=lifecycle phase (requirements|design|build|verify; default build).
     req: str = ""
     phase: str = "build"
 
@@ -59,7 +59,7 @@ class Task:
 
 @dataclass(frozen=True)
 class Graph:
-    """検証済みのタスクDAG。`load`/`from_tasks` 経由でのみ生成する。"""
+    """A validated task DAG. Created only via `load`/`from_tasks`."""
 
     tasks: tuple[Task, ...]
     _by_id: dict[str, Task] = field(default_factory=dict)
@@ -69,21 +69,21 @@ class Graph:
         by_id: dict[str, Task] = {}
         for t in tasks:
             if t.id in by_id:
-                raise DagError(f"タスクIDが重複しています: {t.id}")
+                raise DagError(f"duplicate task ID: {t.id}")
             if t.kind not in KIND_VALUES:
-                raise DagError(f"{t.id}: 不正な kind '{t.kind}'（{sorted(KIND_VALUES)} のいずれか）")
+                raise DagError(f"{t.id}: invalid kind '{t.kind}' (one of {sorted(KIND_VALUES)})")
             if t.status not in STATUS_VALUES:
-                raise DagError(f"{t.id}: 不正な status '{t.status}'（{sorted(STATUS_VALUES)} のいずれか）")
+                raise DagError(f"{t.id}: invalid status '{t.status}' (one of {sorted(STATUS_VALUES)})")
             for tok in _split_req(t.req):
                 if not _REQ_ID_EXACT_RE.match(tok):
-                    raise DagError(f"{t.id}: 不正な req トークン '{tok}'（R-<番号> 形式である必要があります）")
+                    raise DagError(f"{t.id}: invalid req token '{tok}' (must be in R-<number> form)")
             by_id[t.id] = t
         for t in tasks:
             for dep in t.blocked_by:
                 if dep not in by_id:
-                    raise DagError(f"{t.id}: 未知の依存 '{dep}' を参照しています")
+                    raise DagError(f"{t.id}: references unknown dependency '{dep}'")
                 if dep == t.id:
-                    raise DagError(f"{t.id}: 自分自身に依存しています")
+                    raise DagError(f"{t.id}: depends on itself")
         graph = cls(tasks=tuple(tasks), _by_id=by_id)
         graph._ensure_acyclic()
         return graph
@@ -92,12 +92,12 @@ class Graph:
         return self._by_id[task_id]
 
     def _ensure_acyclic(self) -> None:
-        # Kahn 法で全ノードを取り出せなければ循環している。
+        # If Kahn's algorithm cannot extract every node, there is a cycle.
         if len(self._topo_order()) != len(self.tasks):
-            raise DagError("依存グラフに循環があります（DAG ではありません）")
+            raise DagError("the dependency graph has a cycle (it is not a DAG)")
 
     def _topo_order(self) -> list[str]:
-        """決定的なトポロジカル順（同位は id 昇順）。循環時は取り出せた分のみ返す。"""
+        """A deterministic topological order (ties by ascending id). On a cycle, returns only what was extracted."""
         indegree = {t.id: len(t.blocked_by) for t in self.tasks}
         dependents = self._dependents_map()
         ready = sorted(tid for tid, d in indegree.items() if d == 0)
@@ -110,31 +110,32 @@ class Graph:
                 indegree[child] -= 1
                 if indegree[child] == 0:
                     newly.append(child)
-            # 決定性のため毎回ソートして取り込む。
+            # Re-sort each time for determinism.
             ready = sorted(ready + newly)
         return order
 
     def _dependents_map(self) -> dict[str, list[str]]:
-        """各タスク -> それに直接依存する（被依存）タスクIDのリスト。"""
+        """Each task -> the list of task IDs that directly depend on it (its dependents)."""
         dependents: dict[str, list[str]] = {t.id: [] for t in self.tasks}
         for t in self.tasks:
             for dep in t.blocked_by:
                 dependents[dep].append(t.id)
         return dependents
 
-    # ---- 導出 -------------------------------------------------------------
+    # ---- derivation -------------------------------------------------------
 
     def fan_out(self) -> dict[str, int]:
-        """各タスクの被依存数（直接そのタスクを待っているタスクの数）。"""
+        """The dependent count of each task (how many tasks are directly waiting on it)."""
         return {tid: len(children) for tid, children in self._dependents_map().items()}
 
     def dependents_closure(self, seed_ids: list[str]) -> set[str]:
-        """seed タスク群の **推移的被依存**（直接・間接にそれらに依存する全タスク）を返す。
+        """Return the **transitive dependents** of the seed tasks (those depending on them, directly or indirectly).
 
-        差し戻し（/revise）でのタスク影響分析に使う。上流変更で直接影響するタスクを seed に与えると、
-        それに連なる下流タスクが漏れなく再レビュー対象として上がる。**seed 自身は結果から除外する**
-        （相互依存で seed が別 seed の下流に来ても除外。seed=直接影響、戻り値=その先の波及、という排他集合）。
-        未知の seed ID は無視する（呼び出し側で検証済みを想定）。
+        Used for task impact analysis in a roll back (/revise). Give the directly-affected tasks of an upstream
+        change as seeds, and the downstream tasks chained to them are surfaced for re-review exhaustively.
+        **The seeds themselves are excluded from the result** (a seed is excluded even if it ends up downstream
+        of another seed via mutual dependency; seed=direct impact, return value=ripple beyond, a disjoint set).
+        Unknown seed IDs are ignored (assume the caller has validated).
         """
         dependents = self._dependents_map()
         result: set[str] = set()
@@ -148,12 +149,12 @@ class Graph:
         return result - set(seed_ids)
 
     def frontier(self) -> list[Task]:
-        """今すぐ着手できる todo（status==todo かつ blockedBy が全て done）。id 昇順。"""
+        """todo startable right now (status==todo and all blockedBy are done). Ascending id."""
         result = [t for t in self.tasks if t.status == "todo" and all(self.get(dep).is_done for dep in t.blocked_by)]
         return sorted(result, key=lambda t: t.id)
 
     def layers(self) -> list[list[str]]:
-        """構造的な実行レイヤ。レイヤ深さ = 依存の最長段数。各レイヤ内は id 昇順。"""
+        """Structural execution layers. Layer depth = longest dependency chain length. Within a layer, ascending id."""
         depth: dict[str, int] = {}
         for tid in self._topo_order():
             deps = self.get(tid).blocked_by
@@ -162,7 +163,7 @@ class Graph:
         return [sorted(tid for tid, d in depth.items() if d == level) for level in range(max_depth + 1)]
 
     def critical_path(self) -> list[str]:
-        """最長チェーン（ノード数最大の依存経路）。同長は id 昇順で決定的に1本選ぶ。"""
+        """The longest chain (dependency path with the most nodes). Ties pick one deterministically by ascending id."""
         length: dict[str, int] = {}
         pred: dict[str, str | None] = {}
         for tid in self._topo_order():
@@ -184,9 +185,9 @@ class Graph:
         return list(reversed(path))
 
     def order_frontier(self) -> list[Task]:
-        """最適消化順に並べたフロンティア。
+        """The frontier ordered by optimal consumption.
 
-        優先度: ①基盤・高 fan-out → ②クリティカルパス上 → ③その他。同点は id 昇順で決定的。
+        Priority: ① foundation / high fan-out → ② on the critical path → ③ the rest. Ties deterministic by ascending id.
         """
         fan = self.fan_out()
         on_critical = set(self.critical_path())
@@ -201,7 +202,7 @@ class Graph:
         )
 
     def counts(self) -> dict[str, int]:
-        """status 別の件数。"""
+        """Counts by status."""
         result = {s: 0 for s in STATUS_VALUES}
         for t in self.tasks:
             result[t.status] += 1
@@ -210,12 +211,12 @@ class Graph:
 
 def _task_from_raw(raw: dict[str, object]) -> Task:
     if not isinstance(raw, dict):
-        raise DagError(f"タスクはマッピング（id/title/... を持つ要素）である必要があります: {raw!r}")
+        raise DagError(f"a task must be a mapping (an element with id/title/...): {raw!r}")
     if "id" not in raw:
-        raise DagError(f"id の無いタスクがあります: {raw!r}")
+        raise DagError(f"there is a task with no id: {raw!r}")
     blocked = raw.get("blockedBy", []) or []
     if not isinstance(blocked, list):
-        raise DagError(f"{raw['id']}: blockedBy はリストである必要があります")
+        raise DagError(f"{raw['id']}: blockedBy must be a list")
     return Task(
         id=str(raw["id"]),
         title=str(raw.get("title", "")),
@@ -229,47 +230,47 @@ def _task_from_raw(raw: dict[str, object]) -> Task:
 
 
 def load(path: str | Path = ".agentloop/tasks.yaml") -> Graph:
-    """tasks.yaml を読み込み、検証済みの Graph を返す。"""
+    """Load tasks.yaml and return a validated Graph."""
     text = Path(path).read_text(encoding="utf-8")
     data = yaml.safe_load(text) or {}
     raw_tasks = data.get("tasks") or []
     if not isinstance(raw_tasks, list):
-        raise DagError("tasks.yaml の 'tasks' はリストである必要があります")
+        raise DagError("'tasks' in tasks.yaml must be a list")
     return Graph.from_tasks([_task_from_raw(r) for r in raw_tasks])
 
 
 def render(graph: Graph) -> str:
-    """/status 用の確定レンダリング（実行レイヤ・クリティカルパス・フロンティア・件数）。"""
+    """Deterministic rendering for /status (execution layers, critical path, frontier, counts)."""
     lines: list[str] = []
     counts = graph.counts()
-    lines.append("## 実行プラン（tasks.yaml から確定導出）")
+    lines.append("## Execution plan (deterministically derived from tasks.yaml)")
     lines.append("")
-    lines.append("件数: " + " / ".join(f"{s}={counts[s]}" for s in STATUS_ORDER))
+    lines.append("Counts: " + " / ".join(f"{s}={counts[s]}" for s in STATUS_ORDER))
     lines.append("")
-    lines.append("### 実行レイヤ（同一レイヤ内は並列可能）")
+    lines.append("### Execution layers (within a layer, parallel is possible)")
     layers = graph.layers()
     if layers:
         for i, layer in enumerate(layers):
             lines.append(f"- L{i}: {', '.join(layer)}")
     else:
-        lines.append("- （タスクなし）")
+        lines.append("- (no tasks)")
     lines.append("")
     critical = graph.critical_path()
-    lines.append("### クリティカルパス（最長チェーン）")
-    lines.append("- " + (" → ".join(critical) if critical else "（タスクなし）"))
+    lines.append("### Critical path (longest chain)")
+    lines.append("- " + (" → ".join(critical) if critical else "(no tasks)"))
     lines.append("")
-    lines.append("### 現在の実行可能フロンティア（最適消化順）")
+    lines.append("### Current executable frontier (optimal consumption order)")
     ordered = graph.order_frontier()
     if ordered:
         fan = graph.fan_out()
         for t in ordered:
             lines.append(f"- {t.id} [{t.kind}, fan-out={fan[t.id]}] {t.title}")
     else:
-        lines.append("- （着手可能な todo なし）")
+        lines.append("- (no startable todo)")
     return "\n".join(lines)
 
 
-# status -> Mermaid classDef（fill=状態色、critical=太枠）。クラス名は status の `-` を `_` に。
+# status -> Mermaid classDef (fill=status color, critical=bold border). The class name replaces `-` in status with `_`.
 _STATUS_CLASSDEFS = (
     "classDef todo fill:#eeeeee,stroke:#999999,color:#333333;",
     "classDef in_progress fill:#cfe8ff,stroke:#3b82f6,color:#06325e;",
@@ -281,20 +282,20 @@ _STATUS_CLASSDEFS = (
 
 
 def _node_key(task_id: str) -> str:
-    """Mermaid ノードID用にサニタイズする（`-` は識別子に使えないため `_` へ）。"""
+    """Sanitize for a Mermaid node ID (`-` cannot be used in an identifier, so → `_`)."""
     return task_id.replace("-", "_")
 
 
 def mermaid(graph: Graph) -> str:
-    """依存グラフを Mermaid（graph TD）で確定出力する。status で色分けし、クリティカルパスを太枠で強調。
+    """Deterministically output the dependency graph as Mermaid (graph TD). Color-coded by status, critical path bold.
 
-    GitHub / VS Code / Markdown でそのまま描画される Mermaid テキストを ```mermaid フェンス付きで返す
-    （画像化はオフライン性を崩すため、クライアント側描画に委ねる）。
+    Returns Mermaid text (wrapped in a ```mermaid fence) that renders directly in GitHub / VS Code / Markdown
+    (rasterizing would break offline-ness, so leave rendering to the client).
     """
     tasks = sorted(graph.tasks, key=lambda t: t.id)
     lines: list[str] = ["```mermaid", "graph TD"]
     if not tasks:
-        lines.append('  empty["（タスクなし）"]')
+        lines.append('  empty["(no tasks)"]')
         lines.append("```")
         return "\n".join(lines)
     for t in tasks:
@@ -315,70 +316,70 @@ def mermaid(graph: Graph) -> str:
     return "\n".join(lines)
 
 
-# ---- 整合性トレース（要件→設計→タスク） --------------------------------------
-# 要件ID の糸（R-1, R-2, …）が requirements→design→tasks を切れ目なく貫いているかを
-# 確定的に検査する。fan-out 等と同じく「LLM 裁量に委ねない機械チェック」。/tasks ゲートと
-# CI で回し、人のレビュー前に「全要件が設計とタスクに連結しているか」を可視化する。
+# ---- consistency trace (requirements → design → tasks) -----------------------
+# Deterministically checks whether the requirement-ID thread (R-1, R-2, …) runs unbroken through
+# requirements → design → tasks. Like fan-out, etc., it is "a mechanical check, not left to LLM discretion". Run at
+# the /tasks gate and in CI, it visualizes "is every requirement linked to design and tasks" before the human's review.
 
-# 要件/設計ドキュメントの **見出し行** から要件ID を拾う。見出し行に限定するので本文・
-# コメント中の R-x 言及は拾わない（誤検出を避ける）。見出しの深さ(# の数)には結合しない
-# （H1〜H6 のいずれでも拾う）。1見出しに複数IDを書いた場合（例 `### R-1, R-2 → 共通設計`）は
-# 全IDを拾う。要件文書とタスク req とで同じ抽出規則を共有する。
+# Pick requirement IDs from the **heading lines** of the requirements/design documents. Limited to heading lines, so
+# R-x mentions in body text or comments are not picked up (avoiding false positives). Not tied to heading depth
+# (number of #) (picked from any of H1–H6). When multiple IDs are written in one heading (e.g. `### R-1, R-2 → ...`),
+# all IDs are picked up. The requirements document and task req share the same extraction rule.
 _HEADING_RE = re.compile(r"^[ \t]*#{1,6}\s+(.*)$", re.MULTILINE)
-# 見出しテキスト中の要件ID。前は語中混入を避け（FOOR-1 を弾く）、後は末尾を数字で切らない
-# （R-12 を R-1 と取り違えない）。直後が CJK 等でも拾えるよう末尾 \b は使わない。
+# Requirement IDs within heading text. The lookbehind avoids mid-word matches (rejects FOOR-1), and the lookahead
+# avoids cutting on a trailing digit (does not mistake R-12 for R-1). No trailing \b so it matches before CJK, etc.
 _REQ_ID_RE = re.compile(r"(?<![0-9A-Za-z_])R-\d+(?!\d)")
-# ``` または ~~~ で囲まれたコードフェンス（例示の見出しを実IDと誤認しないため抽出前に除去する）。
+# A code fence delimited by ``` or ~~~ (removed before extraction so example headings are not mistaken for real IDs).
 _CODE_FENCE_RE = re.compile(r"^[ \t]*(```|~~~)[^\n]*$.*?^[ \t]*\1[ \t]*$", re.MULTILINE | re.DOTALL)
 
 
 def parse_requirement_ids(text: str) -> list[str]:
-    """要件/設計ドキュメントの見出しから要件ID を **出現順・重複排除** で抽出する。
+    """Extract requirement IDs from a requirements/design document's headings **in order of appearance, deduplicated**.
 
-    コードフェンス内の例示見出しは実IDと誤認しないよう除去してから走査する。
+    Example headings inside code fences are removed before scanning so they are not mistaken for real IDs.
     """
     body = _CODE_FENCE_RE.sub("", text)
     ids = (rid for heading in _HEADING_RE.findall(body) for rid in _REQ_ID_RE.findall(heading))
-    return list(dict.fromkeys(ids))  # 出現順を保ったまま重複排除
+    return list(dict.fromkeys(ids))  # dedupe while preserving order of appearance
 
 
 def task_req_ids(task: Task) -> list[str]:
-    """タスクの req フィールドを要件ID のリストに分解する（出現順・重複排除）。
+    """Split a task's req field into a list of requirement IDs (order of appearance, deduplicated).
 
-    カンマ・空白いずれの区切りも受ける。各トークンの形式（R-<番号>）は load 時に
-    `Graph.from_tasks` が検証済みなので、ここに来る時点で不正トークンは無い。
+    Accepts either comma or whitespace separators. Each token's form (R-<number>) is already validated at load time by
+    `Graph.from_tasks`, so by the time we get here there are no invalid tokens.
     """
     return list(dict.fromkeys(_split_req(task.req)))
 
 
 @dataclass(frozen=True)
 class TraceReport:
-    """要件→設計→タスクの整合（トレーサビリティ）検査結果。
+    """The result of the requirements → design → tasks consistency (traceability) check.
 
-    要件IDの集合・カバレッジ・未カバーは `req_to_tasks` 一つから導出する（状態を二重化
-    しない）。要件順は `req_to_tasks` の挿入順（=要件ドキュメント出現順）が保持する。
+    The set of requirement IDs, coverage, and uncovered are all derived from `req_to_tasks` alone (no duplicated
+    state). The requirement order is preserved by the insertion order of `req_to_tasks` (= requirements-document order).
     """
 
-    req_to_tasks: dict[str, list[str]]  # 要件ID -> それを実装する build タスクID（要件順 / 値=id昇順）
-    design_checked: bool  # 設計次元を検査したか（False=設計ドキュメント未検査）
-    requirements_missing_design: tuple[str, ...]  # ERROR: 設計に対応節が無い要件（設計検査時のみ）
-    unknown_in_design: tuple[str, ...]  # ERROR: 要件に存在しない R を設計が参照
-    unknown_in_tasks: tuple[tuple[str, str], ...]  # ERROR: 要件に存在しない R をタスクが参照 (task_id, R)
-    tasks_without_req: tuple[str, ...]  # WARN: req 未設定の build タスク
+    req_to_tasks: dict[str, list[str]]  # requirement ID -> build task IDs for it (req order, values asc id)
+    design_checked: bool  # whether the design dimension was checked (False=design document not checked)
+    requirements_missing_design: tuple[str, ...]  # ERROR: requirements with no design section (when design checked)
+    unknown_in_design: tuple[str, ...]  # ERROR: design references an R not in the requirements
+    unknown_in_tasks: tuple[tuple[str, str], ...]  # ERROR: a task references an R not in the requirements (task_id, R)
+    tasks_without_req: tuple[str, ...]  # WARN: a build task with no req set
 
     @property
     def requirement_ids(self) -> tuple[str, ...]:
-        """要件ドキュメント由来の要件ID（出現順）。"""
+        """Requirement IDs from the requirements document (order of appearance)."""
         return tuple(self.req_to_tasks)
 
     @property
     def uncovered_requirements(self) -> tuple[str, ...]:
-        """ERROR: 担う build タスクが無い要件。"""
+        """ERROR: requirements with no build task covering them."""
         return tuple(r for r, tasks in self.req_to_tasks.items() if not tasks)
 
     @property
     def ok(self) -> bool:
-        """ERROR が一つも無ければ True（WARN は ok を崩さない）。"""
+        """True if there is not a single ERROR (a WARN does not break ok)."""
         return not (
             self.uncovered_requirements
             or self.requirements_missing_design
@@ -388,12 +389,12 @@ class TraceReport:
 
 
 def trace(graph: Graph, requirement_ids: list[str], design_ids: list[str] | None) -> TraceReport:
-    """要件ID・設計ID・タスクの req を突合し、糸の途切れ（カバレッジ欠落・宙吊り参照）を検出する。
+    """Cross-check requirement IDs, design IDs, and task req, detecting thread breaks (coverage gaps, dangling refs).
 
-    カバレッジは **build 工程のタスク**だけで判定する（verify 由来のバグ修正等は実装計画
-    ではないのでカバレッジに数えない）。要件に存在しない R の参照（宙吊り）は工程に関わらず
-    ERROR。design_ids=None なら設計ドキュメント不在として設計次元の検査をスキップする
-    （早期フェーズや設計差し戻し直後でも落ちないように）。
+    Coverage is judged by **build-phase tasks** only (a bug fix originating from verify, etc., is not an implementation
+    plan, so it does not count toward coverage). A reference to an R not in the requirements is an ERROR (any phase).
+    If design_ids=None, treat the design document as absent and skip the design dimension
+    (so it does not fail in an early phase or right after a design roll back).
     """
     req_set = set(requirement_ids)
     req_to_tasks: dict[str, list[str]] = {r: [] for r in requirement_ids}
@@ -402,15 +403,15 @@ def trace(graph: Graph, requirement_ids: list[str], design_ids: list[str] | None
     for t in sorted(graph.tasks, key=lambda t: t.id):
         ids = task_req_ids(t)
         if not ids:
-            # build 工程のタスクは対応要件を持つべき（verify 由来のバグ修正等は対象外）。
+            # A build-phase task should have a covered requirement (a verify-originated bug fix, etc., is excluded).
             if t.phase == "build":
                 tasks_without_req.append(t.id)
             continue
         for r in ids:
             if r not in req_set:
-                unknown_in_tasks.append((t.id, r))  # 宙吊り参照（工程に関わらず ERROR）
+                unknown_in_tasks.append((t.id, r))  # dangling reference (ERROR regardless of phase)
             elif t.phase == "build":
-                req_to_tasks[r].append(t.id)  # カバレッジは build タスクのみ
+                req_to_tasks[r].append(t.id)  # coverage is build tasks only
 
     requirements_missing_design: tuple[str, ...] = ()
     unknown_in_design: tuple[str, ...] = ()
@@ -430,47 +431,47 @@ def trace(graph: Graph, requirement_ids: list[str], design_ids: list[str] | None
 
 
 def render_trace(report: TraceReport) -> str:
-    """整合性トレースの人間向けレポート（カバレッジ表＋検出一覧）を確定出力する。"""
-    lines: list[str] = ["## 整合性トレース（要件→設計→タスク）", ""]
-    lines.append("### 要件カバレッジ")
+    """Deterministically output a human-facing report of the consistency trace (coverage table + findings list)."""
+    lines: list[str] = ["## Consistency trace (requirements → design → tasks)", ""]
+    lines.append("### Requirement coverage")
     if report.req_to_tasks:
         missing_design = set(report.requirements_missing_design)
         for r, tasks in report.req_to_tasks.items():
             design_mark = ""
             if report.design_checked:
-                design_mark = "設計✗ " if r in missing_design else "設計✓ "
-            task_mark = ", ".join(tasks) if tasks else "（タスク無し）"
+                design_mark = "design✗ " if r in missing_design else "design✓ "
+            task_mark = ", ".join(tasks) if tasks else "(no task)"
             lines.append(f"- {r}: {design_mark}{task_mark}")
     else:
-        lines.append("- （要件ID が見つかりません）")
+        lines.append("- (no requirement IDs found)")
     lines.append("")
 
     problems: list[str] = []
     for r in report.uncovered_requirements:
-        problems.append(f"ERROR 要件 {r}: 担うタスクが無い（要件が実装計画に落ちていない）")
+        problems.append(f"ERROR requirement {r}: no task covering it (not in the implementation plan)")
     for r in report.requirements_missing_design:
-        problems.append(f"ERROR 要件 {r}: 設計に対応節が無い（要件→設計が途切れている）")
+        problems.append(f"ERROR requirement {r}: no corresponding design section (requirements → design is broken)")
     for d in report.unknown_in_design:
-        problems.append(f"ERROR 設計が未知の要件 {d} を参照（要件に存在しない）")
+        problems.append(f"ERROR design references unknown requirement {d} (not in the requirements)")
     for tid, r in report.unknown_in_tasks:
-        problems.append(f"ERROR タスク {tid}: 未知の要件 {r} を参照（要件に存在しない）")
+        problems.append(f"ERROR task {tid}: references unknown requirement {r} (not in the requirements)")
     for tid in report.tasks_without_req:
-        problems.append(f"WARN  タスク {tid}: req 未設定（build タスクは対応要件を持つべき）")
+        problems.append(f"WARN  task {tid}: no req set (a build task should have a covered requirement)")
 
-    lines.append("### 検出")
+    lines.append("### Findings")
     if problems:
         lines.extend(f"- {p}" for p in problems)
     else:
-        lines.append("- 問題なし（全要件が設計とタスクに連結している）")
+        lines.append("- No problems (every requirement is linked to design and tasks)")
     return "\n".join(lines)
 
 
 def _read_optional(path: str | Path) -> str | None:
-    """存在すれば本文を返し、無ければ None（トレースの次元スキップ用）。
+    """Return the contents if it exists, else None (for skipping a trace dimension).
 
-    読めない（不在・ディレクトリ・権限不足など）はすべて None に畳む。--trace 分岐の
-    呼び出しは load() を包む try/except の外にあるため、ここで OSError を握らないと
-    要件/設計パスのディレクトリ指定・権限エラーが未捕捉のまま main を抜けてしまう。
+    Any unreadable case (absent, a directory, insufficient permissions, etc.) collapses to None. The --trace branch's
+    call is outside the try/except wrapping load(), so without catching OSError here, a directory path or permission
+    error on the requirements/design path would escape main uncaught.
     """
     try:
         return Path(path).read_text(encoding="utf-8")
@@ -478,35 +479,35 @@ def _read_optional(path: str | Path) -> str | None:
         return None
 
 
-# --trace の既定ドキュメントパス（明示指定が無いときに使う）。
+# Default document paths for --trace (used when not explicitly specified).
 _DEFAULT_REQUIREMENTS = "docs/10-requirements.md"
 _DEFAULT_DESIGN = "docs/20-design.md"
 
 
 def _run_trace(graph: Graph, *, requirements_path: str, design_path: str, require_design: bool) -> int:
-    """--trace の実行と終了コード決定。
+    """Run --trace and decide the exit code.
 
-    終了コードは原因を区別する（CI/ゲートが「何が問題か」を取り違えないため）:
-      0 = 整合OK
-      1 = トレース欠落（未カバー要件・宙吊り参照など。**要対応**）
-      2 = 検査を実施できない（要件ドキュメント不在/要件ID 0件、または設計必須なのに設計不在）
+    The exit code distinguishes the cause (so CI/gates do not mistake "what is wrong"):
+      0 = consistent
+      1 = trace missing (uncovered requirement, dangling reference, etc.; **needs attention**)
+      2 = cannot run the check (requirements document absent / 0 requirement IDs, or design required but absent)
     """
     req_text = _read_optional(requirements_path)
     if req_text is None:
-        print(f"error: 要件ドキュメントが読めません: {requirements_path}", file=sys.stderr)
+        print(f"error: cannot read the requirements document: {requirements_path}", file=sys.stderr)
         return 2
     requirement_ids = parse_requirement_ids(req_text)
     if not requirement_ids:
         print(
-            f"error: 要件ドキュメントから要件ID(R-N)を抽出できません: {requirements_path}"
-            "（見出し行に `### R-1: ...` のように書く）",
+            f"error: cannot extract requirement IDs (R-N) from the requirements document: {requirements_path}"
+            " (write them in heading lines like `### R-1: ...`)",
             file=sys.stderr,
         )
         return 2
     design_text = _read_optional(design_path)
     if design_text is None and require_design:
         print(
-            f"error: 設計ドキュメントが読めません: {design_path}（--require-design 指定時は必須）",
+            f"error: cannot read the design document: {design_path} (required when --require-design is given)",
             file=sys.stderr,
         )
         return 2
@@ -514,48 +515,48 @@ def _run_trace(graph: Graph, *, requirements_path: str, design_path: str, requir
     report = trace(graph, requirement_ids, design_ids)
     print(render_trace(report))
     if design_ids is None:
-        print(f"note: 設計 {design_path} が無いため設計カバレッジは未検査", file=sys.stderr)
+        print(f"note: design {design_path} is absent, so design coverage was not checked", file=sys.stderr)
     return 0 if report.ok else 1
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="tasks.yaml から DAG を確定導出する")
-    parser.add_argument("path", nargs="?", default=".agentloop/tasks.yaml", help="tasks.yaml のパス")
+    parser = argparse.ArgumentParser(description="deterministically derive the DAG from tasks.yaml")
+    parser.add_argument("path", nargs="?", default=".agentloop/tasks.yaml", help="path to tasks.yaml")
     group = parser.add_mutually_exclusive_group()
-    group.add_argument("--render", action="store_true", help="/status 用のサマリを出力")
-    group.add_argument("--mermaid", action="store_true", help="依存グラフを Mermaid（graph TD）で出力")
-    group.add_argument("--frontier", action="store_true", help="最適消化順のフロンティアID を改行区切りで出力")
-    group.add_argument("--validate", action="store_true", help="DAG の整合のみ検証（出力なし・異常時は非0）")
+    group.add_argument("--render", action="store_true", help="output the summary for /status")
+    group.add_argument("--mermaid", action="store_true", help="output the dependency graph as Mermaid (graph TD)")
+    group.add_argument("--frontier", action="store_true", help="output optimal-order frontier IDs, newline-separated")
+    group.add_argument("--validate", action="store_true", help="validate DAG consistency only (non-zero on error)")
     group.add_argument(
         "--impacted",
         metavar="IDS",
-        help="差し戻し影響分析: 指定タスク（カンマ区切り）の推移的被依存を改行区切りで出力",
+        help="roll-back impact: transitive dependents of the given tasks (comma-separated), newline-separated",
     )
     group.add_argument(
         "--trace",
         action="store_true",
-        help="要件→設計→タスクの整合を検査（終了コード 0=OK / 1=欠落 / 2=検査不能）",
+        help="check requirements → design → tasks consistency (exit code 0=OK / 1=missing / 2=cannot check)",
     )
     parser.add_argument(
         "--requirements",
         default=None,
-        help=f"要件ドキュメントのパス（--trace 用。既定 {_DEFAULT_REQUIREMENTS}）",
+        help=f"path to the requirements document (for --trace; default {_DEFAULT_REQUIREMENTS})",
     )
     parser.add_argument(
         "--design",
         default=None,
-        help=f"設計ドキュメントのパス（--trace 用。既定 {_DEFAULT_DESIGN}。無ければ設計次元はスキップ）",
+        help=f"design document path (for --trace; default {_DEFAULT_DESIGN}; skipped if absent)",
     )
     parser.add_argument(
         "--require-design",
         action="store_true",
-        help="--trace で設計ドキュメント不在を許さず終了2にする（設計承認済みフェーズのゲート用）",
+        help="with --trace, do not allow a missing design document and exit 2 (for the design-approved phase gate)",
     )
     args = parser.parse_args(argv)
 
     if not args.trace and (args.requirements is not None or args.design is not None or args.require_design):
         print(
-            "warning: --requirements/--design/--require-design は --trace でのみ有効（無視します）",
+            "warning: --requirements/--design/--require-design are valid only with --trace (ignoring)",
             file=sys.stderr,
         )
 
@@ -563,13 +564,13 @@ def main(argv: list[str] | None = None) -> int:
         graph = load(args.path)
     except (OSError, DagError, yaml.YAMLError) as exc:
         print(f"error: {exc}", file=sys.stderr)
-        # --trace のときは「検査不能」を 2 で表す（tasks.yaml が読めない＝トレース不成立）。
+        # With --trace, represent "cannot check" with 2 (tasks.yaml unreadable = trace not established).
         return 2 if args.trace else 1
 
     if args.frontier:
         print("\n".join(t.id for t in graph.order_frontier()))
     elif args.validate:
-        pass  # load 成功＝検証OK
+        pass  # load success = validation OK
     elif args.mermaid:
         print(mermaid(graph))
     elif args.impacted is not None:
@@ -582,7 +583,7 @@ def main(argv: list[str] | None = None) -> int:
             design_path=args.design or _DEFAULT_DESIGN,
             require_design=args.require_design,
         )
-    else:  # --render（既定）
+    else:  # --render (default)
         print(render(graph))
     return 0
 
