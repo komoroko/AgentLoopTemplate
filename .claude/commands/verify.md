@@ -1,26 +1,28 @@
 ---
-description: フェーズ5 テスト工程。機能テストと非機能要件テストを実行・記録し、ゲート⑤でリリース可否を仰ぐ。
+description: Phase 5 test phase. Run and record functional and non-functional tests, and ask for the release decision at gate ⑤.
 ---
 
-# /verify — テスト工程フェーズ
+# /verify — Test phase
 
-## 前提ゲート確認（最初に必ず）
-`.agentloop/state.md` を読み、`gates.build == approved` を確認する。
-未承認なら作業せず「先に `/build` を完了・承認してください」と伝えて止まる。
+## Prerequisite gate check (always first)
+Read `.agentloop/state.md` and confirm `gates.build == approved`.
+If unapproved, do not work; say "please complete and approve `/build` first" and stop.
 
-## 手順
-1. `docs/test/test-plan.md` と `docs/10-requirements.md`（受入観点・非機能要件）を読む。
-2. **機能テスト**: 各要件の受入観点が満たされるか確認する。自動テストを実行し、足りない検証は追加する。結果を test-plan の表に記録。
-3. **非機能要件テスト**: 観点チェックリスト（性能・セキュリティ・信頼性/運用）を確認する。セキュリティは必須で以下を実行し、結果を test-plan のセキュリティ欄に記録する:
-   - **`/security-review`** — コード全体の脆弱性レビュー。
-   - **`make audit`** — 依存の脆弱性監査（Python/フロント）。
-4. 発見した不具合・脆弱性は test-plan の不具合表に記録。重大なものは新規タスク化し、`state.md` に追記して `/build` に差し戻す判断を人に促す（その新規タスクは `phase: verify`）。**要件・設計レベルの問題**（仕様の誤りなど）なら、人の判断で `/revise` を使い該当工程（requirements/design）へ差し戻す。
-5. **ゲート⑤**: テスト結果サマリ（pass/fail、残課題、非機能の状況）を提示し、人にリリース可否を判断してもらう。
-   - **自己評価を必ず併せて提示**する（CLAUDE.md「ゲート自己評価」）: リリースの確信度・検証が手薄な観点・残存リスク・人に判断を仰ぐ点。
+## Steps
+1. Read `docs/test/test-plan.md` and `docs/10-requirements.md` (acceptance points, non-functional requirements).
+2. **Functional tests**: confirm each requirement's acceptance points are satisfied. Run the automated tests and add any missing verification. Record results in the test-plan table.
+3. **Non-functional requirement tests**: check the criteria checklist (performance, security, reliability/operations). Security is mandatory — run the following and record results in the test-plan's security column:
+   - **`/security-review`** — a vulnerability review of the whole codebase.
+   - **`make audit`** — a dependency vulnerability audit (Python/frontend).
+4. Record discovered defects/vulnerabilities in the test-plan's defect table. Make serious ones into new tasks, append them to `state.md`, and prompt the human to decide on rolling back to `/build` (those new tasks are `phase: verify`). For **requirement/design-level problems** (a spec error, etc.), use `/revise` at the human's discretion to roll back to the relevant phase (requirements/design).
+5. **Gate ⑤**: present the test result summary (pass/fail, remaining issues, non-functional status) and have the human decide on release.
+   - **Always present a self-assessment as well** (CLAUDE.md "Gate self-assessment"): release confidence, thinly-verified aspects, residual risks, points for the human to decide.
 
-## 承認されたら
-- `state.md` の `gates.release` を `approved`、`current_phase` を `done`、`updated_at` を更新。
-- **振り返りを残す（メタ認知の回収）**: `docs/retrospective.md` を生成・更新する。
-  - needs-revision / blocked を「上流(要件/設計)の不備 / 実装都合 / 外部要因」に分類し、上流への学びをまとめる。
-  - `state.md` の「エスカレーション・ログ」「先回り作業ログ」の**未回収項目（解決欄・採否欄の空白）を closeする**（書きっぱなしにしない）。
-- 完了を報告する。
+Write the deliverable (`docs/test/test-plan.md`) in the user's language.
+
+## Once approved
+- Set `gates.release` to `approved`, `current_phase` to `done`, and update `updated_at` in `state.md`.
+- **Leave a retrospective (recovering the metacognition)**: generate/update `docs/retrospective.md`.
+  - Classify needs-revision / blocked into "upstream (requirements/design) defect / implementation convenience / external factor" and summarize the lessons for upstream.
+  - **Close the open items** of the "escalation log" and "speculative work log" in `state.md` (blank resolution/adoption columns) — do not leave them dangling.
+- Report completion.

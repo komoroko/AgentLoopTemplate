@@ -16,9 +16,9 @@ dependencies = [
 # extra-index-url = ["https://download.pytorch.org/whl/cu128"]
 
 [tool.uv]
-# アップロードから1週間以内の新しいバージョンはインストール対象から除外する。
-# 公開直後のリリース(供給網リスク・初期不具合)を避けるためのクールダウン。
-# 値は現在時刻からの相対期間で、解決(uv lock / uv sync)のたびにローリング評価される。
+# Exclude versions newer than one week from upload from being installed.
+# A cooldown to avoid just-published releases (supply-chain risk, early-release bugs).
+# The value is relative to the current time and re-evaluated rolling on each resolve (uv lock / uv sync).
 exclude-newer = "1 week"
 
 [tool.ruff]
@@ -51,9 +51,9 @@ dev = [
     "ruff>=0.15.16",
     "mkdocs-material>=9.7.6",
     "mkdocstrings[python]>=1.0.4",
-    # scripts/agentloop/ の確定オーケストレーション（dag.py・build_loop.py・gate_guard.py）が
-    # config.yaml / tasks.yaml / state.md を読むのに使う。テンプレート基盤ツール専用のため
-    # プロダクト本体の依存ではなく dev に置く（types-pyyaml は型スタブ）。
+    # Used by scripts/agentloop/ deterministic orchestration (dag.py, build_loop.py, gate_guard.py)
+    # to read config.yaml / tasks.yaml / state.md. Since it is only for the template's foundational tools,
+    # it goes in dev rather than the product's own dependencies (types-pyyaml is the type stub).
     "pyyaml>=6.0",
     "types-pyyaml>=6.0.12.20260518",
 ]

@@ -1,32 +1,32 @@
 ---
-description: 差し戻し。実装中などに上流(要件/設計)の不備が確定したら、ゲートを連鎖して戻しタスク影響を分析する。
+description: Roll back. When an upstream (requirements/design) defect is confirmed (e.g. during implementation), reset gates in a chain and analyze task impact.
 ---
 
-# /revise — 上流への差し戻し（後戻りループ）
+# /revise — Roll back upstream (the going-back loop)
 
-実装/検証中に「設計、さらには要件まで戻って再検討」が必要になったときの**一級操作**。
-ゲートを人が開けるのと対称に、**承認を巻き戻すのも人の権限**。ここはその手続き。
+The **first-class operation** for when "go back to the design, even back to the requirements, and reconsider" becomes necessary during implementation/verification.
+Symmetric with the human opening a gate, **rewinding approval is also the human's privilege**. This is that procedure.
 
-## いつ使うか
-- `/build` の implementer が `needs-revision`（要件/設計の不備）を報告し、ループが停止したとき。
-- `/verify` で要件・設計レベルの問題（仕様の誤り等）が判明したとき。
-- 小さな実装都合の手戻りは対象外（それはタスク内の修正で済ます）。**上流の成果物を直す必要があるときだけ**使う。
+## When to use it
+- When `/build`'s implementer reports `needs-revision` (a requirements/design defect) and the loop has stopped.
+- When `/verify` reveals a requirement/design-level problem (a spec error, etc.).
+- Small implementation-convenience rework is out of scope (handle that with a fix within the task). Use this **only when an upstream deliverable needs fixing**.
 
-## 手順
-1. **不備の確定と人の判断を確認**: エスカレーション・ログ／needs-revision の論点を提示し、「どこまで戻すか（要件か設計か）」を人に決めてもらう。勝手に戻さない。
-2. 戻し先 phase（`requirements` | `design` | `tasks` | `build`）と理由を **1回の AskUserQuestion** で確定する。
-3. **ゲートを連鎖で戻す**（確定処理）:
+## Steps
+1. **Confirm the defect and the human's decision**: present the escalation log / needs-revision points and have the human decide "how far to go back (requirements or design)". Do not roll back on your own.
+2. Finalize the target phase (`requirements` | `design` | `tasks` | `build`) and the reason **in a single AskUserQuestion**.
+3. **Reset gates in a chain** (deterministic process):
    ```
-   make revise ARGS="--to <phase> --reason '<理由>'"
+   make revise ARGS="--to <phase> --reason '<reason>'"
    ```
-   `scripts/agentloop/revise.py` が戻し先以降のゲートを**連鎖して** `pending` にし、`current_phase` を戻し、差し戻しログに記録する。これで「上流 pending なのに下流 approved」という stale 承認の不整合を防ぐ。以後の編集順は `gate_guard` が機構的に強制する（例: design pending の間は `docs/tasks/**`・実装コードの編集を deny）。`--dry-run` で計画だけ確認できる。
-4. **タスク影響分析（破棄せず reconcile）**: 上流を直す前に、既存タスクへの波及を確定的に洗い出す。
-   - 上流変更で**直接影響する**タスクを特定し、`uv run python scripts/agentloop/dag.py --impacted T-00x,T-00y` で**推移的被依存（下流）**を漏れなく展開する。
-   - 各タスクを分類: **keep**（影響なし）/ **modify**（要修正 → `needs-revision`）/ **obsolete**（不要 → 印を残し削除しない）/ **new**（追加）。
-   - **`done` だが無効化された**タスクは `todo` に戻す（再実装が要る）。実装済みコードはブランチに残るが計画上は再対象。
-5. **作り直しへ案内**: 「次は `/<phase>`」。再実行する `/design`・`/tasks` の中で上記 reconcile を反映し、ゲート③で**影響範囲（impacted の一覧と分類）**を人に提示して再承認を得る。
+   `scripts/agentloop/revise.py` resets every gate from the target onward to `pending` **in a chain**, moves `current_phase` back, and records it in the roll-back log. This prevents the stale-approval inconsistency of "upstream pending while downstream approved". The editing order from then on is mechanically enforced by `gate_guard` (e.g. while design is pending, edits to `docs/tasks/**` and implementation code are denied). Use `--dry-run` to check just the plan.
+4. **Task impact analysis (reconcile, do not discard)**: before fixing upstream, deterministically enumerate the ripple to existing tasks.
+   - Identify the tasks **directly affected** by the upstream change and fully expand their **transitive dependents (downstream)** with `uv run python scripts/agentloop/dag.py --impacted T-00x,T-00y`.
+   - Classify each task: **keep** (unaffected) / **modify** (needs fixing → `needs-revision`) / **obsolete** (no longer needed → mark, do not delete) / **new** (added).
+   - A task that is **`done` but invalidated** reverts to `todo` (needs reimplementation). The implemented code stays on the branch but is back in scope plan-wise.
+5. **Guide to rebuilding**: "next is `/<phase>`". Reflect the above reconcile inside the re-run of `/design`/`/tasks`, and present the **impact (the impacted list and classification)** to the human at gate ③ for re-approval.
 
-## 原則
-- **承認の巻き戻しは人の権限**。`/revise` は人の明示判断の下でのみ実行する。
-- **タスクは捨てて作り直さない**。既存タスクを修正後の上流と突き合わせ、影響を確定計算（`--impacted`）で漏れなく拾う。
-- 真実は `.agentloop/state.md`（ゲート・差し戻しログ）と `.agentloop/tasks.yaml`（タスク）。
+## Principles
+- **Rewinding approval is the human's privilege.** `/revise` is run only under the human's explicit judgment.
+- **Do not discard and rebuild tasks.** Reconcile existing tasks against the revised upstream, and pick up the impact exhaustively with deterministic computation (`--impacted`).
+- The truth is `.agentloop/state.md` (gates, roll-back log) and `.agentloop/tasks.yaml` (tasks).

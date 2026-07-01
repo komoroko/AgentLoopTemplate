@@ -1,26 +1,26 @@
-"""実装フェーズの確定的オーケストレータ（/build の駆動エンジン）。
+"""The deterministic orchestrator for the implementation phase (the engine driving /build).
 
-スケジューリングの制御フロー（どのタスクを・何並列で・どの順にマージし・いつ止めるか）を
-**プロンプトではなくコード**で確定的に回す。各タスクの実装コード内容そのものは LLM
-（implementer を `claude -p` でヘッドレス起動）が書くため非確定だが、
+It runs the scheduling control flow (which tasks, at what parallelism, in what merge order, and when to stop)
+deterministically **in code, not a prompt**. Each task's implementation code content itself is non-deterministic
+because an LLM writes it (the implementer launched headless with `claude -p`), but
 
-  - フロンティア計算 / 消化順 / 最大並列数 / worktree 隔離 / マージ順
-  - `make test` → `make check` の終了コードによる pass/fail ゲート判定
-  - retry 上限 / blocked 判定 / 停止条件 / 前提ゲートの確認
+  - frontier computation / consumption order / max parallelism / worktree isolation / merge order
+  - the pass/fail gate decision by the exit code of `make test` → `make check`
+  - the retry limit / blocked decision / stop condition / prerequisite-gate check
 
-はすべてこのスクリプトが確定的に決める。`.agentloop/config.yaml` が唯一のノブ源。
+are all decided deterministically by this script. `.agentloop/config.yaml` is the single source of knobs.
 
-確定化の境界:
-  - 確定（ここ）: 制御フロー・並列・マージ・ゲート判定・停止。
-  - 非確定（LLM）: 実装コードと /code-review・/simplify の指摘内容
-    → 「ゲートを通るまで retry、駄目なら blocked」で吸収する。
+The determinism boundary:
+  - Deterministic (here): control flow, parallelism, merge, gate decision, stopping.
+  - Non-deterministic (LLM): implementation code and the findings of /code-review and /simplify
+    → absorbed by "retry until the gate passes, else blocked".
 
-このスクリプトは **gates.build を approved にしない**（ゲートは人だけが開ける）。
-全タスク done 後はサマリを出して停止し、人の承認（/build のゲート④）に委ねる。
+This script **does not set gates.build to approved** (only the human opens a gate).
+After all tasks are done it prints a summary and stops, leaving it to the human's approval (/build's gate ④).
 
-使い方:
-  uv run python scripts/agentloop/build_loop.py            # 実行
-  uv run python scripts/agentloop/build_loop.py --dry-run  # claude/git を呼ばず制御フローのみ確認
+Usage:
+  uv run python scripts/agentloop/build_loop.py            # run
+  uv run python scripts/agentloop/build_loop.py --dry-run  # check just the control flow without calling claude/git
 """
 
 from __future__ import annotations
@@ -42,7 +42,7 @@ LOG_PATH = ".agentloop/build-loop.log"
 
 
 class StopLoop(Exception):
-    """ループを止めて人へエスカレーションする要因。code は終了コード。"""
+    """A cause to stop the loop and escalate to the human. `code` is the exit code."""
 
     def __init__(self, message: str, code: int = 1) -> None:
         super().__init__(message)
@@ -79,7 +79,7 @@ class Config:
         )
 
 
-# --- state.md / tasks.yaml の読み書き --------------------------------------
+# --- reading/writing state.md / tasks.yaml ---------------------------------
 
 
 def read_frontmatter(path: str = STATE_PATH) -> dict[str, object]:
@@ -97,13 +97,13 @@ def work_branch(front: dict[str, object]) -> str:
     branch = front.get("branch")
     if isinstance(branch, str) and branch and not branch.startswith("<"):
         return branch
-    # state.md 未記入なら現在のブランチを使う。
+    # If state.md is not filled in, use the current branch.
     rc, out = _run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=".")
     return out.strip() if rc == 0 else "HEAD"
 
 
 def set_task_status(task_id: str, status: str, tasks_path: str = TASKS_PATH) -> None:
-    """tasks.yaml の1タスクの status を更新して書き戻す（機械データなので round-trip 可）。"""
+    """Update one task's status in tasks.yaml and write it back (machine data, so round-trip is fine)."""
     data = yaml.safe_load(Path(tasks_path).read_text(encoding="utf-8")) or {}
     tasks = data.get("tasks") or []
     for t in tasks:
@@ -111,8 +111,8 @@ def set_task_status(task_id: str, status: str, tasks_path: str = TASKS_PATH) -> 
             t["status"] = status
             break
     header = (
-        "# .agentloop/tasks.yaml — タスクグラフ(DAG)の機械可読 SSOT（build_loop が status を更新）\n"
-        "# スキーマ（id/title/kind/blockedBy/status/test/req/phase）: .claude/commands/tasks.md / CLAUDE.md 参照\n"
+        "# .agentloop/tasks.yaml — machine-readable SSOT of the task graph (DAG) (build_loop updates status)\n"
+        "# schema (id/title/kind/blockedBy/status/test/req/phase): see .claude/commands/tasks.md / CLAUDE.md\n"
     )
     Path(tasks_path).write_text(header + yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
 
@@ -123,7 +123,7 @@ def log_escalation(message: str) -> None:
     print(f"[escalation] {message}", file=sys.stderr)
 
 
-# --- サブプロセス -----------------------------------------------------------
+# --- subprocess -------------------------------------------------------------
 
 
 def _run(cmd: list[str], cwd: str) -> tuple[int, str]:
@@ -131,16 +131,16 @@ def _run(cmd: list[str], cwd: str) -> tuple[int, str]:
     return proc.returncode, proc.stdout + proc.stderr
 
 
-# --- スケジューリング（純粋・テスト対象） -----------------------------------
+# --- scheduling (pure, under test) ------------------------------------------
 
 
 def plan_batch(graph: dag.Graph, max_parallel: int) -> tuple[str, list[dag.Task]] | None:
-    """次に着手するバッチを確定的に決める。
+    """Deterministically decide the next batch to start.
 
-    返り値:
-      ("serial", [基盤タスク1個])   — 基盤・高 fan-out は直列に確定する
-      ("parallel", [葉タスク 〜max_parallel]) — 独立葉は隔離して並列起動
-      None                          — フロンティアが空
+    Returns:
+      ("serial", [one foundation task])       — foundation / high fan-out is finalized serially
+      ("parallel", [leaf tasks, ≤max_parallel]) — independent leaves are launched in parallel in isolation
+      None                                    — the frontier is empty
     """
     ordered = graph.order_frontier()
     if not ordered:
@@ -151,7 +151,7 @@ def plan_batch(graph: dag.Graph, max_parallel: int) -> tuple[str, list[dag.Task]
     return ("parallel", ordered[:max_parallel])
 
 
-# --- オーケストレータ本体 ---------------------------------------------------
+# --- orchestrator body ------------------------------------------------------
 
 
 class Orchestrator:
@@ -162,34 +162,35 @@ class Orchestrator:
         self.front = read_frontmatter()
         self.branch = work_branch(self.front)
 
-    # -- implementer 起動と品質ゲート --
+    # -- implementer launch and quality gate --
 
     def _implementer_prompt(self, task: dag.Task, failure_log: str) -> str:
         prompt = (
-            f"あなたは implementer サブエージェントです。担当タスクは {task.id}「{task.title}」のみ。\n"
-            f"docs/tasks/{task.id}.md と docs/20-design.md・既存コードを読み、"
-            ".claude/agents/implementer.md のプロトコルに従って実装してください。\n"
-            f"自動テストを書いて `{self.config.test_cmd}` を green に、`{self.config.check_cmd}` をクリーンにする。\n"
-            "完了したら変更をこのブランチにコミットする（オーケストレーション状態 .agentloop/ は除外）:\n"
-            f"  git add -A -- . ':(exclude).agentloop' && git commit -m \"{task.id}: <要約>\"\n"
-            "スコープ外（他タスクの領域）には手を出さない。要件/設計の不備を見つけたら勝手に直さず報告する。"
+            f'You are the implementer subagent. Your only task is {task.id} "{task.title}".\n'
+            f"Read docs/tasks/{task.id}.md, docs/20-design.md, and the existing code, and implement "
+            "following the protocol in .claude/agents/implementer.md.\n"
+            f"Write automated tests and get `{self.config.test_cmd}` green and `{self.config.check_cmd}` clean.\n"
+            "When done, commit your changes to this branch (excluding the orchestration state .agentloop/):\n"
+            f"  git add -A -- . ':(exclude).agentloop' && git commit -m \"{task.id}: <summary>\"\n"
+            "Do not reach outside scope (other tasks' territory). If you find a requirements/design defect, "
+            "do not fix it on your own — report it."
         )
         if failure_log:
-            prompt += f"\n\n前回の品質ゲート失敗を解消してください:\n{failure_log[-3000:]}"
+            prompt += f"\n\nResolve the previous quality-gate failure:\n{failure_log[-3000:]}"
         return prompt
 
     def _invoke_implementer(self, task: dag.Task, cwd: str, failure_log: str) -> None:
         if self.dry_run:
-            print(f"    [dry-run] implementer 起動 (cwd={cwd}) task={task.id}")
+            print(f"    [dry-run] launch implementer (cwd={cwd}) task={task.id}")
             return
         rc, out = _run([self.claude_bin, "-p", self._implementer_prompt(task, failure_log)], cwd=cwd)
         if rc != 0:
-            raise StopLoop(f"{task.id}: implementer の起動に失敗 (rc={rc})\n{out[-1000:]}")
+            raise StopLoop(f"{task.id}: failed to launch implementer (rc={rc})\n{out[-1000:]}")
 
     def _quality_gate(self, task: dag.Task, cwd: str) -> tuple[bool, str]:
-        """make test → make check を実行し終了コードで確定判定する。"""
+        """Run make test → make check and decide deterministically by exit code."""
         if self.dry_run:
-            print(f"    [dry-run] 品質ゲート: {self.config.test_cmd} / {self.config.check_cmd} (cwd={cwd})")
+            print(f"    [dry-run] quality gate: {self.config.test_cmd} / {self.config.check_cmd} (cwd={cwd})")
             return True, ""
         for cmd in (self.config.test_cmd, self.config.check_cmd):
             rc, out = _run(cmd.split(), cwd=cwd)
@@ -198,11 +199,11 @@ class Orchestrator:
         return True, ""
 
     def _run_task_to_done(self, task: dag.Task, cwd: str) -> tuple[bool, str]:
-        """1タスクを implementer 実装＋品質ゲートで done まで持っていく。
+        """Take one task to done via implementer implementation + quality gate.
 
-        返り値 (ok, log)。ok=False なら retry 上限超過（呼び出し側で blocked 化）。
+        Returns (ok, log). ok=False means the retry limit was exceeded (the caller marks it blocked).
         """
-        # test_fix と check_fix の大きい方を総試行回数の上限とする。
+        # Use the larger of test_fix and check_fix as the total attempt limit.
         attempts = max(self.config.test_fix, self.config.check_fix) + 1
         failure_log = ""
         for i in range(attempts):
@@ -210,7 +211,7 @@ class Orchestrator:
             ok, failure_log = self._quality_gate(task, cwd)
             if ok:
                 return True, ""
-            print(f"    品質ゲート fail（試行 {i + 1}/{attempts}）: {task.id}")
+            print(f"    quality gate fail (attempt {i + 1}/{attempts}): {task.id}")
         return False, failure_log
 
     # -- worktree / merge --
@@ -221,7 +222,7 @@ class Orchestrator:
             return
         rc, out = _run(["git", *args], cwd=cwd)
         if rc != 0:
-            raise StopLoop(f"git {' '.join(args)} に失敗 (rc={rc})\n{out[-1000:]}")
+            raise StopLoop(f"git {' '.join(args)} failed (rc={rc})\n{out[-1000:]}")
 
     def _branch_for(self, task: dag.Task) -> str:
         return self.config.branch_pattern.format(branch=self.branch, task_id=task.id)
@@ -230,15 +231,15 @@ class Orchestrator:
         return str(Path(self.config.worktree_dir) / task.id)
 
     def _add_worktree(self, task: dag.Task) -> str:
-        """葉タスク用の worktree を作り branch 名を返す。再実行衝突を避けるため既存を先に掃除する。
+        """Create a worktree for a leaf task and return the branch name. Clean up any existing one first.
 
-        .git の index.lock 競合を避けるため、worktree 作成は **メインスレッドで直列に**呼ぶこと。
+        To avoid .git index.lock contention, worktree creation must be called **serially on the main thread**.
         """
         branch = self._branch_for(task)
         path = self._worktree_path(task)
         if not self.dry_run:
-            # 前回の中断で残った worktree/ブランチを掃除する（無ければ無視）。これが無いと
-            # 再実行時に `git worktree add -b` がパス/ブランチ衝突で失敗する。
+            # Clean up any worktree/branch left from a previous interruption (ignore if absent). Without this,
+            # `git worktree add -b` would fail on a path/branch collision on re-run.
             _run(["git", "worktree", "remove", "--force", path], cwd=".")
             _run(["git", "branch", "-D", branch], cwd=".")
             _run(["git", "worktree", "prune"], cwd=".")
@@ -246,10 +247,10 @@ class Orchestrator:
         return branch
 
     def _safe_run_task(self, task: dag.Task, cwd: str) -> tuple[bool, str]:
-        """_run_task_to_done をスレッドから安全に呼ぶ。例外は (False, log) に変換する。
+        """Call _run_task_to_done safely from a thread. Convert exceptions to (False, log).
 
-        1葉の失敗（implementer 起動失敗など）が並列バッチ全体を巻き込み、他タスクを
-        in_progress のまま取り残してデッドロックさせないようにするため。
+        So that one leaf's failure (e.g. implementer launch failure) does not drag down the whole parallel batch and
+        leave other tasks stuck in in_progress, deadlocking.
         """
         try:
             return self._run_task_to_done(task, cwd=cwd)
@@ -257,25 +258,25 @@ class Orchestrator:
             return False, str(exc)
 
     def merge_leaf(self, task: dag.Task, branch: str) -> bool:
-        """葉ブランチを work へマージし worktree を撤去する。コンフリクト時は abort して False。"""
+        """Merge a leaf branch into work and remove the worktree. On a conflict, abort and return False."""
         if self.dry_run:
-            print(f"    [dry-run] git merge --no-ff {branch} → {self.branch}、worktree 撤去")
+            print(f"    [dry-run] git merge --no-ff {branch} → {self.branch}, remove worktree")
             return True
         rc, out = _run(["git", "merge", "--no-ff", "--no-edit", branch], cwd=".")
         if rc != 0:
             _run(["git", "merge", "--abort"], cwd=".")
-            log_escalation(f"{task.id}: work へのマージでコンフリクト。手動解消が必要。\n{out[-500:]}")
+            log_escalation(f"{task.id}: conflict merging into work. Manual resolution needed.\n{out[-500:]}")
             return False
         self._git(["worktree", "remove", "--force", self._worktree_path(task)])
         return True
 
-    # -- メインループ --
+    # -- main loop --
 
     def _recover_in_progress(self) -> None:
-        """前回の中断で in_progress のまま残ったタスクを todo へ戻す（クラッシュ復帰）。
+        """Reset tasks left in in_progress from a previous interruption back to todo (crash recovery).
 
-        frontier は status==todo のみを拾うため、in_progress を残したまま再実行すると
-        そのタスクは永久に着手されずループがデッドロックする。起動時に一度だけ巻き戻す。
+        Since the frontier only picks status==todo, re-running with in_progress left over would mean
+        that task is never started and the loop deadlocks. Roll back once at startup.
         """
         try:
             graph = dag.load(TASKS_PATH)
@@ -284,12 +285,12 @@ class Orchestrator:
         for t in graph.tasks:
             if t.status == "in_progress":
                 set_task_status(t.id, "todo")
-                print(f"  [recover] {t.id}: in_progress → todo に戻しました（前回の中断から再開）")
+                print(f"  [recover] {t.id}: reset in_progress → todo (resuming from a previous interruption)")
 
     def run(self) -> int:
         gates = self.front.get("gates") or {}
         if not (isinstance(gates, dict) and gates.get("tasks") == "approved"):
-            print("gates.tasks が approved ではありません。先に /tasks を承認してください。", file=sys.stderr)
+            print("gates.tasks is not approved. Approve /tasks first.", file=sys.stderr)
             return 2
 
         self._recover_in_progress()
@@ -302,9 +303,9 @@ class Orchestrator:
 
             batch = plan_batch(graph, self.config.max_parallel)
             if batch is None:
-                # フロンティア空＆未完あり ＝ 全て blocked/needs-revision。人へ。
+                # frontier empty & there are unfinished ones = all blocked/needs-revision. To the human.
                 blocked = [t.id for t in graph.tasks if t.status in ("blocked", "needs-revision")]
-                log_escalation(f"実行可能タスクが無く {unfinished} 件が未完（{', '.join(blocked)}）。人の介入が必要。")
+                log_escalation(f"No runnable tasks and {unfinished} unfinished ({', '.join(blocked)}). Help needed.")
                 return 1
 
             mode, tasks = batch
@@ -317,35 +318,35 @@ class Orchestrator:
             except StopLoop as exc:
                 print(str(exc), file=sys.stderr)
                 return exc.code
-            # 1バッチ終えるごとにループ先頭で再計算（チェーン組み直し）。
+            # Recompute at the top of the loop after each batch (reassemble the chain).
 
     def _consume_serial(self, tasks: list[dag.Task]) -> None:
-        """基盤タスク等を work ブランチ上で直列に確定する。"""
+        """Finalize foundation tasks etc. serially on the work branch."""
         for task in tasks:
             set_task_status(task.id, "in_progress")
             print(f"  [serial] {task.id} {task.title}")
             ok, log = self._run_task_to_done(task, cwd=".")
             if not ok:
                 set_task_status(task.id, "blocked")
-                log_escalation(f"{task.id}: 品質ゲートを規定回数で通せず blocked。\n{log[-500:]}")
-                raise StopLoop(f"{task.id} が blocked。人の介入が必要。", code=1)
+                log_escalation(f"{task.id}: could not pass the quality gate within the limit; blocked.\n{log[-500:]}")
+                raise StopLoop(f"{task.id} is blocked. Human intervention needed.", code=1)
             if not self.dry_run:
-                # タスク差分のみ確定。.agentloop/ のオーケストレーション状態（tasks.yaml の
-                # status 等）は per-task コミットに含めない（1コミット=1タスクを保つ）。
+                # Finalize the task diff only. The .agentloop/ orchestration state (tasks.yaml status, etc.)
+                # is not included in the per-task commit (keeping one commit = one task).
                 _run(["git", "add", "-A", "--", ".", ":(exclude).agentloop"], cwd=".")
-                # implementer がコミット済みでなければここで確定（差分があれば。無ければ no-op）。
+                # If the implementer has not committed, finalize here (if there is a diff; no-op otherwise).
                 _run(["git", "commit", "-m", f"{task.id}: {task.title}"], cwd=".")
             set_task_status(task.id, "done")
 
     def _consume_parallel(self, tasks: list[dag.Task]) -> None:
-        """独立葉を worktree 隔離で最大 max_parallel 並列実装し、id 昇順で決定的に work へマージ。
+        """Implement independent leaves worktree-isolated up to max_parallel, then merge in ascending id order.
 
-        worktree 作成はメインスレッドで直列に行い（.git の index.lock 競合を避ける）、
-        実装のみを並列化する。
+        Worktree creation is done serially on the main thread (avoiding .git index.lock contention);
+        only the implementation is parallelized.
         """
         for task in tasks:
             set_task_status(task.id, "in_progress")
-        # worktree 作成は直列（git のロック競合回避）。実装はこの後で並列に回す。
+        # Worktree creation is serial (avoid git lock contention). The implementation is run in parallel after.
         branches = {task.id: self._add_worktree(task) for task in tasks}
         results: dict[str, tuple[bool, str]] = {}
         with ThreadPoolExecutor(max_workers=max(1, self.config.max_parallel)) as pool:
@@ -354,12 +355,12 @@ class Orchestrator:
                 results[task.id] = future.result()
 
         blocked_any = False
-        # 決定的に id 昇順でマージ（sequential join）。
+        # Merge deterministically in ascending id order (sequential join).
         for task in sorted(tasks, key=lambda t: t.id):
             ok, log = results[task.id]
             if not ok:
                 set_task_status(task.id, "blocked")
-                log_escalation(f"{task.id}: 品質ゲートを規定回数で通せず blocked。\n{log[-500:]}")
+                log_escalation(f"{task.id}: could not pass the quality gate within the limit; blocked.\n{log[-500:]}")
                 blocked_any = True
                 continue
             if self.merge_leaf(task, branches[task.id]):
@@ -368,29 +369,29 @@ class Orchestrator:
                 set_task_status(task.id, "blocked")
                 blocked_any = True
         if blocked_any:
-            raise StopLoop("blocked タスクが発生。人の介入が必要。", code=1)
+            raise StopLoop("A blocked task occurred. Human intervention needed.", code=1)
 
     def _present_gate4(self, graph: dag.Graph) -> int:
-        print("\n========== 全タスク done（ゲート④） ==========")
+        print("\n========== all tasks done (gate ④) ==========")
         print(dag.render(graph))
         print(
-            "\n次の手順（人の承認が必要）:\n"
-            "  1. /security-review を実行し、作業ブランチの差分の脆弱性を解消する。\n"
-            "  2. 実装サマリをレビューし、問題なければ /build のゲート④で承認する。\n"
-            "  ※ このスクリプトは gates.build を approved にしません（ゲートは人だけが開けます）。"
+            "\nNext steps (human approval needed):\n"
+            "  1. Run /security-review and resolve vulnerabilities in the work-branch diff.\n"
+            "  2. Review the implementation summary and, if fine, approve at /build's gate ④.\n"
+            "  * This script does not set gates.build to approved (only the human opens a gate)."
         )
         return 0
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="実装フェーズの確定的オーケストレータ")
-    parser.add_argument("--dry-run", action="store_true", help="claude/git を呼ばず制御フローのみ実行")
-    parser.add_argument("--claude-bin", default="claude", help="ヘッドレス起動に使う claude CLI（既定: claude）")
+    parser = argparse.ArgumentParser(description="the deterministic orchestrator for the implementation phase")
+    parser.add_argument("--dry-run", action="store_true", help="run only the control flow without calling claude/git")
+    parser.add_argument("--claude-bin", default="claude", help="the claude CLI for headless launch (default: claude)")
     args = parser.parse_args(argv)
     try:
         config = Config.load()
     except (OSError, yaml.YAMLError) as exc:
-        print(f"config 読み込みエラー: {exc}", file=sys.stderr)
+        print(f"config load error: {exc}", file=sys.stderr)
         return 1
     return Orchestrator(config, dry_run=args.dry_run, claude_bin=args.claude_bin).run()
 

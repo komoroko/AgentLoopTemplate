@@ -1,69 +1,69 @@
 ---
-description: フェーズ4 実装。/loop でタスクを自律消化。各タスクはテスト green を次へ進む条件にする。
+description: Phase 4 implementation. Autonomously consume tasks with /loop. Each task's condition to advance is green tests.
 ---
 
-# /build — 実装フェーズ（loop 自律消化）
+# /build — Implementation phase (autonomous loop consumption)
 
-## 前提ゲート確認（最初に必ず）
-`.agentloop/state.md` を読み、`gates.tasks == approved` を確認する。
-未承認なら作業せず「先に `/tasks` を承認してください」と伝えて止まる。
+## Prerequisite gate check (always first)
+Read `.agentloop/state.md` and confirm `gates.tasks == approved`.
+If unapproved, do not work; say "please approve `/tasks` first" and stop.
 
-## 実行モード
+## Execution modes
 
-### A. 確定実行（推奨）— `make build-loop`
-スケジューリングを確定駆動するオーケストレータ `scripts/agentloop/build_loop.py` に委ねる。**どのタスクを・何並列で・どの順にマージし・いつ止めるか**をコードが `.agentloop/config.yaml` と `tasks.yaml` から確定的に決める（LLM 裁量に依存しない）:
+### A. Deterministic execution (recommended) — `make build-loop`
+Delegate scheduling to the deterministic orchestrator `scripts/agentloop/build_loop.py`. Code decides **which tasks, at what parallelism, in what merge order, and when to stop** deterministically from `.agentloop/config.yaml` and `tasks.yaml` (not relying on LLM discretion):
 
 ```
-make build-loop              # 実行
-make build-loop ARGS=--dry-run   # claude/git を呼ばず制御フローだけ確認
+make build-loop              # run
+make build-loop ARGS=--dry-run   # check just the control flow without calling claude/git
 ```
 
-オーケストレータが確定的に行うこと: フロンティア計算 → 消化順整列（基盤・高 fan-out→クリティカルパス）→ 基盤は work 直列・独立葉は `git worktree` 隔離で**最大 `max_parallel`（既定3）並列** → 各タスクで `make test`/`make check` を**終了コードでゲート判定**（fail は `retries` 上限まで implementer へ差し戻し、超過で `blocked`）→ done 順に work へ sequential マージ → 再計算。冒頭で `gates.tasks == approved` をコード判定し、未承認なら何もせず停止する。**`gates.build` は人だけが開ける**（スクリプトは触らない）。
+What the orchestrator does deterministically: compute the frontier → sort the consumption order (foundation/high-fan-out → critical path) → run foundation serially on work, independent leaves isolated with `git worktree` at **up to `max_parallel` (default 3) in parallel** → for each task, **gate-decide `make test`/`make check` by exit code** (a fail is sent back to implementer up to the `retries` limit; over the limit → `blocked`) → merge into work sequentially in done order → recompute. At the start it code-checks `gates.tasks == approved` and stops doing nothing if unapproved. **Only the human opens `gates.build`** (the script does not touch it).
 
-非確定なのは各タスクの実装コード内容のみ。それは「ゲートを通るまで retry、駄目なら blocked」で吸収される。
+The only non-deterministic part is each task's implementation code content. That is absorbed by "retry until the gate passes, else blocked".
 
-### B. 対話ループ — `/loop /build`
-オーケストレータを使わず、下記「ループ1周の手順」を会話で回す。挙動はモード A と同一（同じ DoD・同じ並列/マージ規則）。A が使えない状況の代替。
+### B. Interactive loop — `/loop /build`
+Run the "one loop iteration" below in conversation without the orchestrator. Behavior is identical to mode A (same DoD, same parallelism/merge rules). An alternative when A is unavailable.
 
 ```
 /loop /build
 ```
 
-## ループ1周の手順
-1. **実行プランを（再）導出**する。`state.md` のタスク表(DAG)から:
-   - **実行可能フロンティア** = 依存(blockedBy)が全て done で status が todo のタスク群を求める。
-   - 候補が無く未完タスクが全て blocked/needs-revision なら、人にエスカレーションして **ループを止める**。
-   - 全タスク done なら下の「全完了時」へ。
-2. フロンティア内の **消化順を最適化**する（最適消化）。優先度高い順:
-   1. **基盤・高 fan-out**（被依存が多いタスク）— 早く済ますほど多くの並列タスクが解放される。
-   2. **クリティカルパス上**のタスク — 全体所要を縮める。
-   3. 残りは任意。
-3. 選んだタスクを `in_progress` にする（state.md とタスク票）。種別に応じて **隔離実行** する:
-   - **基盤・高 fan-out タスク**: 多くが依存するため worktree に隔離せず **work ブランチ上で直列**に実装・確定する（隔離すると派生先が古い基盤の上で作業してしまうため）。
-   - **並列・独立な葉タスク**: タスクごとに `implementer` サブエージェントを **`isolation: "worktree"` で起動**し、各自専用の worktree（= 別ブランチ・別作業ディレクトリ）で実装＋テスト作成・実行〜品質ゲートまで完結させる。互いのファイル編集が衝突しない。**同時に起動するのは最大3並列**まで（フロンティアにそれ以上あれば次周で消化）。各 implementer には「自分の作業ブランチ名と、その上のコミット」を報告させる（後段のマージに使う）。
-     - **注意（分岐元）**: 対話モード B の `isolation: "worktree"` は **work ブランチではなく既定ブランチ（main 等）から分岐**することがある。その場合 worktree に**先行タスク（基盤）の成果物が無い**ため、implementer はまず **work ブランチを取り込んで**（`git merge`／可能なら `--ff-only`、work ブランチ側は変更しない）依存を満たしてから実装する。確定実行モード A（`build_loop.py`）は `self.branch` から分岐するためこの手当ては不要。
-   - 互いに依存するものは直列。`git subtree` ではなく **`git worktree`（Agent の `isolation: "worktree"`）** を使う。subtree は外部リポジトリの取り込み用で、並行作業の分離には不適。
-4. **テスト green を確認**。red のままなら implementer に修正させる。規定回数で解決不能なら `blocked` にしてログへ記録。
-5. **品質ゲート（タスク完了の定義 / DoD）を通す**。下記をすべて満たして初めて `done`:
-   1. **`/simplify`** — 再利用・簡素化・効率化の整理を適用する。
-   2. **`/code-review`** — バグ・正しさ観点でレビューし、指摘（must-fix）を implementer に戻して修正する。
-   3. **`make check`**（= `make pre-commit` + `make pre-push`。lint / format / type-check を全て実行）を走らせ、**エラーが無くなるまで修正して再実行**する。自動修正で済むもの（ruff/format 等）は再実行で解消、mypy・tsc 等の手動修正もここで対応。規定回数で解決不能なら `blocked` にして人へ。
-   4. **実起動 smoke（実行可能成果物のみ）** — CLI・サーバ等は、実際に起動して主要コマンド/エンドポイントが動くことを最小限確認する。テスト green でも起動経路（パッケージング・エントリポイント・依存解決）が壊れていることがあり、それを build 内で捕捉する。起動できない場合は `blocked` か、起動容易性を満たすタスクを追加する。
-   - `make` が無いプロジェクトでは、当該プロジェクトの lint/format/typecheck コマンドに読み替える。
-6. 上記とテスト green を**すべて満たしたら** `status: done`。いずれか未達のタスクを done にしない。
-   - **隔離実行した葉タスクは done 時に work ブランチへマージ（join）する**。完了後に **id 昇順で決定的に** 順次マージし、コンフリクトはこのマージ点で implementer に解消させる。マージ完了が **統合タスクのフロンティア解放トリガ** になる（DAG の依存と一致）。マージ後、不要になった worktree/ブランチは片付ける（`isolation: "worktree"` は変更が無ければ自動クリーンアップ）。
-   - per-task のコミットは `T-NNN: <要約>` 形式（1コミット=1タスク）。worktree 内のコミットがそのまま当該タスクの差分になり、`/simplify`・`/code-review` のレビュー範囲が当該タスクに限定される。
-7. implementer が **要件/設計の不備** を報告したら `needs-revision`、**新たな依存やタスク分割が判明**したらタスク表の DAG（依存/被依存）を更新する。いずれもログへ記録し、上流の不備は人に上げる（勝手に直さない）。**上流の成果物を直す必要がある場合は、人の判断で `/revise <phase>` を使い要件/設計へ差し戻す**（ゲートを連鎖して `pending` に戻し、`dag.py --impacted` でタスク波及を分析）。
-8. **チェーンを組み直す**: 完了・変更を反映して `state.md` の実行プラン（レイヤ／クリティカルパス／フロンティア）を再計算し、`updated_at` を更新して次の周へ。新たに解放されたタスクが次周のフロンティアに乗る。
+## One loop iteration
+1. **(Re-)derive the execution plan.** From the task table (DAG) in `state.md`:
+   - **Executable frontier** = the set of tasks whose `blockedBy` are all done and whose status is todo.
+   - If there are no candidates and all incomplete tasks are blocked/needs-revision, escalate to the human and **stop the loop**.
+   - If all tasks are done, go to "When all complete" below.
+2. **Optimize the consumption order** within the frontier (optimal consumption). Highest priority first:
+   1. **foundation / high fan-out** (tasks with many dependents) — the sooner done, the more parallel tasks are freed.
+   2. tasks **on the critical path** — shorten the overall duration.
+   3. the rest, in any order.
+3. Set the chosen task to `in_progress` (in state.md and the task ticket). **Run in isolation** per kind:
+   - **foundation / high-fan-out tasks**: since many depend on them, implement and finalize **serially on the work branch** without worktree isolation (isolating would make derivatives work on top of a stale foundation).
+   - **parallel / independent leaf tasks**: per task, **launch the `implementer` subagent with `isolation: "worktree"`** and let it complete implementation + test writing/running through the quality gate in its own dedicated worktree (= separate branch, separate working directory). File edits do not collide. **Launch at most 3 in parallel** (consume more in the next iteration if the frontier has more). Have each implementer report "its own work branch name and the commits on it" (used for the later merge).
+     - **Note (branch base)**: in interactive mode B, `isolation: "worktree"` may **branch from the default branch (main, etc.) rather than the work branch**. In that case the worktree **lacks the deliverables of prerequisite (foundation) tasks**, so the implementer first **pulls in the work branch** (`git merge` / `--ff-only` if possible, without changing the work branch) to satisfy dependencies before implementing. Deterministic mode A (`build_loop.py`) branches from `self.branch`, so this handling is unnecessary.
+   - Run mutually dependent ones serially. Use **`git worktree` (the Agent's `isolation: "worktree"`)**, not `git subtree`. subtree is for importing external repos and is unsuitable for separating concurrent work.
+4. **Confirm tests green.** If still red, have the implementer fix it. If unsolvable within the set number of tries, set `blocked` and record in the log.
+5. **Pass the quality gate (definition of done / DoD).** Only `done` once all of the below are satisfied:
+   1. **`/simplify`** — apply reuse/simplification/efficiency cleanups.
+   2. **`/code-review`** — review for bugs and correctness, return must-fix findings to the implementer to fix.
+   3. Run **`make check`** (= `make pre-commit` + `make pre-push`; runs lint / format / type-check, all of it) and **fix and re-run until there are no errors**. Auto-fixable ones (ruff/format, etc.) resolve on re-run; manual fixes for mypy, tsc, etc. are handled here too. If unsolvable within the set number of tries, set `blocked` and go to the human.
+   4. **Real-launch smoke (runnable deliverables only)** — for CLI, server, etc., minimally confirm it actually launches and the main commands/endpoints work. Tests can be green while the launch path (packaging, entry point, dependency resolution) is broken; this catches that within build. If it cannot launch, set `blocked` or add a task that makes it launchable.
+   - In a project without `make`, substitute that project's lint/format/typecheck commands.
+6. **Once all the above and tests green are satisfied**, set `status: done`. Do not mark a task done while any is unmet.
+   - **Merge (join) an isolated leaf task into the work branch when done.** After completion, merge sequentially **deterministically in ascending id order**, and have the implementer resolve conflicts at this merge point. Completing a merge is the **trigger that frees the frontier for integration tasks** (matching the DAG dependencies). After merging, clean up the now-unneeded worktree/branch (`isolation: "worktree"` auto-cleans if there are no changes).
+   - Per-task commits use the `T-NNN: <summary>` form (one commit = one task). The commits inside the worktree become that task's diff exactly, limiting the review scope of `/simplify`/`/code-review` to that task.
+7. If the implementer reports a **requirements/design defect**, set `needs-revision`; if a **new dependency or task split is discovered**, update the DAG (dependencies/dependents) in the task table. Log both, and raise upstream defects to the human (do not fix on your own). **If an upstream deliverable needs fixing, use `/revise <phase>` at the human's discretion to roll back to requirements/design** (reset the gates in a chain to `pending` and analyze task impact with `dag.py --impacted`).
+8. **Reassemble the chain**: reflect completions/changes, recompute the execution plan (layers / critical path / frontier) in `state.md`, update `updated_at`, and move to the next iteration. Newly freed tasks join the next iteration's frontier.
 
-## 全タスク完了時（ゲート④）
-1. **`/security-review` を必須実行**する。作業ブランチの差分に対し脆弱性をレビューし、must-fix 相当は implementer に戻して修正、判断を要するものは `state.md` のエスカレーション・ログに記録して人へ上げる。重大な未解決があればゲート④を提示しない。
-2. `PushNotification` で人へ承認待ちを通知する。
-   - **（GitHub 連携時のみ）** `make issue-sync` を実行し、各タスクの最新 status（done は close 等）を Issues へ反映する。best-effort で、失敗してもゲートは止めない（`github.enabled: false`／gh・remote 不在なら自動スキップ）。確定オーケストレーションのループ内（`build_loop.py`）には入れない＝ネットワークを確定ループに持ち込まない。
-3. 実装サマリ（完了タスク、追加/変更の要点、テスト結果、**security-review 結果**、未解決）を提示し「実装完了として承認してよいか」を確認する。
-   - **自己評価を必ず併せて提示**する（CLAUDE.md「ゲート自己評価」）: 実装の確信度（テスト網羅の手薄な箇所・回避した難所）・置いた前提・残リスク・人に判断を仰ぐ点。blocked/needs-revision を出した箇所はその顛末も添える。
-4. **承認待ち中**は結果非依存の先回り作業を進めてよい（`state.md` の先回り作業ログに記録）: `docs/test/test-plan.md` の機能テストケース具体化、`make audit` の試走など `/verify` の前倒し準備。実装の作り直しが必要になりうる変更はしない。
-5. 承認されたら `gates.build` を `approved`、`current_phase` を `verify` に更新し「次は `/verify`」と案内する。
+## When all tasks complete (gate ④)
+1. **Mandatorily run `/security-review`.** Review the work-branch diff for vulnerabilities, return must-fix-equivalent findings to the implementer to fix, and record judgment calls in the escalation log of `state.md` for the human. Do not present gate ④ if there is a serious unresolved issue.
+2. Notify the human of the pending approval via `PushNotification`.
+   - **(Only with GitHub integration)** Run `make issue-sync` to reflect each task's latest status (done → close, etc.) to Issues. Best-effort; do not stop the gate if it fails (auto-skips if `github.enabled: false` / gh/remote absent). Do not put it inside the deterministic orchestration loop (`build_loop.py`) = do not bring networking into the deterministic loop.
+3. Present the implementation summary (completed tasks, key additions/changes, test results, **security-review results**, unresolved items) and confirm "may we approve this as implementation-complete?".
+   - **Always present a self-assessment as well** (CLAUDE.md "Gate self-assessment"): implementation confidence (thin test-coverage spots / hard parts avoided), assumptions made, residual risks, points for the human to decide. For spots that produced blocked/needs-revision, add their outcome too.
+4. **While waiting for approval**, you may proceed with outcome-independent speculative work (record in the speculative work log of `state.md`): concretizing functional test cases in `docs/test/test-plan.md`, a trial run of `make audit`, and other `/verify` prep pulled forward. Do not make changes that could require redoing the implementation.
+5. Once approved, set `gates.build` to `approved`, `current_phase` to `verify`, and point to "next is `/verify`".
 
-## 長時間ループの監視（任意）
-バックグラウンドで長く回す場合、`/schedule` や ScheduleWakeup で定期的に進捗（/status 相当）を人へ通知する運用も可。
+## Monitoring long-running loops (optional)
+When running long in the background, you may operate it to periodically notify the human of progress (equivalent to /status) via `/schedule` or ScheduleWakeup.

@@ -31,7 +31,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "test -f .agentloop/state.md && echo '--- AgentLoop 現在の状態（.agentloop/state.md 冒頭）---' && sed -n '1,20p' .agentloop/state.md || true"
+            "command": "test -f .agentloop/state.md && echo '--- AgentLoop current state (top of .agentloop/state.md) ---' && sed -n '1,20p' .agentloop/state.md || true"
           }
         ]
       }

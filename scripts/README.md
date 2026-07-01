@@ -1,15 +1,15 @@
 # scripts/
 
-スクリプトの置き場。**2種類を混在させない**よう用途で分ける。
+Where scripts live. Split by purpose so the **two kinds are not mixed**.
 
-| パス | 用途 | 所有 |
+| Path | Purpose | Owner |
 |------|------|------|
-| `scripts/agentloop/` | AgentLoop テンプレートの基盤ツール（確定オーケストレータ `build_loop.py`／DAG 導出 `dag.py`／ゲートフック `gate_guard.py`／Issues 一方向ミラー `issue_sync.py` とその単体テスト）。テンプレートに同梱され、`make build-loop`・`make test-tools`・`make issue-sync`・`.claude/settings.json` のフックが参照する。 | テンプレート |
-| `scripts/`（直下・その他サブフォルダ） | **プロダクト固有**のスクリプト（データ整備・運用補助など）。プロダクトごとに自由に追加してよい。 | プロダクト |
+| `scripts/agentloop/` | The AgentLoop template's foundational tools (the deterministic orchestrator `build_loop.py` / DAG derivation `dag.py` / the gate hook `gate_guard.py` / the one-way Issues mirror `issue_sync.py` and their unit tests). Shipped with the template and referenced by `make build-loop`/`make test-tools`/`make issue-sync` and the hook in `.claude/settings.json`. | template |
+| `scripts/` (directly under / other subfolders) | **Product-specific** scripts (data prep, operational helpers, etc.). Add freely per product. | product |
 
-`scripts/agentloop/` 配下はテンプレートの一部なので、プロダクト都合で書き換えない（設定で変えたい挙動は `.agentloop/config.yaml` で調整する）。
+The contents under `scripts/agentloop/` are part of the template, so do not rewrite them for product reasons (tune behavior you want to change via `.agentloop/config.yaml`).
 
-## ゲート（`gate_guard.py`）との関係
+## Relation to the gate (`gate_guard.py`)
 
-- `scripts/`（直下・プロダクト用）への Write/Edit は **実装コード扱い**で、`gates.tasks` が approved でないと機構フックに **deny** される（`backend/**`・`frontend/**` と同じ）。
-- `scripts/agentloop/`（基盤ツール）は **ゲートに関わらず常に許可**（フック自身の保守・先回り作業を妨げないため）。
+- A Write/Edit to `scripts/` (directly under / product) is treated as **implementation code** and is **denied** by the mechanism hook unless `gates.tasks` is approved (same as `backend/**`/`frontend/**`).
+- `scripts/agentloop/` (foundational tools) is **always allowed regardless of gates** (so as not to block the hook's own maintenance / speculative work).

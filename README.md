@@ -1,33 +1,35 @@
 # AgentLoopTemplate
 
-**Human on the Loop** で開発を進めるための Claude Code テンプレート。
-コーディングエージェントが要件定義〜テストまでの作業・成果物作成・自己テストを担い、
-**人間は各フェーズ境界の「ゲート」で承認・判断するだけ**でよい。
+**English** | [日本語](README.ja.md)
 
-## コンセプト
+A Claude Code template for developing software **Human on the Loop**.
+A coding agent performs the work, produces the deliverables, and self-tests from requirements through testing,
+while **humans only approve/decide at the "gate" on each phase boundary**.
+
+## Concept
 
 ```mermaid
 flowchart TD
-    brief["brief<br/>(人が構想を記入)"]:::human
-    req["/req<br/>要件定義"]:::agent
-    g1{"①要件凍結"}:::gate
-    design["/design<br/>設計"]:::agent
-    g2{"②技術選定"}:::gate
-    tasks["/tasks<br/>タスク分解"]:::agent
-    g3{"③タスク計画"}:::gate
-    build["/build<br/>実装ループ"]:::agent
-    g4{"④実装完了"}:::gate
-    verify["/verify<br/>検証"]:::agent
-    g5{"⑤リリース可否"}:::gate
+    brief["brief<br/>(human writes the vision)"]:::human
+    req["/req<br/>requirements"]:::agent
+    g1{"① freeze requirements"}:::gate
+    design["/design<br/>design"]:::agent
+    g2{"② technical choices"}:::gate
+    tasks["/tasks<br/>task breakdown"]:::agent
+    g3{"③ task plan"}:::gate
+    build["/build<br/>implementation loop"]:::agent
+    g4{"④ implementation done"}:::gate
+    verify["/verify<br/>verification"]:::agent
+    g5{"⑤ release decision"}:::gate
     done["done"]:::human
 
-    subgraph TASKS["タスク群（複数・依存グラフ DAG）"]
+    subgraph TASKS["task set (multiple, dependency graph DAG)"]
         direction TD
-        T1["基盤 T-001"]:::task
-        T2["葉 T-002"]:::task
-        T3["葉 T-003"]:::task
-        Tn["葉 T-00n…"]:::task
-        TI["統合 T-0xx"]:::task
+        T1["foundation T-001"]:::task
+        T2["leaf T-002"]:::task
+        T3["leaf T-003"]:::task
+        Tn["leaf T-00n…"]:::task
+        TI["integration T-0xx"]:::task
         T1 --> T2
         T1 --> T3
         T1 --> Tn
@@ -37,14 +39,14 @@ flowchart TD
     end
 
     brief --> req --> g1 --> design --> g2 --> tasks
-    tasks -->|生成| T1
+    tasks -->|generates| T1
     TI --> g3
-    g3 -->|並列消化（最大3）| build
+    g3 -->|parallel consumption (max 3)| build
     build --> g4 --> verify --> g5 --> done
 
-    req -. 上流へ /revise .- build
-    design -. 上流へ /revise .- build
-    design -. 上流へ /revise .- verify
+    req -. roll back /revise .- build
+    design -. roll back /revise .- build
+    design -. roll back /revise .- verify
 
     classDef agent fill:#cfe8ff,stroke:#3b82f6,color:#06325e;
     classDef gate fill:#ffe9c7,stroke:#f59e0b,color:#7a4a00;
@@ -53,103 +55,103 @@ flowchart TD
     linkStyle 18,19,20 stroke:#ee5544,color:#ee5544,stroke-width:1.5px;
 ```
 
-凡例: 🟦 青=エージェントが実施するフェーズ ／ 🟧 橙=人が承認するゲート①〜⑤ ／ 🟩 緑=人の関与点（構想の記入・完了判断）／ 🟪 薄紫=タスク（**複数**・依存グラフ DAG。基盤→並列葉→統合）。**上から下へ前進**し（前提ゲート未承認なら次へ進めない）、`/tasks` がタスク群を生成→ゲート③承認→`/build` が並列消化（最大3）。赤い点線＝`/revise` による上流への差し戻し（build/verify から design/req へ。戻し先以降のゲートを連鎖して `pending` に戻す）。
+Legend: 🟦 blue = phases the agent runs / 🟧 orange = gates ①–⑤ the human approves / 🟩 green = points of human involvement (writing the vision, the completion decision) / 🟪 light purple = tasks (**multiple**, a dependency-graph DAG; foundation → parallel leaves → integration). **Moves top to bottom** (cannot advance while the prerequisite gate is unapproved); `/tasks` generates the task set → gate ③ approval → `/build` consumes in parallel (max 3). The red dotted lines = roll back upstream via `/revise` (from build/verify to design/req; resets the gates from the target onward to `pending` in a chain).
 
-各ゲートは人だけが開ける。承認の巻き戻し（`/revise`）も人の判断で行う。
+Only the human opens each gate. Rewinding approval (`/revise`) is also at the human's discretion.
 
-## セットアップ
+## Setup
 
-前提: WSL / Linux / macOS と `make`（Windows ネイティブ不可）。
+Prerequisites: WSL / Linux / macOS and `make` (not Windows-native).
 
-1. **このテンプレートをコピー**して新しいプロダクトのリポジトリにする。
-2. `git init` し、作業ブランチを作る（例: `git switch -c build/<product>`）。実装は main 直ではなく作業ブランチで行う。
-3. ツール導入と依存同期:
+1. **Copy this template** into a new product repository.
+2. `git init` and create a work branch (e.g. `git switch -c build/<product>`). Implement on the work branch, not directly on main.
+3. Install tools and sync dependencies:
    ```bash
-   make install   # uv / pnpm のバイナリを導入
-   make setup     # uv sync（dev 依存を同期、uv.lock を生成）
-   # フロントを使う場合: cd frontend && pnpm install
+   make install   # install the uv / pnpm binaries
+   make setup     # uv sync (sync dev dependencies, generate uv.lock)
+   # if using the frontend: cd frontend && pnpm install
    ```
-4. 動作確認: `make check`（lint/format/type）・`make test`（pytest）・`make test-tools`（`scripts/agentloop/` の確定オーケストレータ自己テスト）。
-5. プロジェクト名を記入: `pyproject.toml` の `name`（初期値 `project-name`）と `.agentloop/state.md` の `project`・`branch`。
+4. Sanity check: `make check` (lint/format/type)・`make test` (pytest)・`make test-tools` (self-tests of the deterministic orchestrator in `scripts/agentloop/`).
+5. Fill in the project name: `name` in `pyproject.toml` (initial `project-name`) and `project`・`branch` in `.agentloop/state.md`.
 
-## 使い方
+## Usage
 
-1. `docs/00-product-brief.md` に「何を作りたいか」を数行書く（人が書く唯一の出発点）。
-2. 以下を順に実行する。各コマンドの最後に人の承認を求めて止まる。
+1. Write a few lines on "what you want to build" in `docs/00-product-brief.md` (the only starting point a human writes).
+2. Run the following in order. Each command stops at the end to ask for the human's approval.
 
-   | 手順 | コマンド | 何が起きるか | あなた（人）の役割 |
+   | Step | Command | What happens | Your (the human's) role |
    |------|----------|--------------|--------------------|
-   | 要件 | `/req`    | 壁打ちで要件を構造化 | ① 要件を凍結 |
-   | 設計 | `/design` | 実装方針＋技術選定の選択肢提示 | ② 技術選定を決定・承認 |
-   | 分解 | `/tasks`  | テスト方針付きタスク票を生成 | ③ タスク計画を承認 |
-   | 実装 | `/build`  | loop で自律実装（test green 条件） | ④ 実装完了をレビュー承認 |
-   | 検証 | `/verify` | 機能＋非機能テストを実行 | ⑤ リリース可否を判断 |
+   | requirements | `/req`    | structure requirements by sounding out | ① freeze requirements |
+   | design | `/design` | implementation approach + technical-choice options | ② decide/approve technical choices |
+   | breakdown | `/tasks`  | generate task tickets with a test approach | ③ approve the task plan |
+   | implementation | `/build`  | autonomous implementation in a loop (test-green condition) | ④ review and approve implementation completion |
+   | verification | `/verify` | run functional + non-functional tests | ⑤ decide on release |
 
-3. 実装中に上流（要件/設計）の不備が判明したら **`/revise <phase>`** で差し戻せる（戻し先以降のゲートを連鎖して `pending` に戻し、`dag.py --impacted` で影響タスクを reconcile）。承認の巻き戻しも人の判断で行う。
-4. いつでも `/status` で現在フェーズ・ゲート承認状況・タスク進捗を確認できる。タスクの**全体像（依存図）**は `uv run python scripts/agentloop/dag.py --mermaid` で Mermaid を生成でき、GitHub/VS Code/Markdown にそのまま描画される（status 色分け・クリティカルパス強調）。
+3. If an upstream (requirements/design) defect comes to light during implementation, you can roll back with **`/revise <phase>`** (resets the gates from the target onward to `pending` in a chain, and reconciles task impact with `dag.py --impacted`). Rewinding approval is also at the human's discretion.
+4. Check the current phase, gate approval status, and task progress anytime with `/status`. Generate the **big picture (dependency diagram)** of tasks with `uv run python scripts/agentloop/dag.py --mermaid`, which renders directly in GitHub/VS Code/Markdown (status color-coding, critical-path emphasis).
 
-> **承認待ち中も止まらない**: ゲート到達時に通知が飛び、承認を待つ間もエージェントは
-> 承認結果に依存しない作業（環境構築・調査・テストハーネス整備など）を先回りで進める。
-> 承認結果を先取りする作業はしないため、ゲートの厳密さは保たれる。先回り分は暫定・破棄前提で
-> `.agentloop/state.md` の「先回り作業ログ」に記録され、人が採否を判断できる。
+> **It does not stall during approval waits**: a notification fires on reaching a gate, and while waiting for approval the agent
+> pulls forward outcome-independent work (environment setup, investigation, test-harness setup, etc.).
+> Since it does no work that pre-empts the approval outcome, the gate's strictness is preserved. Speculative work is provisional and throwaway-by-default and is
+> recorded in the "speculative work log" of `.agentloop/state.md`, so the human can decide to adopt or discard it.
 
-### 実装フェーズを自律で回す
+### Running the implementation phase autonomously
 
-実装ループには2つのモードがある。挙動（DoD・並列/マージ規則）は同一。以下は要点で、運用の正典は `.claude/commands/build.md`（手順）と `CLAUDE.md`（規約）:
+The implementation loop has two modes. The behavior (DoD, parallelism/merge rules) is identical. Below is a summary; the canon for operation is `.claude/commands/build.md` (procedure) and `CLAUDE.md` (rules):
 
-**A. 確定実行（推奨）— `make build-loop`**
-スケジューリングをコードで確定駆動するオーケストレータ（`scripts/agentloop/build_loop.py`）。**どのタスクを・何並列で・どの順にマージし・いつ止めるか**を `.agentloop/config.yaml` と `tasks.yaml` から確定的に決め、LLM 裁量に依存しない。
+**A. Deterministic execution (recommended) — `make build-loop`**
+An orchestrator that drives scheduling deterministically in code (`scripts/agentloop/build_loop.py`). It decides **which tasks, at what parallelism, in what merge order, and when to stop** deterministically from `.agentloop/config.yaml` and `tasks.yaml`, not relying on LLM discretion.
 
 ```
-make build-loop                  # 実行
-make build-loop ARGS=--dry-run   # claude/git を呼ばず制御フローだけ確認
+make build-loop                  # run
+make build-loop ARGS=--dry-run   # check just the control flow without calling claude/git
 ```
 
-**B. 対話ループ — `/loop /build`**
-オーケストレータを使わず会話でループを回す代替。
+**B. Interactive loop — `/loop /build`**
+An alternative that runs the loop in conversation without the orchestrator.
 
-- 各タスクは **品質ゲートを全て通って**初めて完了扱い: 自動テスト green → `/simplify`（整理）→ `/code-review`（バグ修正）→ `make check`（lint/format/typecheck をエラーが消えるまで修正）。
-- **並列タスクは隔離実行**: 独立した葉タスクは `git worktree` で各自のブランチ・作業ディレクトリに分離して **最大3並列**（`config.yaml` の `max_parallel`）で実装し、完了後に id 昇順で作業ブランチへ順次マージする。基盤タスクは作業ブランチ上で先に確定する。
-- 解決不能なタスクは `blocked`、上流に不備があれば `needs-revision` として **人にエスカレーション**し、ループが止まる。
-- **確定化の境界**: 制御フロー・並列・マージ・ゲート判定・停止はコードで確定。各タスクの実装コード内容のみ LLM 由来で非確定で、「ゲートを通るまで retry、駄目なら blocked」で吸収する。**`gates.build` はオーケストレータも触らない**（ゲートは人だけが開ける）。
+- A task is complete only after **passing all quality gates**: automated tests green → `/simplify` (cleanup) → `/code-review` (bug fixes) → `make check` (fix lint/format/typecheck until errors are gone).
+- **Parallel tasks run in isolation**: independent leaf tasks are implemented in their own branch/working directory with `git worktree`, **up to 3 in parallel** (`max_parallel` in `config.yaml`), and merged into the work branch sequentially in ascending id order when done. Foundation tasks are finalized first on the work branch.
+- An unsolvable task becomes `blocked`; an upstream defect becomes `needs-revision`, **escalated to the human**, and the loop stops.
+- **The determinism boundary**: control flow, parallelism, merge, gate decision, and stopping are deterministic in code. Only each task's implementation code content is LLM-derived and non-deterministic, absorbed by "retry until the gate passes, else blocked". **The orchestrator does not touch `gates.build`** (only the human opens a gate).
 
-> **前提スタック**: 同梱の `makefile` で `make test`（pytest）・`make check`（ruff/format/mypy/tsc を一括）を使う。`make check` は `make pre-commit`（commit ステージ）と `make pre-push`（format/mypy/tsc）を束ねたもの。`make` の無いプロジェクトにコピーした場合は、各自のテスト/チェックコマンドに読み替える。
+> **Assumed stack**: the bundled `makefile` provides `make test` (pytest) and `make check` (ruff/format/mypy/tsc together). `make check` bundles `make pre-commit` (commit stage) and `make pre-push` (format/mypy/tsc). If copied into a project without `make`, substitute your own test/check commands.
 
-### セキュリティ検査
+### Security review
 
-3層で担保する: **gitleaks**（pre-commit でシークレットのコミットを機構的に防止。誤検知は `.gitleaksignore` で除外）／実装完了時に **`/security-review`** 必須／`/verify` で **`/security-review` + `make audit`**（依存の脆弱性監査）必須。
+Ensured in three layers: **gitleaks** (mechanically prevents committing secrets at pre-commit; exclude false positives with `.gitleaksignore`) / **`/security-review`** mandatory at implementation completion / **`/security-review` + `make audit`** (dependency vulnerability audit) mandatory in `/verify`.
 
-### GitHub Issues 連携（任意）
+### GitHub Issues integration (optional)
 
-タスクをチーム/ステークホルダーに可視化したい場合、`tasks.yaml` を **GitHub Issues へ一方向ミラー**できる（`make issue-sync`）。
+If you want to make tasks visible to the team/stakeholders, you can **one-way-mirror** `tasks.yaml` to GitHub Issues (`make issue-sync`).
 
-- **既定オフ**。`.agentloop/config.yaml` の `github.enabled: true` で有効化。`gh` CLI と GitHub remote が前提で、無ければ自動スキップ（オフライン・コピー直後でも壊れない）。
-- 各タスク T-NNN ↔ Issue 1件。Issue 番号は tasks.yaml に書かず、ラベル＋タイトル接頭辞で突き合わせる。`done` は close。
-- **付与ラベルで判別できる**: `kind:*`（種別）/ `status:*`（状態）/ `phase:*`（工程 requirements/design/build/verify）/ `req:*`（対応要件）。使用ラベルは `gh label create --force` で**自動作成（provisioning）**されるため、ラベル未作成の repo でも初回から失敗しない。
-- **一方向のみ**: `tasks.yaml` が常に SSOT。Issues 側の編集は読み戻さない（確定駆動・オフライン性を保つ）。`make issue-sync ARGS=--dry-run` で予定だけ確認できる。
-- Issue 書き込みは外向き操作のため、`github.enabled: true` の opt-in が同意を兼ねる。
+- **Off by default.** Enable with `github.enabled: true` in `.agentloop/config.yaml`. Requires the `gh` CLI and a GitHub remote; auto-skips if absent (does not break offline / right after copying).
+- One issue per task T-NNN. The issue number is not written to tasks.yaml; matching is by label + title prefix. `done` is closed.
+- **Tell them apart by the labels applied**: `kind:*` (kind) / `status:*` (status) / `phase:*` (phase: requirements/design/build/verify) / `req:*` (covered requirement). The labels used are **auto-created (provisioned)** with `gh label create --force`, so it does not fail on the first run even in a repo with no labels.
+- **One-way only**: `tasks.yaml` is always the SSOT. Edits on the Issues side are not read back (preserving deterministic, offline operation). Check just the plan with `make issue-sync ARGS=--dry-run`.
+- Writing issues is an outward-facing operation, so the `github.enabled: true` opt-in serves as consent.
 
-## 構成
+## Layout
 
-| パス | 役割 |
+| Path | Role |
 |------|------|
-| `.agentloop/state.md` | フェーズ・ゲート・ログの SSOT |
-| `.agentloop/tasks.yaml` | タスクグラフ(DAG)の機械可読 SSOT |
-| `.agentloop/config.yaml` | 確定実行のノブ源（並列・retry・worktree・ゲート強制） |
-| `scripts/agentloop/` | 確定オーケストレーション（`dag.py`／`build_loop.py`／`gate_guard.py`）。プロダクト用は `scripts/` 直下 |
-| `CLAUDE.md` | エージェント運用規約・ゲート規則 |
-| `.claude/commands/` | 各工程の入口（`/req` 〜 `/status`） |
-| `.claude/agents/` | 専門サブエージェント（要件/設計/実装） |
-| `docs/` | 工程成果物（要件・設計・ADR・タスク票・テスト計画） |
+| `.agentloop/state.md` | SSOT for phase, gates, logs |
+| `.agentloop/tasks.yaml` | machine-readable SSOT of the task graph (DAG) |
+| `.agentloop/config.yaml` | source of knobs for deterministic execution (parallelism, retry, worktree, gate enforcement) |
+| `scripts/agentloop/` | deterministic orchestration (`dag.py` / `build_loop.py` / `gate_guard.py`). Product scripts go directly under `scripts/` |
+| `CLAUDE.md` | agent operating rules and gate rules |
+| `.claude/commands/` | entry points for each phase (`/req` – `/status`) |
+| `.claude/agents/` | specialized subagents (requirements/design/implementation) |
+| `docs/` | phase deliverables (requirements, design, ADR, task tickets, test plan) |
 
-## 活用している Claude Code 機能
+## Claude Code features used
 
-- **plan mode + ExitPlanMode** — 思考フェーズの承認ゲート
-- **AskUserQuestion** — 技術選定など人の意思決定
-- **/loop** — 実装タスクの自律消化（対話モード）
-- **確定オーケストレータ（`make build-loop`）** — スケジューリング・並列・マージ・ゲート判定をコードで確定駆動
-- **PreToolUse フック（`gate_guard.py`）** — 前提ゲート未承認時の成果物編集を機構的に deny
-- **git worktree** — 並列タスクの隔離実行
-- **subagent** — 工程ごとの専門化・コンテキスト分離
-- **slash command** — 各工程の定型化
-- **/schedule（任意）** — 長時間ループの定期進捗チェック
+- **plan mode + ExitPlanMode** — the approval gate for the thinking phase
+- **AskUserQuestion** — human decisions such as technical choices
+- **/loop** — autonomous consumption of implementation tasks (interactive mode)
+- **the deterministic orchestrator (`make build-loop`)** — drives scheduling, parallelism, merge, and gate decisions deterministically in code
+- **PreToolUse hook (`gate_guard.py`)** — mechanically denies editing a deliverable while the prerequisite gate is unapproved
+- **git worktree** — isolated execution of parallel tasks
+- **subagent** — specialization and context isolation per phase
+- **slash command** — standardizing each phase
+- **/schedule (optional)** — periodic progress checks for long-running loops

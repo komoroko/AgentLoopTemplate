@@ -1,32 +1,32 @@
-# .agentloop/tasks.yaml — タスクグラフ(DAG)の「機械可読な単一情報源」
+# .agentloop/tasks.yaml — the "machine-readable single source of truth" for the task graph (DAG)
 #
-# /tasks がこのファイルを生成し、/build（scripts/agentloop/build_loop.py）と /status
-# （scripts/agentloop/dag.py --render）がこれを読む。fan-out・実行可能フロンティア・
-# 実行レイヤ・クリティカルパスは blockedBy から導出するため、ここには保存しない
-# （導出値を二重に持つと drift するため）。
+# /tasks generates this file, and /build (scripts/agentloop/build_loop.py) and /status
+# (scripts/agentloop/dag.py --render) read it. fan-out, the executable frontier,
+# execution layers, and the critical path are derived from blockedBy, so they are not stored here
+# (storing derived values twice causes drift).
 #
-# ライフサイクルの現在フェーズ(current_phase) / gates / 各種ログは .agentloop/state.md が持つ
-# （下の task 内 phase はタスク単位の工程メタで別物）。タスクグラフの真実はここ。
+# The lifecycle current_phase / gates / various logs live in .agentloop/state.md
+# (the per-task `phase` below is per-task phase metadata — a different thing). The task graph's truth is here.
 #
-# スキーマ:
-#   id:        T-NNN 形式の一意なタスクID
-#   title:     人が読む短い説明
-#   kind:      foundation（多数が依存する基盤）| parallel（独立同時進行できる葉）
-#              | integration（複数完了後に合流）
-#   blockedBy: 先に done が必要なタスクIDの配列（DAG の辺）。循環は不可。
+# Schema:
+#   id:        a unique task ID in T-NNN form
+#   title:     a short human-readable description
+#   kind:      foundation (a base many depend on) | parallel (independent leaves that run concurrently)
+#              | integration (a join after several complete)
+#   blockedBy: an array of task IDs that must be done first (DAG edges). No cycles.
 #   status:    todo | in_progress | blocked | needs-revision | done
-#   test:      green 判定に使うコマンド/対象（例: "make test" や "pytest backend/foo"）
-#   req:       （任意）対応要件ID。R-<番号> 形式。複数はカンマ/空白区切り 例 "R-1" / "R-1,R-3" / "R-1 R-3"。
-#              不正形式（R1 / Req-1 等）は dag.py --validate が弾く。dag.py --trace が要件/設計と機械突合し
-#              未カバー要件・宙吊り参照を検出する。Issues ミラー時に req:* ラベルになる
-#   phase:     （任意）工程 requirements|design|build|verify（既定 build。verify=バグ修正起票など）。
-#              Issues ミラー時に phase:* ラベルになる
+#   test:      the command/target used for the green decision (e.g. "make test" or "pytest backend/foo")
+#   req:       (optional) the requirement ID it covers. R-<number> form. Multiple are comma/space-separated, e.g. "R-1" / "R-1,R-3" / "R-1 R-3".
+#              Invalid forms (R1 / Req-1, etc.) are rejected by dag.py --validate. dag.py --trace mechanically cross-checks against requirements/design
+#              to detect uncovered requirements and dangling references. Becomes a req:* label when mirrored to Issues.
+#   phase:     (optional) the phase requirements|design|build|verify (default build; verify=filing bug fixes, etc.).
+#              Becomes a phase:* label when mirrored to Issues.
 
 tasks: []
-# 例（/tasks が埋める。雛形のため空リスト）:
+# Example (filled by /tasks; empty list because this is a scaffold):
 # tasks:
 #   - id: T-001
-#     title: "共通スキーマ定義"
+#     title: "define shared schema"
 #     kind: foundation
 #     blockedBy: []
 #     status: todo
@@ -34,7 +34,7 @@ tasks: []
 #     req: "R-1"
 #     phase: build
 #   - id: T-002
-#     title: "ユーザー登録 API"
+#     title: "user registration API"
 #     kind: parallel
 #     blockedBy: [T-001]
 #     status: todo

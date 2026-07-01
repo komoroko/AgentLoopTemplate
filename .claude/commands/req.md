@@ -1,30 +1,32 @@
 ---
-description: フェーズ1 要件定義。brief を起点に壁打ちし、要件を固めてゲート①で承認を仰ぐ。
+description: Phase 1 requirements. Sound out from the brief, firm up the requirements, and ask for approval at gate ①.
 ---
 
-# /req — 要件定義フェーズ
+# /req — Requirements phase
 
-あなたはこのプロジェクトの要件定義を進行する。**Human on the Loop**：作業はあなた、確定は人。
+You drive this project's requirements definition. **Human on the Loop**: you do the work, the human decides.
 
-## 手順
-1. `.agentloop/state.md` を読む。`current_phase` を確認する。
-   - すでに `gates.requirements == approved` なら「要件は承認済み。変更するなら再承認が必要」と伝え、人の指示を待つ。
-2. `docs/00-product-brief.md` を読む。空ならまず人に記入を促して止まる。
-3. `requirements-analyst` サブエージェントに委譲し、要件草案・抜け漏れ・論点を出す。
-4. 曖昧点・重要な分岐は **AskUserQuestion** で人に確認して埋める。
-5. 合意できた内容を `docs/10-requirements.md` に（雛形構造で）書き出す。
-6. **ゲート①**: plan mode であれば ExitPlanMode で要件サマリを提示して承認を仰ぐ。plan mode でなければ要件サマリを提示し「この内容で要件を凍結してよいか」を明示的に確認する。確認事項は **1回の AskUserQuestion にまとめて** 聞く。
-   - **自己評価を必ず併せて提示**する（CLAUDE.md「ゲート自己評価」）: 置いた前提・要件ごとの確信度（高/中/低）・未解決の論点・想定リスク。`10-requirements.md` の「自己評価」節にも残す。確信度が低い要件は人の注意を促す。
+## Steps
+1. Read `.agentloop/state.md`. Check `current_phase`.
+   - If `gates.requirements == approved` already, say "Requirements are approved; changing them needs re-approval" and wait for the human's instruction.
+2. Read `docs/00-product-brief.md`. If empty, first prompt the human to fill it in and stop.
+3. Delegate to the `requirements-analyst` subagent to produce a requirements draft, gaps, and open points.
+4. Fill ambiguities and important branches by asking the human via **AskUserQuestion**.
+5. Write the agreed content into `docs/10-requirements.md` (in the scaffold structure).
+6. **Gate ①**: in plan mode, present the requirements summary via ExitPlanMode and ask for approval. If not in plan mode, present the summary and explicitly confirm "may we freeze the requirements with this content?". Ask any confirmations **in a single AskUserQuestion**.
+   - **Always present a self-assessment as well** (CLAUDE.md "Gate self-assessment"): assumptions made, per-requirement confidence (high/medium/low), open questions, anticipated risks. Also leave it in the "Self-assessment" section of `10-requirements.md`. Flag low-confidence requirements for the human's attention.
 
-## 承認待ち中（ボトルネック最小化）
-ゲート①提示後、承認を待つ間に以下を進めてよい（**結果非依存・破棄前提**。CLAUDE.md「承認待ち中のボトルネック最小化」参照）。やったことは `state.md` の「先回り作業ログ」に記録する。
-- `PushNotification` で人へ承認待ちを通知。
-- リポジトリ雛形・ディレクトリ構成・開発環境/CI の骨組み。
-- brief に出ている候補技術の **読み取り調査**（設計の確定はしない）。
-- **禁止**: 要件を先取りした設計本体の記述。
+Write the deliverable (`docs/10-requirements.md`) in the user's language.
 
-## 承認されたら
-- `state.md` の `gates.requirements` を `approved`、`current_phase` を `design`、`updated_at` を更新。
-- 「次は `/design`」と案内する。
+## While waiting for approval (minimizing the bottleneck)
+After presenting gate ①, while waiting for approval you may proceed with the following (**outcome-independent, throwaway-by-default**; see CLAUDE.md "Minimizing the approval-wait bottleneck"). Record what you did in the "speculative work log" of `state.md`.
+- Notify the human of the pending approval via `PushNotification`.
+- Repo scaffolding / directory layout / skeleton of the dev environment and CI.
+- **Read-only investigation** of candidate technologies surfaced in the brief (do not finalize the design).
+- **Forbidden**: writing the design body that pre-empts the requirements.
 
-承認が得られるまで gate は `pending` のまま。勝手に approved にしない。
+## Once approved
+- Set `gates.requirements` to `approved`, `current_phase` to `design`, and update `updated_at` in `state.md`.
+- Point to "next is `/design`".
+
+Until approval is given, the gate stays `pending`. Do not set it to approved on your own.

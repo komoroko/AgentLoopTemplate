@@ -1,36 +1,36 @@
-# 振り返り (Retrospective)
+# Retrospective
 
-> `/verify` がゲート⑤承認・`done` 到達時に生成・更新する。プロセスのメタ認知を回収し、
-> 次サイクル（次プロダクト/次イテレーション）への学習を残す。
-> `state.md` の各ログ（エスカレーション・先回り作業）の**未回収項目をここで閉じる**。
+> `/verify` generates/updates this at gate ⑤ approval / reaching `done`. It recovers the process metacognition and
+> leaves learning for the next cycle (next product / next iteration).
+> It **closes the open items** of each log in `state.md` (escalation, speculative work).
 
-## 1. 手戻りの発生元
-needs-revision / blocked を発生源で分類する。上流の不備は次回の要件/設計の改善材料。
+## 1. Where rework originated
+Classify needs-revision / blocked by origin. Upstream defects are material for improving the next requirements/design.
 
-| タスク/ゲート | 事象 | 分類（上流の不備 / 実装都合 / 外部要因） | 根本原因 | 次への対策 |
+| Task/gate | Event | Class (upstream defect / implementation convenience / external factor) | Root cause | Countermeasure for next time |
 |---------------|------|------------------------------------------|----------|------------|
 | | | | | |
 
-## 2. エスカレーション・ログの回収
-`state.md`「エスカレーション・ログ」の未解決（解決欄が空）を結論づける。
+## 2. Recovering the escalation log
+Conclude the unresolved items (blank resolution column) of `state.md` "escalation log".
 
 -
 
-## 3. 先回り作業の採否
-`state.md`「先回り作業ログ」の各項目について採用 / 破棄を確定する（「採否(人)」欄を埋める）。
+## 3. Adoption of speculative work
+For each item in `state.md` "speculative work log", finalize adopt / discard (fill the "Adopt? (human)" column).
 
 -
 
-## 4. 上流への学び
-次に同種を作るとき、要件/設計段階で最初に固めるべきだった点。
+## 4. Lessons for upstream
+When building something similar next time, what should have been firmed up first at the requirements/design stage.
 
 -
 
-## 5. プロセス / テンプレート改善提案
-このループの回し方・ゲート・自己評価・確定オーケストレーションへの改善案
-（テンプレート自体へのフィードバックも歓迎）。
+## 5. Process / template improvement proposals
+Improvement ideas for how this loop is run, the gates, self-assessment, and deterministic orchestration
+(feedback to the template itself is welcome too).
 
 -
 
-## 6. うまくいったこと（残す価値のあるやり方）
+## 6. What went well (ways worth keeping)
 -

@@ -1,155 +1,160 @@
-# AgentLoopTemplate — エージェント運用規約
+# AgentLoopTemplate — Agent Operating Rules
 
-このリポジトリは **Human on the Loop** で開発を進めるためのテンプレートである。
-コーディングエージェントが各工程の作業・成果物作成・自己テストまでを担い、
-**人間は各フェーズ境界の「ゲート」でレビューし、承認・判断するだけ**でよい。
+This repository is a template for developing software **Human on the Loop**.
+A coding agent performs the work, produces the deliverables, and self-tests at every phase,
+while **humans only review and approve/decide at the "gate" on each phase boundary**.
 
-## 開発ライフサイクル
+## Language
+
+Write conversation and deliverables (`docs/**`) in **the language the user uses — i.e. the project's primary language** (e.g. respond in Japanese to a Japanese user, in English to an English user). The template files themselves (this `CLAUDE.md`, the `.claude/commands/*`, `.claude/agents/*`, and the `docs/**` scaffolds) are written in English as the canonical single source; you may localize the **headings** of a deliverable to match the user's language when you fill a scaffold in. Identifiers and machine-read vocabulary (gate states `pending`/`approved`, task `status` values, `kind` values, etc.) stay as-is in every language.
+
+## Development lifecycle
 
 ```
 brief → requirements → design → tasks → build → verify → done
         (/req)        (/design) (/tasks) (/build) (/verify)
-          ▲ゲート①      ▲ゲート②   ▲ゲート③  ▲ゲート④   ▲ゲート⑤
+          ▲gate①        ▲gate②     ▲gate③   ▲gate④    ▲gate⑤
 ```
 
-| フェーズ | コマンド | 成果物 | ゲート（人の承認内容） |
+| Phase | Command | Deliverable | Gate (what the human approves) |
 |----------|----------|--------|------------------------|
-| requirements | `/req`    | `docs/10-requirements.md` | ① 要件凍結 |
-| design       | `/design` | `docs/20-design.md` + `docs/decisions/ADR-*.md` | ② 技術選定 |
-| tasks        | `/tasks`  | `docs/tasks/T-*.md` | ③ タスク計画 |
-| build        | `/build`  | 実装コード + テスト | ④ 実装完了レビュー |
-| verify       | `/verify` | `docs/test/test-plan.md` 実行結果 | ⑤ リリース可否 |
+| requirements | `/req`    | `docs/10-requirements.md` | ① freeze requirements |
+| design       | `/design` | `docs/20-design.md` + `docs/decisions/ADR-*.md` | ② technical decisions |
+| tasks        | `/tasks`  | `docs/tasks/T-*.md` | ③ task plan |
+| build        | `/build`  | implementation code + tests | ④ implementation review |
+| verify       | `/verify` | `docs/test/test-plan.md` execution results | ⑤ release decision |
 
-進捗・全タスクは `/status` で確認できる（テキストの `dag.py --render` と依存図の `dag.py --mermaid`）。`done` 到達時は `/verify` が `docs/retrospective.md` に振り返り（手戻りの発生元・上流への学び）を残し、未回収ログを閉じる。上流の不備が判明したら `/revise` で要件/設計へ**差し戻せる**（ゲートを連鎖して戻す。後述「差し戻し」）。
+Check progress and all tasks with `/status` (the text view `dag.py --render` and the dependency graph `dag.py --mermaid`). When `done` is reached, `/verify` records a retrospective in `docs/retrospective.md` (where rework originated, lessons for upstream) and closes any open logs. If an upstream defect is found, you can **roll back** to requirements/design with `/revise` (gates are reset in a chain — see "Roll back" below).
 
-## 単一情報源（SSOT）
+## Single Source of Truth (SSOT)
 
-真実は次の3ファイルに分かれる。役割が違うので混同しない:
+The truth is split across three files. Their roles differ, so do not conflate them:
 
-- **`.agentloop/state.md`** — フェーズ・各ゲートの承認状況・各種ログ（先回り/エスカレーション）の真実。**作業開始時は必ず読む**。作業後に更新する（フェーズ進行、`updated_at`）。フロントマターの `gates.<name>` は `pending` | `approved`。**人の承認以外でこれを `approved` にしてはならない。**
-- **`.agentloop/tasks.yaml`** — タスクグラフ(DAG)の**機械可読な真実**。`/tasks` が生成し、`/build`（`scripts/agentloop/build_loop.py`）と `/status`（`scripts/agentloop/dag.py`）が読む。各タスクは `id`/`title`/`kind`/`blockedBy`/`status`/`test`（表示・ラベル用の任意メタ `req`/`phase`）。`req`（対応要件）は **要件→設計→タスクのトレーサビリティの糸**で、`dag.py --trace` が要件ドキュメント・設計と機械突合し、未カバー要件・宙吊り参照を確定検出する（`/tasks` ゲートと `/status`）。fan-out・フロンティア・実行レイヤ・クリティカルパスは `blockedBy` から導出するので保存しない（drift 防止）。state.md のタスク表は `dag.py --render` の人間向けビュー。**GitHub Issues 連携（opt-in）を有効にしても tasks.yaml が SSOT** で、Issues は `scripts/agentloop/issue_sync.py` による**一方向ミラー**（読み戻さない＝確定駆動・オフライン性を保つ）。
-- **`.agentloop/config.yaml`** — 確定実行のノブ源（並列数・retry・worktree・ゲート強制）。`build_loop.py`/`gate_guard.py` が読む。
+- **`.agentloop/state.md`** — the truth for the phase, each gate's approval status, and the various logs (speculative / escalation). **Always read it when starting work.** Update it after work (phase progress, `updated_at`). The front-matter `gates.<name>` is `pending` | `approved`. **Never set this to `approved` without human approval.**
+- **`.agentloop/tasks.yaml`** — the **machine-readable truth** of the task graph (DAG). `/tasks` generates it; `/build` (`scripts/agentloop/build_loop.py`) and `/status` (`scripts/agentloop/dag.py`) read it. Each task has `id`/`title`/`kind`/`blockedBy`/`status`/`test` (plus optional display/label metadata `req`/`phase`). `req` (the requirement it covers) is the **traceability thread from requirements → design → tasks**; `dag.py --trace` mechanically cross-checks it against the requirements document and design to deterministically detect uncovered requirements and dangling references (used by the `/tasks` gate and `/status`). fan-out, frontier, execution layers, and the critical path are derived from `blockedBy`, so they are not stored (to prevent drift). The task table in state.md is the human-facing view from `dag.py --render`. **Even with GitHub Issues integration (opt-in) enabled, tasks.yaml remains the SSOT**, and Issues are a **one-way mirror** via `scripts/agentloop/issue_sync.py` (never read back — preserving deterministic, offline-first operation).
+- **`.agentloop/config.yaml`** — the source of knobs for deterministic execution (parallelism, retry, worktree, gate enforcement). Read by `build_loop.py`/`gate_guard.py`.
 
-## ゲート規則（厳守）
+## Gate rules (strict)
 
-1. **前提ゲート未承認なら次フェーズの作業をしない。** 各コマンドは冒頭で前提ゲートを確認する:
-   - `/design` は `gates.requirements == approved` を要求
-   - `/tasks` は `gates.design == approved` を要求
-   - `/build` は `gates.tasks == approved` を要求
-   - `/verify` は `gates.build == approved` を要求
-   未承認なら作業を止め、何が必要かを人に伝える。
-2. **ゲートは人だけが開ける。** エージェントは成果物を提示するところまで。承認の意思表示（plan mode の承認 or 明示的な「承認」）を受けて初めて `state.md` の該当 gate を `approved` にし、次へ進む。
-3. **要件/設計に問題を見つけたら勝手に直さない。** 実装中などに上流の不備を見つけたら、該当タスクを `needs-revision` にし、エスカレーション・ログに記録して人に上げる。
+1. **Do not work on the next phase while its prerequisite gate is unapproved.** Each command checks its prerequisite gate up front:
+   - `/design` requires `gates.requirements == approved`
+   - `/tasks` requires `gates.design == approved`
+   - `/build` requires `gates.tasks == approved`
+   - `/verify` requires `gates.build == approved`
+   If unapproved, stop work and tell the human what is needed.
+2. **Only humans open a gate.** The agent goes only as far as presenting the deliverable. Only after a human signals approval (approving plan mode, or an explicit "approve") do you set the corresponding gate in `state.md` to `approved` and move on.
+3. **Do not silently fix problems in requirements/design.** If you find an upstream defect (e.g. during implementation), set the affected task to `needs-revision`, record it in the escalation log, and raise it to the human.
 
-**ゲートは2層で強制する**（規約だけに依存しない）:
-- **規約層**: 上記のとおり各コマンドが冒頭で前提ゲートを確認する。
-- **機構層**: `scripts/agentloop/gate_guard.py`（`.claude/settings.json` の PreToolUse フック）が、前提ゲート未承認のまま**次フェーズの成果物パス**（`docs/20-design.md`・`docs/decisions/**`→要件承認、`docs/tasks/**`→設計承認、`backend/**`・`frontend/**`・`scripts/**`（プロダクト用スクリプト）→タスク承認、`docs/test/**`→実装承認）を Write/Edit する操作をコードで **deny** する。ただし `scripts/agentloop/**`（テンプレート基盤ツール）はゲートに関わらず常に許可（フック自身の保守を妨げない）。さらに `/build` は `scripts/agentloop/build_loop.py` が冒頭で `gates.tasks==approved` をコード判定して二重化する。`.agentloop/config.yaml` の `gates.enforce_hook: false` で機構層を無効化できる。フックは `uv run --no-project --with pyyaml` で起動し、**プロジェクト env（`make setup`）に依存せず**コピー直後・最初の編集から機能する。
+**Gates are enforced in two layers** (not relying on the rules alone):
+- **Convention layer**: as above, each command checks its prerequisite gate up front.
+- **Mechanism layer**: `scripts/agentloop/gate_guard.py` (a PreToolUse hook in `.claude/settings.json`) **denies** in code any Write/Edit to a **next-phase deliverable path** while its prerequisite gate is unapproved (`docs/20-design.md`, `docs/decisions/**` → requires requirements approved; `docs/tasks/**` → design approved; `backend/**`, `frontend/**`, `scripts/**` (product scripts) → tasks approved; `docs/test/**` → build approved). However, `scripts/agentloop/**` (the template's foundational tools) is always allowed regardless of gates (so the hook's own maintenance is not blocked). In addition, `/build` double-checks `gates.tasks==approved` in code at the start of `scripts/agentloop/build_loop.py`. Set `gates.enforce_hook: false` in `.agentloop/config.yaml` to disable the mechanism layer. The hook launches with `uv run --no-project --with pyyaml`, so it works from the very first edit right after copying, **without depending on the project env (`make setup`)**.
 
-> **テンプレート自身を保守する場合の注意**: 雛形 `docs/20-design.md`・`docs/tasks/**` や `scripts/**` 配下のテンプレ原本は、実プロダクトの成果物パスと一致するため、ゲート未承認だと機構層が編集を deny する（保守時に自分のゲートに阻まれる）。これは想定挙動。テンプレ保守の際は `gates.enforce_hook: false` に一時切替 → 編集 → **直後に `true` へ復元**する（この用途のための逃げ口。原本と実成果物を機構的に区別はしない＝ゲートの単純さ・確実さを優先する）。
+> **Note when maintaining the template itself**: the scaffold originals `docs/20-design.md`, `docs/tasks/**`, and the templates under `scripts/**` share the same paths as real product deliverables, so with gates unapproved the mechanism layer will deny edits to them (you get blocked by your own gate during maintenance). This is expected. When maintaining the template, temporarily switch `gates.enforce_hook: false` → edit → **restore it to `true` immediately afterward** (an escape hatch for this purpose; the mechanism does not distinguish originals from real deliverables — we prioritize the gate's simplicity and reliability).
 
-## 差し戻し（上流への後戻り）
+## Roll back (returning upstream)
 
-実装/検証中に上流（要件・設計）の不備が確定したら、人の判断で**上流へ差し戻す**。`/revise`（`make revise`）が一級操作:
+When an upstream defect (requirements/design) is confirmed during implementation/verification, **roll back upstream** at the human's discretion. `/revise` (`make revise`) is the first-class operation:
 
-- **ゲートは連鎖で戻す**: 戻し先 phase 以降のゲートをすべて `pending` に戻す（`scripts/agentloop/revise.py`）。**不変条件: 上流ゲートが `pending` なら下流ゲートを `approved` のまま残さない**（stale な承認の上で次工程が進む不整合を防ぐ）。以後の編集順は `gate_guard` が機構強制する（例: design pending の間は `docs/tasks/**`・実装コードの編集を deny）。
-- **承認の巻き戻しも人の権限**: ゲートを開けるのと対称。`/revise` は人の明示判断の下でのみ実行し、エージェントが勝手に戻さない。
-- **上流修正は必ずタスク影響分析を伴う**: タスクは捨てて作り直さない。既存タスクを修正後の上流と突き合わせ、**直接影響するタスク（seed）を特定し、その推移的被依存（下流）を `dag.py --impacted` で漏れなく展開**して、**keep / modify / obsolete / new** に分類する。modify は `needs-revision`、無効化された `done` は `todo` に戻す（再実装要）。
-- 検知の起点は実装中の `needs-revision`（上記ゲート規則③）。そこからの戻し・再開導線が `/revise`。
+- **Gates are reset in a chain**: reset every gate from the target phase onward back to `pending` (`scripts/agentloop/revise.py`). **Invariant: if an upstream gate is `pending`, do not leave a downstream gate `approved`** (preventing the inconsistency of the next phase proceeding on a stale approval). The editing order from then on is mechanically enforced by `gate_guard` (e.g. while design is pending, edits to `docs/tasks/**` and implementation code are denied).
+- **Rewinding approval is also a human privilege**: symmetric with opening a gate. `/revise` is run only under the human's explicit judgment; the agent does not roll back on its own.
+- **Upstream fixes always entail task impact analysis**: do not throw tasks away and recreate them. Reconcile existing tasks against the revised upstream — **identify the directly affected tasks (seeds) and fully expand their transitive dependents (downstream) with `dag.py --impacted`** — then classify into **keep / modify / obsolete / new**. `modify` becomes `needs-revision`; an invalidated `done` reverts to `todo` (needs reimplementation).
+- The trigger for detection is a `needs-revision` raised during implementation (gate rule ③ above). The path to roll back and resume from there is `/revise`.
 
-## ゲート自己評価（必須）
+## Gate self-assessment (required)
 
-ゲートに到達したら、成果物に加えて **自己評価ブロック** を必ず提示する。これは「システムが
-自分の確信のなさ・置いた前提を自覚し、人のレビューを軽くする」ためのメタ認知の核であり、
-全ゲート（①〜⑤）共通:
+When you reach a gate, you must present a **self-assessment block** alongside the deliverable. This is the core of the metacognition that lets the system
+recognize its own uncertainty and stated assumptions and lighten the human's review,
+common to all gates (①–⑤):
 
-- **置いた前提**: 人に未確認のまま前提にした仮定（外れると成果物が崩れる点）。
-- **確信度**: 高 / 中 / 低（領域別に分けてよい）。**低い箇所は理由を必ず添え**、人の注意をそこへ向ける。
-- **未解決の論点 / 人に判断を仰ぐ点**（最重要）。
-- **想定リスク・トレードオフ**（後段に効く判断）。
+- **Assumptions made**: assumptions taken as given without confirming with the human (points where, if wrong, the deliverable breaks).
+- **Confidence**: high / medium / low (may be split by area). **Always attach a reason for low spots** and direct the human's attention there.
+- **Open questions / points for the human to decide** (most important).
+- **Anticipated risks and trade-offs** (decisions that bite later).
 
-確信度が高いふりをして人の検算を省かせない——**不確かさを正直に出す**ことがゲートの価値を上げる。
-これは「先回り作業ログ」とは別物（あちらは破棄前提作業の記録）。要件/設計/タスク票では
-この自己評価を成果物自体にも残す（口頭だけにしない。各雛形の「自己評価」節）。
+Do not pretend to high confidence and let the human skip verification — **surfacing uncertainty honestly** raises the gate's value.
+This is distinct from the "speculative work log" (that one records throwaway-by-default work). For requirements/design/task tickets,
+leave this self-assessment in the deliverable itself (not just spoken — the "Self-assessment" section in each scaffold).
 
-## 承認待ち中のボトルネック最小化
+## Minimizing the approval-wait bottleneck
 
-人の承認待ちでエージェントを遊ばせない。ただし **ゲートの厳密さは絶対に崩さない**。
+Do not leave the agent idle while waiting for human approval. But **never compromise the strictness of the gate**.
 
-### 1) 待ち時間そのものを短くする
-- ゲートに到達したら **`PushNotification` で人へ即通知**し、気づくまでのラグを削る。
-- 人への確認は **1回の `AskUserQuestion` にまとめて** 聞く（往復を減らす。小出しにしない）。
-- `/build` の実装ループは **依存のない独立タスクを並列**で進める（worktree 隔離・最大3並列。後述）。
+### 1) Shorten the wait itself
+- On reaching a gate, **notify the human immediately with `PushNotification`** to cut the lag before they notice.
+- Ask the human **in a single `AskUserQuestion`** (reduce round-trips; do not dribble out questions).
+- The `/build` implementation loop **runs independent tasks in parallel** (worktree-isolated, up to 3 in parallel — see below).
 
-### 2) 承認待ち中の「先回り作業」（結果非依存に限る）
-ゲートが `pending` の間、**承認結果に依存しない作業だけ** を前倒してよい。判定基準:
+### 2) "Speculative work" while waiting for approval (outcome-independent only)
+While a gate is `pending`, you may pull forward **only work that does not depend on the approval outcome**. Criteria:
 
-- **やってよい**（結果非依存・低コスト・破棄しても痛くない）:
-  リポジトリ雛形/ディレクトリ構成、開発環境・依存のセットアップ、CI/テストハーネスの骨組み、
-  候補技術の**読み取り調査**、Lint/静的解析の整備、フィクスチャ等の足場。
-- **やってはいけない**（承認結果を先取りする＝ゲートの意味を壊す）:
-  保留中の決定を前提にした成果物（例: 要件未承認なのに設計本体を書く／技術選定を確定する／
-  設計未承認なのにタスクを確定する）。これらは人の承認後に行う。
+- **Allowed** (outcome-independent, low-cost, painless to discard):
+  repo scaffolding/directory layout, dev environment/dependency setup, the skeleton of CI/test harnesses,
+  **read-only investigation** of candidate technologies, lint/static-analysis setup, fixtures and other scaffolding.
+- **Not allowed** (pre-empting the approval outcome = breaking the gate's meaning):
+  deliverables premised on a pending decision (e.g. writing the design body before requirements are approved / fixing the technical choice /
+  finalizing tasks before design is approved). Do these only after human approval.
 
-先回り作業は **暫定・破棄前提**。`.agentloop/state.md` の「先回り作業ログ」に記録し、人が破棄・採用を判断できるようにする。
-**先回り作業を理由に gate を `approved` にしてはならない。**
+Speculative work is **provisional and throwaway-by-default**. Record it in the "speculative work log" of `.agentloop/state.md` so the human can decide to discard or adopt it.
+**Never set a gate to `approved` on the grounds of speculative work.**
 
-## タスク依存グラフと最適消化
+## Task dependency graph and optimal consumption
 
-タスクはフラットなリストではなく **依存グラフ(DAG)** として扱う。
+Treat tasks not as a flat list but as a **dependency graph (DAG)**.
 
-- 各タスクは種別を持つ: **基盤**（多数が依存する共通土台）/ **並列**（独立同時進行できる葉）/ **統合**（複数の合流）。
-- グラフから **実行レイヤ**（同一レイヤは並列可能）と **クリティカルパス**（全体所要を決める最長経路）を導出する。
-- **最適消化の方針**: 実行可能フロンティアの中で、①基盤・高 fan-out（被依存が多い）→ ②クリティカルパス上 → ③その他、の順に優先。独立タスクは並列に流す。
-- **隔離実行（worktree）**: 基盤・高 fan-out タスクは **work ブランチ上で直列**に確定する。独立な葉タスクは **`implementer` を `isolation: "worktree"` で起動**し、各自の worktree（別ブランチ・別ディレクトリ）で実装〜品質ゲートまで隔離して進める（**最大3並列**）。`git subtree` は使わない（外部リポジトリ取り込み用で並行作業の分離には不適）。
-- **合流（join）**: 葉タスクは実装完了後、**id 昇順で決定的に** work ブランチへ順次マージする。コンフリクトはマージ点で解消し、マージ完了が **統合タスクのフロンティア解放トリガ** になる。
-- **チェーンは動的**: `/tasks` で事前に組み立て、`/build` で **1タスク完了するたびに組み直す**。実装中に新たな依存・分割が判明したら DAG を更新して再導出する。
-- **確定駆動**: 上記のフロンティア計算・消化順・並列（最大3）・マージ・停止は `scripts/agentloop/build_loop.py`（`make build-loop`）がコードで確定的に回す。導出ロジックは `scripts/agentloop/dag.py` に一本化（`/status` も共用）。LLM 裁量に委ねない。
-- 真実は常に **`.agentloop/tasks.yaml`**（グラフの機械可読 SSOT）。state.md のタスク表/実行プランは `dag.py --render` の人間向けビュー。
+- Each task has a kind: **foundation** (a shared base many depend on) / **parallel** (independent leaves that can run concurrently) / **integration** (a join of several).
+- From the graph, derive **execution layers** (same layer can run in parallel) and the **critical path** (the longest path that determines the overall duration).
+- **Optimal-consumption policy**: within the executable frontier, prioritize ① foundation / high fan-out (many dependents) → ② on the critical path → ③ everything else. Run independent tasks in parallel.
+- **Isolated execution (worktree)**: foundation / high-fan-out tasks are finalized **serially on the work branch**. Independent leaf tasks are run by **launching `implementer` with `isolation: "worktree"`**, each progressing from implementation through the quality gate in isolation in its own worktree (separate branch, separate directory) — **up to 3 in parallel**. Do not use `git subtree` (it is for importing external repos and is unsuitable for separating concurrent work).
+- **Join**: after a leaf task's implementation is complete, merge it into the work branch sequentially, **deterministically in ascending id order**. Resolve conflicts at the merge point; completing a merge is the **trigger that frees the frontier for integration tasks**.
+- **The chain is dynamic**: assembled ahead of time by `/tasks`, and **reassembled each time one task completes** in `/build`. If a new dependency or split is discovered during implementation, update the DAG and re-derive.
+- **Deterministic-driven**: the frontier computation, consumption order, parallelism (max 3), merge, and stop above are run deterministically in code by `scripts/agentloop/build_loop.py` (`make build-loop`). The derivation logic is unified in `scripts/agentloop/dag.py` (shared with `/status`). It is not left to LLM discretion.
+- The truth is always **`.agentloop/tasks.yaml`** (the machine-readable SSOT of the graph). The task table / execution plan in state.md is the human-facing view from `dag.py --render`.
 
-## 行動原則
+## Principles
 
-- **既存実装の再利用を最優先**。新規コードを書く前に、既存の関数・ユーティリティ・パターンを探す。
-- **品質ゲートを通って初めて前進**。実装タスクは「単体/結合テスト green **かつ** `/simplify`・`/code-review` 通過 **かつ** `make check` クリーン」を満たして初めて `done`。いずれか未達のまま `done` にしない。**実行可能成果物（CLI・サーバ等）は、テスト green に加えて最小の実起動 smoke（実際に起動し主要コマンドが動くこと）も DoD に含める**。テストが通っても起動経路（パッケージング・エントリポイント）が壊れていることがあり、それを build 内で捕捉するため。
-- **小さく確実に**。1コミット=1関心事。破壊的・外向きの操作は承認を得てから。
-- **コンテキスト分離**。要件/設計/実装はそれぞれ専用サブエージェント（`.claude/agents/`）に委譲し、メインの文脈を汚さない。コードレビューは `/code-review`、整理は `/simplify` スキルに一本化する。
-- 成果物ドキュメントは日本語で書く。
+- **Reusing existing implementation comes first.** Before writing new code, look for existing functions, utilities, and patterns.
+- **Move forward only after passing the quality gate.** An implementation task is `done` only when it satisfies "unit/integration tests green **and** passes `/simplify`/`/code-review` **and** `make check` is clean". Do not mark `done` while any of these is unmet. **For runnable deliverables (CLI, server, etc.), the DoD also includes a minimal real-launch smoke test (it actually launches and the main commands work)** in addition to green tests. Tests can pass while the launch path (packaging, entry point) is broken; this catches that within build.
+- **Small and sure.** One commit = one concern. Get approval before destructive or outward-facing operations.
+- **Context isolation.** Delegate requirements/design/implementation each to their dedicated subagent (`.claude/agents/`) so the main context stays clean. Unify code review on `/code-review` and cleanup on `/simplify`.
+- Write deliverable documents in the user's language (see "Language" above).
 
-## 品質チェックコマンド（スタック前提と読み替え）
+## Quality-check commands (stack assumptions and substitution)
 
-このテンプレートは `makefile` を同梱し、実装フェーズは以下に寄せる:
+This template ships a `makefile`; the implementation phase leans on:
 
-- `make test` — テスト実行（`pytest backend/`）
-- `make pre-commit` — commit ステージのフック（ruff lint / eslint 等）
-- `make pre-push` — pre-push ステージのフック（ruff-format / prettier / mypy / tsc）
-- **`make check`** — 上記 pre-commit + pre-push を**まとめて実行**（lint / format / type-check の全部）。品質ゲートではこれを使う。
+- `make test` — run tests (`pytest backend/`)
+- `make pre-commit` — commit-stage hooks (ruff lint / eslint, etc.)
+- `make pre-push` — pre-push-stage hooks (ruff-format / prettier / mypy / tsc)
+- **`make check`** — **runs the above pre-commit + pre-push together** (lint / format / type-check, all of it). Use this at the quality gate.
 
-> `pre-commit run --all-files` は commit ステージのフックしか走らない（format・mypy・tsc は `stages: [pre-push]`）。型チェックまで含めるため、ゲートでは `make check` を使う。
+> `pre-commit run --all-files` runs only the commit-stage hooks (format, mypy, tsc are `stages: [pre-push]`). To include type-checking, the gate uses `make check`.
 
-`make` の無いプロジェクトにコピーした場合は、これらを当該プロジェクトのテスト/チェックコマンドに読み替えること（ゲートの考え方は不変）。
+If copied into a project without `make`, substitute these with that project's test/check commands (the gate's idea is unchanged).
 
-## セキュリティゲート
+## Security gate
 
-3層でセキュリティを担保する:
+Security is ensured in three layers:
 
-- **コミット段階（機構）**: `.pre-commit-config.yaml` の **gitleaks** が秘匿情報のコミットを機構的にブロック（`make pre-commit`／`make check` に内包）。誤検知は `.gitleaksignore` で除外する。
-- **実装完了時（ゲート④前）**: `/build` が **`/security-review`** を必須実行し、コードの脆弱性を解消してから人へ承認を仰ぐ。
-- **テスト工程（`/verify`）**: **`/security-review`** と **`make audit`**（依存の脆弱性監査。Python=pip-audit / フロント=pnpm audit。代替: `osv-scanner` で lockfile 一括走査）を必須実行し、結果を `docs/test/test-plan.md` に記録する。
+- **Commit stage (mechanism)**: **gitleaks** in `.pre-commit-config.yaml` mechanically blocks committing secrets (included in `make pre-commit` / `make check`). Exclude false positives with `.gitleaksignore`.
+- **At implementation completion (before gate ④)**: `/build` mandatorily runs **`/security-review`** and resolves code vulnerabilities before asking the human for approval.
+- **Test phase (`/verify`)**: mandatorily runs **`/security-review`** and **`make audit`** (dependency vulnerability audit; Python=pip-audit / frontend=pnpm audit; alternative: `osv-scanner` to scan the lockfile in bulk), and records the results in `docs/test/test-plan.md`.
 
-## ブランチ / コミット規約
+## Branch / commit conventions
 
-- 実装は **作業ブランチ上**で行う（main 直は避ける）。ブランチ名は `.agentloop/state.md` の `branch` に記録する。
-- **並列葉タスクは worktree 上の派生ブランチ**（例: `<branch>/T-NNN`）で隔離実装し、done 時に work ブランチへマージする。worktree は変更が無ければ自動クリーンアップされる。
-- `/build` の per-task ローカルコミットは **`T-NNN: <要約>`** 形式。**1コミット = 1タスク**。
-- **`/build` の承認 = そのループ内のローカルコミットは承認済み作業の一部**。逐一の確認は不要。
-- ただし **push / PR 作成 / main へのマージは外向き操作**。これらは別途、人の承認を得てから行う（勝手に push・マージしない）。
-- **GitHub Issues への書き込み（作成/更新/close／ラベル作成）も外向き操作**。`.agentloop/config.yaml` の `github.enabled: true` という明示 opt-in を同意とみなし、それ以外では一切行わない。`make issue-sync` は一方向ミラー専用で、Issues を真実として読み戻さない。使用ラベル（`kind:*`/`status:*`/`phase:*`/`req:*`）は冪等に provisioning する。
+- Implement **on a work branch** (avoid committing directly to main). Record the branch name in `branch` of `.agentloop/state.md`.
+- **Parallel leaf tasks are implemented in isolation on a worktree derived branch** (e.g. `<branch>/T-NNN`) and merged into the work branch when done. Worktrees are auto-cleaned if there are no changes.
+- `/build`'s per-task local commits use the form **`T-NNN: <summary>`**. **One commit = one task.**
+- **Approving `/build` = the local commits within that loop are part of approved work.** No per-commit confirmation needed.
+- However, **push / PR creation / merging to main are outward-facing operations.** Do these only after separately getting human approval (do not push or merge on your own).
+- **Writing to GitHub Issues (create/update/close / label creation) is also an outward-facing operation.** Treat the explicit opt-in `github.enabled: true` in `.agentloop/config.yaml` as consent; do none of it otherwise. `make issue-sync` is for one-way mirroring only and never reads Issues back as truth. The labels used (`kind:*`/`status:*`/`phase:*`/`req:*`) are provisioned idempotently.
 
-## ディレクトリ
+## Directories
 
-- `.agentloop/state.md` — フェーズ・ゲート・ログの SSOT
-- `.agentloop/tasks.yaml` — タスクグラフ(DAG)の機械可読 SSOT
-- `.agentloop/config.yaml` — 確定実行のノブ源（並列・retry・worktree・ゲート強制）
-- `scripts/agentloop/` — 確定オーケストレーション（`dag.py` 導出＋整合性トレース（`--trace`） / `build_loop.py` 実装ループ / `gate_guard.py` ゲートフック / `issue_sync.py` Issues 一方向ミラー）。**プロダクト用スクリプトは `scripts/` 直下に置き、基盤ツールと混在させない**
-- `docs/` — 工程成果物（要件・設計・ADR・タスク票・テスト計画）。`docs/retrospective.md` に done 時の振り返り（メタ認知の回収）を残す
-- `.claude/commands/` — 各工程の入口（slash command）
-- `.claude/agents/` — 専門サブエージェント
+- `.agentloop/state.md` — SSOT for phase, gates, logs
+- `.agentloop/tasks.yaml` — machine-readable SSOT of the task graph (DAG)
+- `.agentloop/config.yaml` — source of knobs for deterministic execution (parallelism, retry, worktree, gate enforcement)
+- `scripts/agentloop/` — deterministic orchestration (`dag.py` derivation + consistency trace (`--trace`) / `build_loop.py` implementation loop / `gate_guard.py` gate hook / `issue_sync.py` one-way Issues mirror). **Put product scripts directly under `scripts/` and do not mix them with the foundational tools.**
+- `docs/` — phase deliverables (requirements, design, ADR, task tickets, test plan). `docs/retrospective.md` holds the retrospective at `done` (recovering the metacognition).
+- `.claude/commands/` — entry points for each phase (slash commands)
+- `.claude/agents/` — specialized subagents
+</content>

@@ -1,54 +1,56 @@
 ---
-description: フェーズ3 タスク分解。設計を実装可能なタスク票に分け、ゲート③で計画承認を仰ぐ。
+description: Phase 3 task breakdown. Split the design into implementable task tickets and ask for plan approval at gate ③.
 ---
 
-# /tasks — タスク分解フェーズ
+# /tasks — Task breakdown phase
 
-## 前提ゲート確認（最初に必ず）
-`.agentloop/state.md` を読み、`gates.design == approved` を確認する。
-未承認なら作業せず「先に `/design` を承認してください」と伝えて止まる。
+## Prerequisite gate check (always first)
+Read `.agentloop/state.md` and confirm `gates.design == approved`.
+If unapproved, do not work; say "please approve `/design` first" and stop.
 
-## 差し戻し後の再実行（reconcile・既存タスクがある場合）
-`/revise` で上流へ戻った後の再実行で、すでに `tasks.yaml` にタスクがある場合は **ゼロから作り直さない**。修正後の設計と既存タスクを突き合わせて reconcile する:
-- 上流変更で**直接影響する**タスクを特定し、`uv run python scripts/agentloop/dag.py --impacted T-00x,T-00y` で**推移的被依存（下流）**を漏れなく展開する。
-- 各タスクを分類: **keep**（影響なし・status 維持）/ **modify**（要修正 → `needs-revision`）/ **obsolete**（不要 → 備考に印を残し削除しない）/ **new**（追加）。
-- **`done` だが無効化された**タスクは `todo` に戻す（再実装が要る）。実装済みコードはブランチに残るが計画上は再対象。
-- reconcile 後は `dag.py --trace --require-design` を再実行し、**修正後の要件/設計に対してタスクの糸が再び繋がっている**（新要件が未カバーのまま残っていない・削除された要件への宙吊り参照が無い）ことを確認する（終了 0 を確認。1=欠落・2=検査不能）。
-- ゲート③では、通常の計画に加え **影響範囲（impacted の一覧と keep/modify/obsolete/new の分類）** と **整合性トレース** を提示して再承認を得る。
+## Re-run after a roll back (reconcile, when tasks already exist)
+On a re-run after rolling back upstream with `/revise`, if `tasks.yaml` already has tasks, **do not rebuild from scratch**. Reconcile the revised design against the existing tasks:
+- Identify the tasks **directly affected** by the upstream change and fully expand their **transitive dependents (downstream)** with `uv run python scripts/agentloop/dag.py --impacted T-00x,T-00y`.
+- Classify each task: **keep** (unaffected, status preserved) / **modify** (needs fixing → `needs-revision`) / **obsolete** (no longer needed → mark in notes, do not delete) / **new** (added).
+- A task that is **`done` but invalidated** reverts to `todo` (needs reimplementation). The implemented code stays on the branch but is back in scope plan-wise.
+- After reconciling, re-run `dag.py --trace --require-design` and confirm the **task thread is reconnected to the revised requirements/design** (no new requirement left uncovered, no dangling reference to a deleted requirement) (confirm exit 0; 1=missing, 2=cannot check).
+- At gate ③, in addition to the usual plan, present the **impact (the impacted list and the keep/modify/obsolete/new classification)** and the **consistency trace** to get re-approval.
 
-初回（タスク未生成）は下の手順で新規作成する。
+On the first run (no tasks generated yet), create them with the steps below.
 
-## 手順
-1. `docs/20-design.md` を読む。
-2. 設計を **レビュー可能な小さい粒度** のタスク票に分割し、`docs/tasks/T-NNN.md`（雛形 `T-template.md` に準拠）を作成する。各票で必須:
-   - 対応要件/設計
-   - 受入条件
-   - **自動テスト方針**（種別・対象ケース・実行コマンド）← これが無いタスクは作らない。/build の green 判定に使う。
-3. **各タスクを種別で分類**する:
-   - **基盤**: 多数のタスクが依存する共通土台（共通モデル/スキーマ、共通ユーティリティ、認証、設定、型/IF など）。
-   - **並列**: 基盤が整えば互いに独立して同時進行できる機能タスク（葉）。
-   - **統合**: 複数の並列タスク完了後に合流するタスク（結合、E2E、まとめ）。
-4. **依存グラフ(DAG)を組み立てる**: 各タスクの `依存(blockedBy)` と `被依存(fan-out)` を整理する。循環がないこと（DAG であること）を確認する。
-5. DAG から **実行プランを導出**する:
-   - **実行レイヤ**: トポロジカル順に L0,L1,… へ割り付け（同一レイヤ内は並列可能）。基盤は前方に集まるはず。
-   - **クリティカルパス**: 最長チェーンを特定する（全体所要を決める経路）。
-   - **実行可能フロンティア**: 依存なしで今すぐ着手できる todo。
-6. **タスクグラフを機械可読な SSOT として `.agentloop/tasks.yaml` に書き出す**（スキーマは同ファイルのコメント参照: `id`/`title`/`kind`/`blockedBy`/`status: todo`/`test`、加えて任意の `req`（対応要件。`T-NNN.md` の「対応要件」から。例 `R-1`）/ `phase`（工程。既定 `build`。`/verify` 由来のバグ修正タスクは `verify`））。`req`/`phase` は GitHub Issues ミラー時に `req:*`/`phase:*` ラベルになり、issue から「どの要件・どの工程の作業か」を判別できる。これが `/build`（`scripts/agentloop/build_loop.py`）と `/status`（`scripts/agentloop/dag.py`）が読む確定的な真実。fan-out・フロンティア・レイヤ・クリティカルパスは `blockedBy` から導出されるので保存しない。
-   - 書き出し後 `uv run python scripts/agentloop/dag.py --validate` で循環・未知依存・重複IDが無いことを確認する（非0なら直す）。
-   - **整合性トレース** `uv run python scripts/agentloop/dag.py --trace --require-design` で **要件→設計→タスクの糸が切れていないか** を機械検査する（設計承認済みフェーズなので `--require-design` を付け、設計ドキュメント不在で設計次元の検査が黙って抜けるのを防ぐ）。終了コード **0=整合OK / 1=欠落（直す）/ 2=検査不能（要件ID 0件・ドキュメント不在等。記法・パスを直す）**。
-     - 検出する欠落: ①担う **build** タスクの無い要件（verify 工程タスクはカバレッジに数えない）②設計に節の無い要件 ③要件に無い R を参照する設計/タスク（宙吊り参照・工程不問）④req 未設定の build タスク（WARN・終了コードに影響しない）。
-     - 前提: 各タスクの `req` は `R-<番号>` 形式（不正は `--validate` が弾く）。要件ID は要件/設計ドキュメントの**見出し行**から拾う（深さ H1〜H6 不問・1見出しに複数ID可・コードフェンス内の例示は無視）。
-   - `state.md` の「タスク表」「実行プラン」は人間向けビュー。`uv run python scripts/agentloop/dag.py --render` の出力を貼って埋める（タスクの真実は tasks.yaml 側）。
-7. **ゲート③**: タスク一覧に加え **依存チェーン（レイヤ図・クリティカルパス・基盤タスク）** と **整合性トレース** を提示し、「この分割と順序計画で実装に進んでよいか」を確認する。`dag.py --render`（レイヤ/クリティカルパスのテキスト）・**`dag.py --mermaid`（依存図 Mermaid `graph TD`）**・**`dag.py --trace --require-design`（要件カバレッジ表）** を生成して提示する（口頭でなく図/表を出す）。**全要件がタスクに連結し、宙吊り参照が無いこと**を人が一目で確認できる状態にする。
-   - **自己評価を必ず併せて提示**する（CLAUDE.md「ゲート自己評価」）: 分割の前提・見積りの確信度・リスクの高いタスク（不確実/外部依存/大粒度）・未解決の論点。確信度の低いタスクは票の「メモ/設計判断」にも残す。
+## Steps
+1. Read `docs/20-design.md`.
+2. Split the design into **review-sized task tickets** and create `docs/tasks/T-NNN.md` (following the `T-template.md` scaffold). Each ticket must have:
+   - the requirement/design it covers
+   - acceptance criteria
+   - an **automated-test approach** (kind, target cases, run command) ← do not create a task without this. `/build` uses it for the green decision.
+3. **Classify each task by kind**:
+   - **foundation**: a shared base many tasks depend on (shared models/schema, shared utilities, auth, config, types/interfaces, etc.).
+   - **parallel**: feature tasks (leaves) that can run independently and concurrently once the foundation is in place.
+   - **integration**: a task that joins several parallel tasks once they complete (integration, E2E, wrap-up).
+4. **Assemble the dependency graph (DAG)**: organize each task's `blockedBy` (dependencies) and fan-out (dependents). Confirm there are no cycles (it is a DAG).
+5. **Derive the execution plan** from the DAG:
+   - **Execution layers**: assign to L0, L1, … in topological order (within a layer, parallel is possible). Foundation should cluster up front.
+   - **Critical path**: identify the longest chain (the path that determines the overall duration).
+   - **Executable frontier**: todo tasks with no dependencies, ready to start now.
+6. **Write the task graph out to `.agentloop/tasks.yaml` as the machine-readable SSOT** (schema in that file's comments: `id`/`title`/`kind`/`blockedBy`/`status: todo`/`test`, plus optional `req` (the requirement it covers, from "covers" in `T-NNN.md`, e.g. `R-1`) / `phase` (the phase; default `build`; a bug-fix task originating from `/verify` is `verify`)). `req`/`phase` become `req:*`/`phase:*` labels when mirrored to GitHub Issues, letting you tell from an issue "which requirement / which phase the work is for". This is the deterministic truth read by `/build` (`scripts/agentloop/build_loop.py`) and `/status` (`scripts/agentloop/dag.py`). fan-out, frontier, layers, and the critical path are derived from `blockedBy`, so they are not stored.
+   - After writing, run `uv run python scripts/agentloop/dag.py --validate` to confirm no cycles, unknown dependencies, or duplicate IDs (fix if non-zero).
+   - **Consistency trace** `uv run python scripts/agentloop/dag.py --trace --require-design` mechanically checks whether the **requirements → design → tasks thread is unbroken** (since design is approved at this phase, pass `--require-design` to prevent the design dimension from being silently skipped when the design document is absent). Exit code **0=consistent / 1=missing (fix) / 2=cannot check (0 requirement IDs, document absent, etc.; fix the notation/paths)**.
+     - Missing items detected: ① a requirement with no **build** task covering it (verify-phase tasks do not count toward coverage) ② a requirement with no section in the design ③ a design/task referencing an R not in the requirements (dangling reference, any phase) ④ a build task with no `req` set (WARN; does not affect the exit code).
+     - Assumption: each task's `req` is in `R-<number>` form (invalid ones are rejected by `--validate`). Requirement IDs are picked from the **heading lines** of the requirements/design documents (any depth H1–H6; multiple IDs per heading allowed; examples inside code fences ignored).
+   - The "task table" and "execution plan" in `state.md` are the human-facing view. Fill them by pasting the output of `uv run python scripts/agentloop/dag.py --render` (the truth lives in tasks.yaml).
+7. **Gate ③**: in addition to the task list, present the **dependency chain (layer diagram, critical path, foundation tasks)** and the **consistency trace** and confirm "may we proceed to implementation with this split and ordering plan?". Generate and present `dag.py --render` (layers/critical-path text), **`dag.py --mermaid` (the dependency graph as Mermaid `graph TD`)**, and **`dag.py --trace --require-design` (the requirement-coverage table)** (show diagrams/tables, not just words). Make it so the human can see at a glance that **every requirement is linked to a task and there are no dangling references**.
+   - **Always present a self-assessment as well** (CLAUDE.md "Gate self-assessment"): assumptions behind the split, confidence in estimates, high-risk tasks (uncertain/external-dependency/coarse-grained), open questions. Also leave low-confidence tasks in the ticket's "Notes / design decisions".
 
-## 承認待ち中（ボトルネック最小化）
-ゲート③提示後、承認を待つ間に以下を進めてよい（**結果非依存・破棄前提**）。`state.md` の「先回り作業ログ」に記録する。
-- `PushNotification` で人へ承認待ちを通知。
-- 承認済み設計から確実に必要なテストフィクスチャ/ハーネス・足場の用意。
-- **禁止**: タスク計画を先取りした各機能の本実装。
+Write the deliverables (`docs/tasks/T-NNN.md`) in the user's language.
 
-## 承認されたら
-- `state.md` の `gates.tasks` を `approved`、`current_phase` を `build`、`updated_at` を更新。
-- **（GitHub 連携時のみ）** `make issue-sync` を実行し、承認済みタスクを Issues へ一方向ミラーする。`.agentloop/config.yaml` の `github.enabled: true` のときだけ実働し、gh/remote 不在なら自動スキップ（失敗にしない）。**承認前には実行しない**（未承認タスクの issue 化を避ける）。tasks.yaml が常に SSOT で、Issues は読み戻さない。
-- 「次は `/build`」と案内する。
+## While waiting for approval (minimizing the bottleneck)
+After presenting gate ③, while waiting you may proceed with the following (**outcome-independent, throwaway-by-default**). Record in the "speculative work log" of `state.md`.
+- Notify the human of the pending approval via `PushNotification`.
+- Preparing test fixtures/harness/scaffolding that are clearly needed from the approved design.
+- **Forbidden**: real implementation of each feature that pre-empts the task plan.
+
+## Once approved
+- Set `gates.tasks` to `approved`, `current_phase` to `build`, and update `updated_at` in `state.md`.
+- **(Only with GitHub integration)** Run `make issue-sync` to one-way-mirror the approved tasks to Issues. It only acts when `github.enabled: true` in `.agentloop/config.yaml`, and auto-skips if gh/remote is absent (does not fail). **Do not run it before approval** (avoid making issues for unapproved tasks). tasks.yaml is always the SSOT; Issues are not read back.
+- Point to "next is `/build`".
