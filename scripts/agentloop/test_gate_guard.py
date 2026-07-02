@@ -24,8 +24,9 @@ updated_at: "2026-06-26"
 # board
 """
 
-_CONFIG_ON = "build:\n  max_parallel: 3\ngates:\n  enforce_hook: true\n"
-_CONFIG_OFF = "build:\n  max_parallel: 3\ngates:\n  enforce_hook: false\n"
+_CONFIG_ON = "build:\n  max_parallel: 3\ngates:\n  enforce_hook: true\n  template_mode: false\n"
+_CONFIG_OFF = "build:\n  max_parallel: 3\ngates:\n  enforce_hook: false\n  template_mode: false\n"
+_CONFIG_TEMPLATE = "build:\n  max_parallel: 3\ngates:\n  enforce_hook: true\n  template_mode: true\n"
 
 
 def _setup(
@@ -106,9 +107,37 @@ def test_enforce_hook_false_allows_everything(in_tmp: Path) -> None:
     assert allowed is True
 
 
-def test_fail_open_when_no_state(in_tmp: Path) -> None:
-    # If state.md is absent, do not intervene (fail-open).
-    (in_tmp / ".agentloop").mkdir(parents=True, exist_ok=True)
-    (in_tmp / ".agentloop" / "config.yaml").write_text(_CONFIG_ON, encoding="utf-8")
+def test_template_mode_allows_everything(in_tmp: Path) -> None:
+    # The template repo itself: scaffold originals share deliverable paths, so the guard steps aside.
+    _setup(in_tmp, tasks="pending", config=_CONFIG_TEMPLATE)
     allowed, _ = gate_guard.evaluate("backend/app/main.py")
     assert allowed is True
+    allowed, _ = gate_guard.evaluate("docs/20-design.md")
+    assert allowed is True
+
+
+def test_template_mode_defaults_off(in_tmp: Path) -> None:
+    # A config without the key behaves as product mode (guard live).
+    _setup(in_tmp, tasks="pending", config="gates:\n  enforce_hook: true\n")
+    allowed, _ = gate_guard.evaluate("backend/app/main.py")
+    assert allowed is False
+
+
+def test_fail_closed_when_no_state(in_tmp: Path) -> None:
+    # If state.md is absent, guarded paths are denied (fail closed): the guard is the only
+    # mechanism for the design/tasks phases, so an unknown state must not open every gate.
+    (in_tmp / ".agentloop").mkdir(parents=True, exist_ok=True)
+    (in_tmp / ".agentloop" / "config.yaml").write_text(_CONFIG_ON, encoding="utf-8")
+    allowed, reason = gate_guard.evaluate("backend/app/main.py")
+    assert allowed is False
+    assert "enforce_hook" in reason  # the escape hatch is pointed out
+    # Unguarded paths stay allowed even with unreadable state.
+    assert gate_guard.evaluate("README.md") == (True, "")
+
+
+def test_fail_closed_when_gates_malformed(in_tmp: Path) -> None:
+    (in_tmp / ".agentloop").mkdir(parents=True, exist_ok=True)
+    (in_tmp / ".agentloop" / "config.yaml").write_text(_CONFIG_ON, encoding="utf-8")
+    (in_tmp / ".agentloop" / "state.md").write_text("no front matter here", encoding="utf-8")
+    allowed, _ = gate_guard.evaluate("docs/tasks/T-001.md")
+    assert allowed is False

@@ -91,6 +91,14 @@ def project(tmp_path: Path) -> Iterator[Path]:
         os.chdir(prev)
 
 
+def test_dry_run_blocks_when_placeholders_remain(project: Path) -> None:
+    # A template that was never `make init`-ed must not start consuming tasks.
+    state = _STATE.format(tasks="approved").replace('project: "demo"', 'project: "<enter the product name>"')
+    (project / ".agentloop" / "state.md").write_text(state, encoding="utf-8")
+    (project / ".agentloop" / "tasks.yaml").write_text(_TASKS, encoding="utf-8")
+    assert build_loop.main(["--dry-run"]) == 2
+
+
 def test_dry_run_blocks_when_tasks_not_approved(project: Path) -> None:
     (project / ".agentloop" / "state.md").write_text(_STATE.format(tasks="pending"), encoding="utf-8")
     (project / ".agentloop" / "tasks.yaml").write_text(_TASKS, encoding="utf-8")
@@ -182,6 +190,130 @@ def test_consume_parallel_partial_failure_blocks_only_failed(project: Path, monk
     by_id = {t.id: t.status for t in dag.load(".agentloop/tasks.yaml").tasks}
     assert by_id["T-002"] == "done"
     assert by_id["T-003"] == "blocked"
+
+
+# --- quality-gate pipeline (config-declared DoD) -----------------------------
+
+_CONFIG_STEPS = (
+    "build:\n"
+    "  max_parallel: 3\n"
+    "  worktree: {enabled: true, dir: .worktrees, branch_pattern: '{branch}/{task_id}'}\n"
+    "  quality_gate:\n"
+    "    agent_steps: true\n"
+    "    steps:\n"
+    "      - {name: test, kind: cmd, run: 'make test', retries: 1}\n"
+    "      - {name: check, kind: cmd, run: 'make check', retries: 1}\n"
+    "      - {name: review, kind: agent}\n"
+    "      - {name: smoke, kind: cmd, run: '', retries: 1}\n"
+    "gates:\n  enforce_hook: true\n"
+)
+
+
+def test_config_legacy_form_maps_to_two_cmd_steps(project: Path) -> None:
+    # The pre-pipeline config form (test_cmd/check_cmd + retries) keeps its exact old behavior.
+    config = build_loop.Config.load()
+    assert [(s.name, s.kind, s.run, s.retries) for s in config.steps] == [
+        ("test", "cmd", "make test", 2),
+        ("check", "cmd", "make check", 2),
+    ]
+    assert config.gate_cmds == ["make test", "make check"]
+
+
+def test_config_steps_form_parses_kinds_and_retries(project: Path) -> None:
+    (project / ".agentloop" / "config.yaml").write_text(_CONFIG_STEPS, encoding="utf-8")
+    config = build_loop.Config.load()
+    assert [(s.name, s.kind) for s in config.steps] == [
+        ("test", "cmd"),
+        ("check", "cmd"),
+        ("review", "agent"),
+        ("smoke", "cmd"),
+    ]
+    assert config.steps[0].retries == 1
+    assert config.gate_cmds == ["make test", "make check"]  # empty-run smoke is not a gate command
+
+
+def test_config_rejects_unknown_step_kind(project: Path) -> None:
+    bad = _CONFIG_STEPS.replace("kind: agent", "kind: llm")
+    (project / ".agentloop" / "config.yaml").write_text(bad, encoding="utf-8")
+    with pytest.raises(ValueError, match="unknown kind"):
+        build_loop.Config.load()
+
+
+def _steps_orch(project: Path, monkeypatch: pytest.MonkeyPatch) -> build_loop.Orchestrator:
+    (project / ".agentloop" / "config.yaml").write_text(_CONFIG_STEPS, encoding="utf-8")
+    _provision(project)
+    return build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
+
+
+def test_pipeline_stops_at_first_failing_cmd_step(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    orch = _steps_orch(project, monkeypatch)
+    monkeypatch.setattr(orch, "_run_cmd_step", lambda step, cwd: "boom" if step.name == "check" else "")
+    monkeypatch.setattr(orch, "_run_agent_step", lambda task, cwd: pytest.fail("agent step must not run"))
+    failed, log = orch._run_pipeline(_leaf("T-002", "leaf A"), cwd=".")
+    assert failed == "check"
+    assert log == "boom"
+
+
+def test_pipeline_reruns_passed_cmd_steps_after_agent_change(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The agent step's fixes invalidate the earlier green evidence: test/check run again after it.
+    orch = _steps_orch(project, monkeypatch)
+    ran: list[str] = []
+
+    def record(step: build_loop.GateStep, cwd: str) -> str:
+        ran.append(step.name)
+        return ""
+
+    monkeypatch.setattr(orch, "_run_cmd_step", record)
+    monkeypatch.setattr(orch, "_run_agent_step", lambda task, cwd: True)  # it changed the tree
+    failed, _ = orch._run_pipeline(_leaf("T-002", "leaf A"), cwd=".")
+    assert failed is None
+    assert ran == ["test", "check", "test", "check"]  # smoke (empty run) is skipped, never executed
+
+
+def test_pipeline_skips_rerun_when_agent_changed_nothing(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    orch = _steps_orch(project, monkeypatch)
+    ran: list[str] = []
+
+    def record(step: build_loop.GateStep, cwd: str) -> str:
+        ran.append(step.name)
+        return ""
+
+    monkeypatch.setattr(orch, "_run_cmd_step", record)
+    monkeypatch.setattr(orch, "_run_agent_step", lambda task, cwd: False)
+    failed, _ = orch._run_pipeline(_leaf("T-002", "leaf A"), cwd=".")
+    assert failed is None
+    assert ran == ["test", "check"]
+
+
+def test_pipeline_agent_steps_off_drops_agent_step(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    orch = _steps_orch(project, monkeypatch)
+    orch.config.agent_steps = False
+    monkeypatch.setattr(orch, "_run_agent_step", lambda task, cwd: pytest.fail("agent step must not run"))
+    monkeypatch.setattr(orch, "_run_cmd_step", lambda step, cwd: "")
+    failed, _ = orch._run_pipeline(_leaf("T-002", "leaf A"), cwd=".")
+    assert failed is None
+
+
+def test_run_task_to_done_budget_is_per_step(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # One failure of test and one of check each consume their own budget (retries: 1 each) —
+    # under the old max()-collapsed single counter this sequence would have been blocked.
+    orch = _steps_orch(project, monkeypatch)
+    outcomes = iter([("test", "t red"), ("check", "c red"), (None, "")])
+    implementer_calls: list[str] = []
+    monkeypatch.setattr(orch, "_invoke_implementer", lambda task, cwd, log: implementer_calls.append(log))
+    monkeypatch.setattr(orch, "_run_pipeline", lambda task, cwd: next(outcomes))
+    ok, log = orch._run_task_to_done(_leaf("T-002", "leaf A"), cwd=".")
+    assert ok is True
+    assert implementer_calls == ["", "t red", "c red"]  # each failure went back to the implementer
+
+
+def test_run_task_to_done_blocks_when_one_step_budget_runs_out(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    orch = _steps_orch(project, monkeypatch)
+    monkeypatch.setattr(orch, "_invoke_implementer", lambda task, cwd, log: None)
+    monkeypatch.setattr(orch, "_run_pipeline", lambda task, cwd: ("test", "still red"))
+    ok, log = orch._run_task_to_done(_leaf("T-002", "leaf A"), cwd=".")
+    assert ok is False  # retries: 1 → initial attempt + 1 send-back, then blocked
+    assert log == "still red"
 
 
 # --- failure summarization (retry-friendly, token-lean) ---------------------

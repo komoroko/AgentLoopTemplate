@@ -7,7 +7,7 @@
 #   → use WSL or Git Bash
 # =========================================================
 
-.PHONY: install setup pre-commit pre-push check test test-tools audit build-loop issue-sync revise clean
+.PHONY: install setup init pre-commit pre-push check test test-tools audit build-loop issue-sync revise clean
 
 # Install tools (uv / pnpm binaries)
 install:
@@ -18,6 +18,12 @@ install:
 # If using the frontend, also run `cd frontend && pnpm install`
 setup:
 	uv sync
+
+# Turn the copied template into a product (idempotent): fills the pyproject / state.md placeholders,
+# creates the work branch, and flips gates.template_mode off so the gate guard goes live.
+#   make init NAME=myproduct [BRANCH=build/myproduct]
+init:
+	uv run python scripts/agentloop/init.py --name "$(NAME)" $(if $(BRANCH),--branch "$(BRANCH)")
 
 # Commit-stage hooks (ruff lint / eslint / various checks)
 pre-commit:
@@ -30,9 +36,10 @@ pre-push:
 # Implementation quality gate: run all commit + pre-push hooks (lint / format / type-check) together
 check: pre-commit pre-push
 
-# Run pytest
+# Run pytest. Exit code 5 = "no tests collected" is tolerated so a freshly
+# copied template (empty backend/) passes; the same tolerance is used in CI.
 test:
-	uv run pytest -vv --lf backend/
+	uv run pytest -vv --lf backend/ || test $$? -eq 5
 
 # Self-tests for the template's foundational tools (scripts/agentloop/). Unit tests of the deterministic orchestrator, DAG, and gate hook.
 test-tools:

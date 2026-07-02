@@ -71,16 +71,20 @@ This template is itself a multi-agent orchestration, and its own machinery follo
 
 Prerequisites: WSL / Linux / macOS and `make` (not Windows-native).
 
-1. **Copy this template** into a new product repository.
-2. `git init` and create a work branch (e.g. `git switch -c build/<product>`). Implement on the work branch, not directly on main.
-3. Install tools and sync dependencies:
+1. **Copy this template** into a new product repository and `git init`.
+2. Install tools and sync dependencies:
    ```bash
-   make install   # install the uv / pnpm binaries
+   make install   # install the uv / pnpm binaries (runs the official curl|sh installers;
+                  # in a locked-down/offline environment, install uv and pnpm manually instead)
    make setup     # uv sync (sync dev dependencies, generate uv.lock)
    # if using the frontend: cd frontend && pnpm install
    ```
-4. Sanity check: `make check` (lint/format/type)・`make test` (pytest)・`make test-tools` (self-tests of the deterministic orchestrator in `scripts/agentloop/`).
-5. Fill in the project name: `name` in `pyproject.toml` (initial `project-name`) and `project`・`branch` in `.agentloop/state.md`.
+3. **Initialize the product** (idempotent):
+   ```bash
+   make init NAME=<product>   # optionally BRANCH=build/<product>
+   ```
+   This fills the placeholders (`name` in `pyproject.toml`; `project`/`branch`/`updated_at` in `.agentloop/state.md`), creates and switches to the work branch, and flips `gates.template_mode` off so the gate guard goes live. Implement on the work branch, not directly on main.
+4. Sanity check: `make check` (lint/format/type)・`make test` (pytest; passes on the empty template)・`make test-tools` (self-tests of the deterministic orchestrator in `scripts/agentloop/`).
 
 ## Usage
 
@@ -118,10 +122,10 @@ make build-loop ARGS=--dry-run   # check just the control flow without calling c
 **B. Interactive loop — `/loop /build`**
 An alternative that runs the loop in conversation without the orchestrator.
 
-- A task is complete only after **passing all quality gates**: automated tests green → `/simplify` (cleanup) → `/code-review` (bug fixes) → `make check` (fix lint/format/typecheck until errors are gone).
+- A task is complete only after **passing the quality-gate pipeline** — `quality_gate.steps` in `.agentloop/config.yaml` is the **single definition of the DoD** (default: `make test` green → `make check` clean → a review step applying the `/code-review`+`/simplify` disciplines → a real-launch smoke test for runnable deliverables). Each cmd step has its own retry budget; a failure is sent back to the implementer until the budget runs out (→ `blocked`).
 - **Parallel tasks run in isolation**: independent leaf tasks are implemented in their own branch/working directory with `git worktree`, **up to 3 in parallel** (`max_parallel` in `config.yaml`), and merged into the work branch sequentially in ascending id order when done. Foundation tasks are finalized first on the work branch.
 - An unsolvable task becomes `blocked`; an upstream defect becomes `needs-revision`, **escalated to the human**, and the loop stops.
-- **The determinism boundary**: control flow, parallelism, merge, gate decision, and stopping are deterministic in code. Only each task's implementation code content is LLM-derived and non-deterministic, absorbed by "retry until the gate passes, else blocked". **The orchestrator does not touch `gates.build`** (only the human opens a gate).
+- **The determinism boundary**: control flow, parallelism, merge, cmd-step gate decisions, and stopping are deterministic in code. Each task's implementation code and the review step's fixes are LLM-derived and non-deterministic, absorbed by "re-verify the already-passed steps after a review change; retry until green, else blocked". **The orchestrator does not touch `gates.build`** (only the human opens a gate).
 
 > **Assumed stack**: the bundled `makefile` provides `make test` (pytest) and `make check` (ruff/format/mypy/tsc together). `make check` bundles `make pre-commit` (commit stage) and `make pre-push` (format/mypy/tsc). If copied into a project without `make`, substitute your own test/check commands.
 
@@ -134,10 +138,19 @@ Ensured in three layers: **gitleaks** (mechanically prevents committing secrets 
 If you want to make tasks visible to the team/stakeholders, you can **one-way-mirror** `tasks.yaml` to GitHub Issues (`make issue-sync`).
 
 - **Off by default.** Enable with `github.enabled: true` in `.agentloop/config.yaml`. Requires the `gh` CLI and a GitHub remote; auto-skips if absent (does not break offline / right after copying).
-- One issue per task T-NNN. The issue number is not written to tasks.yaml; matching is by label + title prefix. `done` is closed.
+- One issue per task T-NNN. The issue number is not written to tasks.yaml; matching is by label + a hidden `<!-- agentloop:T-NNN -->` body marker (so renaming an issue does not break the link). `done` is closed.
 - **Tell them apart by the labels applied**: `kind:*` (kind) / `status:*` (status) / `phase:*` (phase: requirements/design/build/verify) / `req:*` (covered requirement). The labels used are **auto-created (provisioned)** with `gh label create --force`, so it does not fail on the first run even in a repo with no labels.
 - **One-way only**: `tasks.yaml` is always the SSOT. Edits on the Issues side are not read back (preserving deterministic, offline operation). Check just the plan with `make issue-sync ARGS=--dry-run`.
 - Writing issues is an outward-facing operation, so the `github.enabled: true` opt-in serves as consent.
+
+## Troubleshooting
+
+- **A task went `blocked`** — the quality gate could not be passed within the step's retry budget. Read the summary appended to `.agentloop/build-loop.log` (and the escalation log in `state.md`), fix the cause (or fix the task ticket), set the task's `status` back to `todo` in `.agentloop/tasks.yaml`, and re-run `make build-loop`. If the cause is an upstream (requirements/design) defect, roll back with `/revise <phase>` instead.
+- **The loop was interrupted** (Ctrl-C, crash, network) — just re-run `make build-loop`. On startup it resets tasks left `in_progress` back to `todo` and cleans up leftover worktrees/branches before recreating them, so resuming is safe.
+- **An edit was denied by the gate guard** ("Blocked: gate not approved…") — you are editing a next-phase deliverable while its prerequisite gate is `pending`. That is the mechanism working; get the gate approved first. If the state is genuinely wrong, fix `gates.*` in `.agentloop/state.md` (approval is the human's call). Emergency escape hatch: `gates.enforce_hook: false` in `.agentloop/config.yaml`.
+- **Every guarded edit is denied and the message says state.md is unreadable** — `.agentloop/state.md` is missing or its front-matter is malformed; the guard fails closed. Restore the file (from git history if needed) so the `gates:` block parses again.
+- **`make build-loop` refuses to start with "template placeholders"** — run `make init NAME=<product>` first (see Setup).
+- **state.md and reality have drifted** (e.g. the task table is stale) — `tasks.yaml` is the truth for tasks; regenerate the human-facing view with `uv run python scripts/agentloop/dag.py --render` and paste it into `state.md`. Gates and phase in `state.md` are the truth for the lifecycle; correct them deliberately (only a human opens or rewinds a gate).
 
 ## Layout
 
@@ -145,7 +158,7 @@ If you want to make tasks visible to the team/stakeholders, you can **one-way-mi
 |------|------|
 | `.agentloop/state.md` | SSOT for phase, gates, logs |
 | `.agentloop/tasks.yaml` | machine-readable SSOT of the task graph (DAG) |
-| `.agentloop/config.yaml` | source of knobs for deterministic execution (parallelism, retry, worktree, gate enforcement) |
+| `.agentloop/config.yaml` | source of knobs for deterministic execution (parallelism, worktree, gate enforcement) and the single definition of the DoD (`quality_gate.steps`) |
 | `scripts/agentloop/` | deterministic orchestration (`dag.py` / `build_loop.py` / `gate_guard.py`). Product scripts go directly under `scripts/` |
 | `CLAUDE.md` | agent operating rules and gate rules |
 | `.claude/commands/` | entry points for each phase (`/req` – `/status`) |

@@ -5,15 +5,16 @@ deterministically **in code, not a prompt**. Each task's implementation code con
 because an LLM writes it (the implementer launched headless with `claude -p`), but
 
   - frontier computation / consumption order / max parallelism / worktree isolation / merge order
-  - the pass/fail gate decision by the exit code of `make test` → `make check`
-  - the retry limit / blocked decision / stop condition / prerequisite-gate check
+  - the pass/fail decision of each quality-gate step (config `quality_gate.steps`) by exit code
+  - the per-step retry budget / blocked decision / stop condition / prerequisite-gate check
 
-are all decided deterministically by this script. `.agentloop/config.yaml` is the single source of knobs.
+are all decided deterministically by this script. `.agentloop/config.yaml` is the single source of knobs,
+and its `quality_gate.steps` is the single definition of the DoD (CLAUDE.md and /build refer here).
 
 The determinism boundary:
-  - Deterministic (here): control flow, parallelism, merge, gate decision, stopping.
-  - Non-deterministic (LLM): implementation code and the findings of /code-review and /simplify
-    → absorbed by "retry until the gate passes, else blocked".
+  - Deterministic (here): control flow, parallelism, merge, cmd-step gate decisions, stopping.
+  - Non-deterministic (LLM): implementation code, and the review/simplify agent step's fixes
+    → absorbed by "re-run the preceding cmd steps after an agent step; retry until green, else blocked".
 
 This script **does not set gates.build to approved** (only the human opens a gate).
 After all tasks are done it prints a summary and stops, leaving it to the human's approval (/build's gate ④).
@@ -32,6 +33,7 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import dag
 import yaml
@@ -51,33 +53,82 @@ class StopLoop(Exception):
         self.code = code
 
 
+@dataclass(frozen=True)
+class GateStep:
+    """One quality-gate step.
+
+    kind="cmd"   — run `run` and decide deterministically by exit code. `retries` is that step's
+                   own budget for sending a failure back to the implementer (empty `run` = skip).
+    kind="agent" — a headless review+simplify pass (`claude -p`) that fixes findings in place.
+                   Its content is non-deterministic, so the pipeline re-runs the cmd steps that
+                   already passed whenever it changed the tree.
+    """
+
+    name: str
+    kind: str
+    run: str = ""
+    retries: int = 2
+
+
+def _parse_steps(qg: Any, retries: Any) -> tuple[GateStep, ...]:
+    """Parse quality_gate.steps; fall back to the legacy test_cmd/check_cmd + retries form.
+
+    The legacy form maps to exactly the old behavior (two cmd steps, no agent step), so configs
+    written before the pipeline keep working unchanged.
+    """
+    raw = qg.get("steps")
+    if not raw:
+        return (
+            GateStep("test", "cmd", str(qg.get("test_cmd", "make test")), int(retries.get("test_fix", 2))),
+            GateStep("check", "cmd", str(qg.get("check_cmd", "make check")), int(retries.get("check_fix", 2))),
+        )
+    if not isinstance(raw, list):
+        raise ValueError("quality_gate.steps must be a list")
+    steps: list[GateStep] = []
+    for i, entry in enumerate(raw):
+        if not isinstance(entry, dict):
+            raise ValueError(f"quality_gate.steps[{i}] must be a mapping")
+        kind = str(entry.get("kind", "cmd"))
+        if kind not in ("cmd", "agent"):
+            raise ValueError(f"quality_gate.steps[{i}]: unknown kind {kind!r} (expected cmd | agent)")
+        steps.append(
+            GateStep(
+                name=str(entry.get("name", f"step{i}")),
+                kind=kind,
+                run=str(entry.get("run") or ""),
+                retries=max(0, int(entry.get("retries", 2))),
+            )
+        )
+    return tuple(steps)
+
+
 @dataclass
 class Config:
     max_parallel: int
     worktree_enabled: bool
     worktree_dir: str
     branch_pattern: str
-    test_fix: int
-    check_fix: int
-    test_cmd: str
-    check_cmd: str
+    steps: tuple[GateStep, ...]
+    agent_steps: bool
+
+    @property
+    def gate_cmds(self) -> list[str]:
+        """The deterministic commands of the gate (for prompts / display)."""
+        return [s.run for s in self.steps if s.kind == "cmd" and s.run]
 
     @classmethod
     def load(cls, path: str = CONFIG_PATH) -> Config:
         data = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
         build = data.get("build") or {}
         wt = build.get("worktree") or {}
-        retries = build.get("retries") or {}
         qg = build.get("quality_gate") or {}
         return cls(
             max_parallel=max(1, int(build.get("max_parallel", 3))),
             worktree_enabled=bool(wt.get("enabled", True)),
             worktree_dir=str(wt.get("dir", ".worktrees")),
             branch_pattern=str(wt.get("branch_pattern", "{branch}/{task_id}")),
-            test_fix=int(retries.get("test_fix", 2)),
-            check_fix=int(retries.get("check_fix", 2)),
-            test_cmd=str(qg.get("test_cmd", "make test")),
-            check_cmd=str(qg.get("check_cmd", "make check")),
+            steps=_parse_steps(qg, build.get("retries") or {}),
+            agent_steps=bool(qg.get("agent_steps", True)),
         )
 
 
@@ -104,19 +155,26 @@ def work_branch(front: dict[str, object]) -> str:
     return out.strip() if rc == 0 else "HEAD"
 
 
+# The pointer header of tasks.yaml. The shipped scaffold starts with exactly these lines, so the
+# round-trip rewrite below is lossless — keep the file pure data + this pointer (schema detail
+# lives in .claude/commands/tasks.md, not in comments a rewrite would destroy).
+TASKS_HEADER = (
+    "# .agentloop/tasks.yaml — machine-readable SSOT of the task graph (DAG) (build_loop updates status)\n"
+    "# schema (id/title/kind/blockedBy/status/test/req/phase): see .claude/commands/tasks.md / CLAUDE.md\n"
+)
+
+
 def set_task_status(task_id: str, status: str, tasks_path: str = TASKS_PATH) -> None:
-    """Update one task's status in tasks.yaml and write it back (machine data, so round-trip is fine)."""
+    """Update one task's status in tasks.yaml and write it back (pure data + pointer header)."""
     data = yaml.safe_load(Path(tasks_path).read_text(encoding="utf-8")) or {}
     tasks = data.get("tasks") or []
     for t in tasks:
         if str(t.get("id")) == task_id:
             t["status"] = status
             break
-    header = (
-        "# .agentloop/tasks.yaml — machine-readable SSOT of the task graph (DAG) (build_loop updates status)\n"
-        "# schema (id/title/kind/blockedBy/status/test/req/phase): see .claude/commands/tasks.md / CLAUDE.md\n"
+    Path(tasks_path).write_text(
+        TASKS_HEADER + yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8"
     )
-    Path(tasks_path).write_text(header + yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
 
 
 def log_escalation(message: str) -> None:
@@ -253,11 +311,12 @@ class Orchestrator:
             if task.req
             else "docs/20-design.md"
         )
+        gate_list = " and ".join(f"`{c}`" for c in self.config.gate_cmds) or "the quality-gate commands"
         prompt = (
             f'You are the implementer subagent. Your only task is {task.id} "{task.title}".\n'
             f"Read docs/tasks/{task.id}.md, {design_ref}, and the existing code, and implement "
             "following the protocol in .claude/agents/implementer.md.\n"
-            f"Write automated tests and get `{self.config.test_cmd}` green and `{self.config.check_cmd}` clean.\n"
+            f"Write automated tests and get {gate_list} green.\n"
             "When done, commit your changes to this branch (excluding the orchestration state .agentloop/):\n"
             f"  git add -A -- . ':(exclude).agentloop' && git commit -m \"{task.id}: <summary>\"\n"
             "Do not reach outside scope (other tasks' territory). If you find a requirements/design defect, "
@@ -277,32 +336,90 @@ class Orchestrator:
         if rc != 0:
             raise StopLoop(f"{task.id}: failed to launch implementer (rc={rc})\n{out[-1000:]}")
 
-    def _quality_gate(self, task: dag.Task, cwd: str) -> tuple[bool, str]:
-        """Run make test → make check and decide deterministically by exit code."""
+    @property
+    def _steps_effective(self) -> tuple[GateStep, ...]:
+        """The gate steps actually run (agent steps drop out when quality_gate.agent_steps is false)."""
+        if self.config.agent_steps:
+            return self.config.steps
+        return tuple(s for s in self.config.steps if s.kind == "cmd")
+
+    def _review_prompt(self, task: dag.Task) -> str:
+        cmds = ", ".join(f"`{c}`" for c in self.config.gate_cmds)
+        return (
+            f'You are the reviewer for task {task.id} "{task.title}" (the quality gate\'s agent step).\n'
+            "Review this branch's changes for this task for correctness bugs (the /code-review discipline), "
+            "then simplify: reuse existing code and remove needless complexity (the /simplify discipline). "
+            "Apply the fixes directly.\n"
+            "Stay within this task's scope; if you find a requirements/design defect, report it instead of fixing it.\n"
+            f'If you change anything, commit with the "{task.id}: " prefix and keep {cmds} green.'
+        )
+
+    def _tree_state(self, cwd: str) -> tuple[str, str]:
+        _, head = _run(["git", "rev-parse", "HEAD"], cwd=cwd)
+        _, dirty = _run(["git", "status", "--porcelain"], cwd=cwd)
+        return head.strip(), dirty.strip()
+
+    def _run_agent_step(self, task: dag.Task, cwd: str) -> bool:
+        """Run the review+simplify agent step headless. Returns True if it changed the tree."""
+        before = self._tree_state(cwd)
+        rc, out = _run([self.claude_bin, "-p", self._review_prompt(task)], cwd=cwd)
+        if rc != 0:
+            raise StopLoop(f"{task.id}: failed to launch the review agent step (rc={rc})\n{out[-1000:]}")
+        return self._tree_state(cwd) != before
+
+    def _run_cmd_step(self, step: GateStep, cwd: str) -> str:
+        """Run one cmd step. Returns "" on pass, a compact failure summary otherwise."""
+        rc, out = _run(step.run.split(), cwd=cwd)
+        return "" if rc == 0 else summarize_failure(step.run, rc, out)
+
+    def _run_pipeline(self, task: dag.Task, cwd: str) -> tuple[str | None, str]:
+        """Run the quality-gate steps (config quality_gate.steps = the DoD) in order.
+
+        Returns (failed_step_name, failure_summary), or (None, "") when every step passed.
+        An agent step's fixes invalidate the evidence of the cmd steps that already passed,
+        so those are re-run whenever it changed the tree (deterministic re-verification).
+        """
         if self.dry_run:
-            print(f"    [dry-run] quality gate: {self.config.test_cmd} / {self.config.check_cmd} (cwd={cwd})")
-            return True, ""
-        for cmd in (self.config.test_cmd, self.config.check_cmd):
-            rc, out = _run(cmd.split(), cwd=cwd)
-            if rc != 0:
-                return False, summarize_failure(cmd, rc, out)
-        return True, ""
+            shown = " → ".join(f"{s.name}({s.kind})" for s in self._steps_effective)
+            print(f"    [dry-run] quality gate: {shown} (cwd={cwd})")
+            return None, ""
+        passed: list[GateStep] = []
+        for step in self._steps_effective:
+            if step.kind == "agent":
+                if self._run_agent_step(task, cwd):
+                    for prev in passed:
+                        failure = self._run_cmd_step(prev, cwd)
+                        if failure:
+                            return prev.name, failure
+                continue
+            if not step.run:
+                print(f"    [gate] skip {step.name}: no command configured")
+                continue
+            failure = self._run_cmd_step(step, cwd)
+            if failure:
+                return step.name, failure
+            passed.append(step)
+        return None, ""
 
     def _run_task_to_done(self, task: dag.Task, cwd: str) -> tuple[bool, str]:
-        """Take one task to done via implementer implementation + quality gate.
+        """Take one task to done via implementer implementation + the quality-gate pipeline.
 
-        Returns (ok, log). ok=False means the retry limit was exceeded (the caller marks it blocked).
+        Each cmd step carries its own send-back budget (step.retries); a failure consumes only
+        that step's budget. Returns (ok, log); ok=False means some step's budget ran out
+        (the caller marks the task blocked).
         """
-        # Use the larger of test_fix and check_fix as the total attempt limit.
-        attempts = max(self.config.test_fix, self.config.check_fix) + 1
+        budgets = {s.name: s.retries for s in self.config.steps if s.kind == "cmd"}
         failure_log = ""
-        for i in range(attempts):
+        while True:
             self._invoke_implementer(task, cwd, failure_log)
-            ok, failure_log = self._quality_gate(task, cwd)
-            if ok:
+            failed, failure_log = self._run_pipeline(task, cwd)
+            if failed is None:
                 return True, ""
-            print(f"    quality gate fail (attempt {i + 1}/{attempts}): {task.id}")
-        return False, failure_log
+            left = budgets.get(failed, 0)
+            print(f"    quality gate fail at step '{failed}' (retries left: {left}): {task.id}")
+            if left <= 0:
+                return False, failure_log
+            budgets[failed] = left - 1
 
     # -- worktree / merge --
 
@@ -378,6 +495,13 @@ class Orchestrator:
                 print(f"  [recover] {t.id}: reset in_progress → todo (resuming from a previous interruption)")
 
     def run(self) -> int:
+        project = self.front.get("project")
+        if isinstance(project, str) and project.startswith("<"):
+            print(
+                "state.md still carries the template placeholders. Run `make init NAME=<product>` first.",
+                file=sys.stderr,
+            )
+            return 2
         gates = self.front.get("gates") or {}
         if not (isinstance(gates, dict) and gates.get("tasks") == "approved"):
             print("gates.tasks is not approved. Approve /tasks first.", file=sys.stderr)
@@ -482,7 +606,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         config = Config.load()
-    except (OSError, yaml.YAMLError) as exc:
+    except (OSError, yaml.YAMLError, ValueError) as exc:
         print(f"config load error: {exc}", file=sys.stderr)
         return 1
     return Orchestrator(config, dry_run=args.dry_run, claude_bin=args.claude_bin).run()
