@@ -155,19 +155,26 @@ def work_branch(front: dict[str, object]) -> str:
     return out.strip() if rc == 0 else "HEAD"
 
 
+# The pointer header of tasks.yaml. The shipped scaffold starts with exactly these lines, so the
+# round-trip rewrite below is lossless — keep the file pure data + this pointer (schema detail
+# lives in .claude/commands/tasks.md, not in comments a rewrite would destroy).
+TASKS_HEADER = (
+    "# .agentloop/tasks.yaml — machine-readable SSOT of the task graph (DAG) (build_loop updates status)\n"
+    "# schema (id/title/kind/blockedBy/status/test/req/phase): see .claude/commands/tasks.md / CLAUDE.md\n"
+)
+
+
 def set_task_status(task_id: str, status: str, tasks_path: str = TASKS_PATH) -> None:
-    """Update one task's status in tasks.yaml and write it back (machine data, so round-trip is fine)."""
+    """Update one task's status in tasks.yaml and write it back (pure data + pointer header)."""
     data = yaml.safe_load(Path(tasks_path).read_text(encoding="utf-8")) or {}
     tasks = data.get("tasks") or []
     for t in tasks:
         if str(t.get("id")) == task_id:
             t["status"] = status
             break
-    header = (
-        "# .agentloop/tasks.yaml — machine-readable SSOT of the task graph (DAG) (build_loop updates status)\n"
-        "# schema (id/title/kind/blockedBy/status/test/req/phase): see .claude/commands/tasks.md / CLAUDE.md\n"
+    Path(tasks_path).write_text(
+        TASKS_HEADER + yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8"
     )
-    Path(tasks_path).write_text(header + yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
 
 
 def log_escalation(message: str) -> None:

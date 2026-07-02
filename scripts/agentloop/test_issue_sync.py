@@ -67,6 +67,20 @@ def test_label_specs_cover_families_and_dynamic_req() -> None:
     assert all(len(s.color) == 6 and all(c in "0123456789abcdef" for c in s.color) for s in specs)
 
 
+def test_task_id_of_prefers_body_marker_over_edited_title() -> None:
+    # A human renaming the issue must not break the issue↔task link (which would create a duplicate).
+    body = issue_sync._issue_body(_task("T-007"))
+    assert issue_sync.task_id_of("renamed by a human", body) == "T-007"
+
+
+def test_task_id_of_falls_back_to_title_prefix_for_pre_marker_issues() -> None:
+    assert issue_sync.task_id_of("T-003: old issue", "no marker in this body") == "T-003"
+
+
+def test_issue_body_embeds_marker() -> None:
+    assert "<!-- agentloop:T-001 -->" in issue_sync._issue_body(_task("T-001"))
+
+
 def test_plan_noop_when_identical() -> None:
     task = _task("T-001")
     desired = issue_sync.desired_issue(task, base_label="agentloop", close_on_done=True)

@@ -7,8 +7,10 @@ Not part of the orchestrator's (build_loop.py) control flow; it is called as a s
 Behavior:
   - Off by default. Enable with `github.enabled: true` in `.agentloop/config.yaml`.
   - If `gh` is absent / remote is absent / disabled, **print an explicit message and exit 0** (auto-skip).
-  - The issue number is not written to tasks.yaml. Match `gh issue list` results by the title prefix `T-NNN:`
-    (T-NNN's uniqueness is already validated by dag). This prevents drift without polluting the SSOT.
+  - The issue number is not written to tasks.yaml. Match `gh issue list` results by the hidden body marker
+    `<!-- agentloop:T-NNN -->` (T-NNN's uniqueness is already validated by dag), falling back to the title
+    prefix `T-NNN:` for issues created before the marker existed. This prevents drift without polluting the
+    SSOT and survives a human editing the issue title (title-only matching would create a duplicate).
   - Create a missing issue, update on content diff, close on `status==done` (`close_on_done`). Never delete.
 
 `--dry-run` calls `gh` not at all and outputs the planned creations from tasks.yaml (for offline/testing).
@@ -93,6 +95,17 @@ def _managed(label: str, base_label: str) -> bool:
     return label == base_label or label.startswith(("kind:", "status:", "phase:", "req:"))
 
 
+# The invisible task marker embedded in each mirror issue's body. Matching by it (not the title)
+# keeps the issue↔task link intact when a human edits the title.
+_MARKER_RE = re.compile(r"<!--\s*agentloop:(T-\d+)\s*-->")
+
+
+def task_id_of(title: str, body: str) -> str:
+    """The task an existing issue mirrors: the hidden body marker wins; fall back to the title prefix."""
+    match = _MARKER_RE.search(body)
+    return match.group(1) if match else title.split(":", 1)[0].strip()
+
+
 def _issue_body(task: dag.Task) -> str:
     deps = ", ".join(task.blocked_by) if task.blocked_by else "none"
     return "\n".join(
@@ -106,6 +119,8 @@ def _issue_body(task: dag.Task) -> str:
             f"- test: {task.test or '(unset)'}",
             "",
             "> This issue is a **one-way mirror** from tasks.yaml. Editing it here is not reflected in the SSOT.",
+            "",
+            f"<!-- agentloop:{task.id} -->",
         ]
     )
 
@@ -248,14 +263,14 @@ def fetch_existing(cfg: GithubConfig) -> dict[str, ExistingIssue]:
     result: dict[str, ExistingIssue] = {}
     for item in data:
         title = str(item.get("title", ""))
-        task_id = title.split(":", 1)[0].strip()
+        body = str(item.get("body", ""))
         labels = tuple(str(label.get("name", "")) for label in (item.get("labels") or []))
-        result[task_id] = ExistingIssue(
+        result[task_id_of(title, body)] = ExistingIssue(
             number=int(item["number"]),
             title=title,
             state=str(item.get("state", "")).upper(),
             labels=labels,
-            body=str(item.get("body", "")),
+            body=body,
         )
     return result
 

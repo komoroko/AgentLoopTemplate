@@ -123,9 +123,21 @@ def test_template_mode_defaults_off(in_tmp: Path) -> None:
     assert allowed is False
 
 
-def test_fail_open_when_no_state(in_tmp: Path) -> None:
-    # If state.md is absent, do not intervene (fail-open).
+def test_fail_closed_when_no_state(in_tmp: Path) -> None:
+    # If state.md is absent, guarded paths are denied (fail closed): the guard is the only
+    # mechanism for the design/tasks phases, so an unknown state must not open every gate.
     (in_tmp / ".agentloop").mkdir(parents=True, exist_ok=True)
     (in_tmp / ".agentloop" / "config.yaml").write_text(_CONFIG_ON, encoding="utf-8")
-    allowed, _ = gate_guard.evaluate("backend/app/main.py")
-    assert allowed is True
+    allowed, reason = gate_guard.evaluate("backend/app/main.py")
+    assert allowed is False
+    assert "enforce_hook" in reason  # the escape hatch is pointed out
+    # Unguarded paths stay allowed even with unreadable state.
+    assert gate_guard.evaluate("README.md") == (True, "")
+
+
+def test_fail_closed_when_gates_malformed(in_tmp: Path) -> None:
+    (in_tmp / ".agentloop").mkdir(parents=True, exist_ok=True)
+    (in_tmp / ".agentloop" / "config.yaml").write_text(_CONFIG_ON, encoding="utf-8")
+    (in_tmp / ".agentloop" / "state.md").write_text("no front matter here", encoding="utf-8")
+    allowed, _ = gate_guard.evaluate("docs/tasks/T-001.md")
+    assert allowed is False

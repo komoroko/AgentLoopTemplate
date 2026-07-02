@@ -252,7 +252,12 @@ def test_pipeline_reruns_passed_cmd_steps_after_agent_change(
     # The agent step's fixes invalidate the earlier green evidence: test/check run again after it.
     orch = _steps_orch(project, monkeypatch)
     ran: list[str] = []
-    monkeypatch.setattr(orch, "_run_cmd_step", lambda step, cwd: ran.append(step.name) or "")
+
+    def record(step: build_loop.GateStep, cwd: str) -> str:
+        ran.append(step.name)
+        return ""
+
+    monkeypatch.setattr(orch, "_run_cmd_step", record)
     monkeypatch.setattr(orch, "_run_agent_step", lambda task, cwd: True)  # it changed the tree
     failed, _ = orch._run_pipeline(_leaf("T-002", "leaf A"), cwd=".")
     assert failed is None
@@ -264,7 +269,12 @@ def test_pipeline_skips_rerun_when_agent_changed_nothing(
 ) -> None:
     orch = _steps_orch(project, monkeypatch)
     ran: list[str] = []
-    monkeypatch.setattr(orch, "_run_cmd_step", lambda step, cwd: ran.append(step.name) or "")
+
+    def record(step: build_loop.GateStep, cwd: str) -> str:
+        ran.append(step.name)
+        return ""
+
+    monkeypatch.setattr(orch, "_run_cmd_step", record)
     monkeypatch.setattr(orch, "_run_agent_step", lambda task, cwd: False)
     failed, _ = orch._run_pipeline(_leaf("T-002", "leaf A"), cwd=".")
     assert failed is None

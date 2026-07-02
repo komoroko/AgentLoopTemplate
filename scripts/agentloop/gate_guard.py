@@ -18,8 +18,10 @@ template itself, whose scaffold originals share paths with product deliverables 
 flips it to false when the template becomes a product).
 If gates.enforce_hook is false, always allow
 (if config cannot be read, it defaults to enabled = enforce-on, template_mode off).
-On anomalies such as state.md gates being unreadable, **fail open (allow)**
-(reliable stopping in the build phase is separately ensured by the code check in scripts/agentloop/build_loop.py).
+If the state.md gates are unreadable (file missing / malformed front-matter), **fail closed (deny)**
+for guarded paths: the guard is the only mechanism protecting the design/tasks phases
+(build_loop.py double-checks only the build gate), so an unknown state must not silently
+open every gate. The deny message points at the repair and the enforce_hook escape hatch.
 
 I/O follows the Claude Code hook convention:
   stdin  : the hook event JSON (tool_name, tool_input.file_path, etc.)
@@ -110,7 +112,7 @@ def _template_mode() -> bool:
 
 
 def _read_gates() -> dict[str, str] | None:
-    """Read the gates from state.md front-matter. None if unreadable (fail-open)."""
+    """Read the gates from state.md front-matter. None if unreadable (the caller fails closed)."""
     try:
         text = Path(STATE_PATH).read_text(encoding="utf-8")
     except OSError:
@@ -138,8 +140,12 @@ def evaluate(file_path: str) -> tuple[bool, str]:
     if _template_mode() or not _enforce_enabled():
         return True, ""
     gates = _read_gates()
-    if gates is None:
-        return True, ""  # unknown state is fail-open
+    if gates is None:  # unknown state fails closed: it must not silently open every gate
+        return False, (
+            "Blocked: cannot read the gates from .agentloop/state.md (file missing or malformed"
+            " front-matter), so the gate guard fails closed. Repair state.md; in an emergency set"
+            " gates.enforce_hook: false in .agentloop/config.yaml."
+        )
     if gates.get(gate) == "approved":
         return True, ""
     phase = _PHASE_LABEL.get(gate, gate)
