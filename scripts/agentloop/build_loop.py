@@ -26,6 +26,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import re
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -39,6 +40,7 @@ STATE_PATH = ".agentloop/state.md"
 CONFIG_PATH = ".agentloop/config.yaml"
 TASKS_PATH = ".agentloop/tasks.yaml"
 LOG_PATH = ".agentloop/build-loop.log"
+LOG_MAX_BYTES = 256 * 1024  # rotate the append-only build-loop.log past this (context hygiene; see rotate_log_if_large)
 
 
 class StopLoop(Exception):
@@ -123,12 +125,89 @@ def log_escalation(message: str) -> None:
     print(f"[escalation] {message}", file=sys.stderr)
 
 
+def rotate_log_if_large(path: str = LOG_PATH, max_bytes: int = LOG_MAX_BYTES) -> bool:
+    """Rotate an oversized append-only log to `<path>.1`, keeping a single generation.
+
+    The escalation log is append-only across runs; left unbounded it bloats the context that both
+    humans and agents re-read (Context Rot). Rotating one generation keeps the live log lean while
+    preserving the immediately prior history. Returns True if a rotation happened.
+    """
+    p = Path(path)
+    try:
+        if p.stat().st_size <= max_bytes:
+            return False
+        p.replace(Path(f"{path}.1"))
+    except OSError:
+        return False  # no log yet / not statable / rename failed: best-effort, never abort the run
+    return True
+
+
 # --- subprocess -------------------------------------------------------------
 
 
 def _run(cmd: list[str], cwd: str) -> tuple[int, str]:
     proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
     return proc.returncode, proc.stdout + proc.stderr
+
+
+# --- failure summarization (retry-friendly, token-lean) ---------------------
+#
+# make test / make check can emit huge output (full tracebacks, every passing test line). Feeding that
+# raw into the implementer retry prompt / escalation log wastes tokens and buries the actionable lines,
+# so we keep only the salient lines and cap the size — the retry and the human escalation both get a
+# compact, actionable failure (retry-friendly error design) instead of a raw dump.
+
+# Match genuine failure/error/diagnostic lines across the pytest/ruff/mypy default stack and the documented
+# frontend (eslint/tsc), without pulling in passing-test noise. The markers are word-bounded so "error"/
+# "…Error" inside an identifier (e.g. a passing "test_error_handling" or "test_raises_ValueError PASSED")
+# is skipped, while a real exception line ("ValueError: msg") is kept via the colon-anchored branch.
+_SALIENT_RE = re.compile(
+    r"""
+      ^E\s                                                  # pytest assertion / exception detail ("E   " prefixed)
+    | ^=+.*\b(failed|error|passed|no\ tests\ ran)\b.*=+$    # pytest summary rule line
+    | \bFAILED\b                                            # pytest failure marker (summary or verbose inline)
+    | :\d+:\d+:\s                                           # ruff/mypy/eslint "file:line:col:" locations
+    | \(\d+,\d+\):\s                                        # tsc "file(line,col):" locations
+    | \berror\b                                             # error diagnostics (eslint/tsc/mypy), word-bounded
+    | \b\w*(?:Error|Exception):                             # exception line "ValueError: ..." (colon skips test names)
+    | ^Traceback\b                                          # traceback header
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+_FAILURE_MAX_LINES = 40
+_FAILURE_MAX_CHARS = 1500
+
+
+def summarize_failure(cmd: str, rc: int, output: str) -> str:
+    """Reduce a quality-gate command's raw output to a compact, salient failure summary.
+
+    Keeps only the lines carrying the actionable signal (pytest FAILED / assertion lines, ruff/mypy
+    error locations, exception markers); when nothing matches, falls back to the non-empty tail (the
+    failure is usually last). Capped to a small line/char budget so retries and escalations stay
+    token-lean. Pure and deterministic — unit-tested in test_build_loop.py.
+    """
+    header = f"$ {cmd} (rc={rc})"
+    lines = output.splitlines()
+    salient = [ln for ln in lines if _SALIENT_RE.search(ln)]
+    if salient:
+        kept, note = salient, "salient lines only"
+    else:
+        kept, note = [ln for ln in lines if ln.strip()], "tail"
+    kept = kept[-_FAILURE_MAX_LINES:]
+    # Char-budget guard for pathological long lines: drop whole leading lines first so the disclosed
+    # omitted-count stays accurate, then keep the head of the remainder as a last resort (a single huge
+    # line) — the head holds the actionable "file:line:col: error:" prefix, not the trailing message text.
+    while len(kept) > 1 and len("\n".join(kept)) > _FAILURE_MAX_CHARS:
+        kept = kept[1:]
+    omitted = len(lines) - len(kept)
+    body = "\n".join(kept)[:_FAILURE_MAX_CHARS]
+    out_lines = [header]
+    if body and omitted > 0:  # a bare "N omitted" with no body (e.g. whitespace-only output) would confuse
+        out_lines.append(f"… ({omitted} line(s) omitted; kept {note})")
+    if body:
+        out_lines.append(body)
+    return "\n".join(out_lines)
 
 
 # --- scheduling (pure, under test) ------------------------------------------
@@ -165,9 +244,18 @@ class Orchestrator:
     # -- implementer launch and quality gate --
 
     def _implementer_prompt(self, task: dag.Task, failure_log: str) -> str:
+        # Point the implementer at the design section for this task's requirement rather than the whole
+        # design doc: reading only the relevant slice keeps the subagent context lean and avoids
+        # "Lost in the Middle" on a long design (see CLAUDE.md "Context budget"). Fall back to the whole
+        # doc when the task has no req linkage.
+        design_ref = (
+            f"the design section(s) for your requirement ({task.req}) in docs/20-design.md"
+            if task.req
+            else "docs/20-design.md"
+        )
         prompt = (
             f'You are the implementer subagent. Your only task is {task.id} "{task.title}".\n'
-            f"Read docs/tasks/{task.id}.md, docs/20-design.md, and the existing code, and implement "
+            f"Read docs/tasks/{task.id}.md, {design_ref}, and the existing code, and implement "
             "following the protocol in .claude/agents/implementer.md.\n"
             f"Write automated tests and get `{self.config.test_cmd}` green and `{self.config.check_cmd}` clean.\n"
             "When done, commit your changes to this branch (excluding the orchestration state .agentloop/):\n"
@@ -176,7 +264,9 @@ class Orchestrator:
             "do not fix it on your own — report it."
         )
         if failure_log:
-            prompt += f"\n\nResolve the previous quality-gate failure:\n{failure_log[-3000:]}"
+            # failure_log is already a compact summarize_failure() output (salient lines, budget-capped),
+            # so it is passed through as-is — no crude tail-slicing that could cut the actionable lines.
+            prompt += f"\n\nResolve the previous quality-gate failure:\n{failure_log}"
         return prompt
 
     def _invoke_implementer(self, task: dag.Task, cwd: str, failure_log: str) -> None:
@@ -195,7 +285,7 @@ class Orchestrator:
         for cmd in (self.config.test_cmd, self.config.check_cmd):
             rc, out = _run(cmd.split(), cwd=cwd)
             if rc != 0:
-                return False, f"$ {cmd} (rc={rc})\n{out}"
+                return False, summarize_failure(cmd, rc, out)
         return True, ""
 
     def _run_task_to_done(self, task: dag.Task, cwd: str) -> tuple[bool, str]:
@@ -293,6 +383,8 @@ class Orchestrator:
             print("gates.tasks is not approved. Approve /tasks first.", file=sys.stderr)
             return 2
 
+        if not self.dry_run:
+            rotate_log_if_large()  # keep the append-only escalation log lean before appending this run's entries
         self._recover_in_progress()
         while True:
             graph = dag.load(TASKS_PATH)
@@ -328,7 +420,7 @@ class Orchestrator:
             ok, log = self._run_task_to_done(task, cwd=".")
             if not ok:
                 set_task_status(task.id, "blocked")
-                log_escalation(f"{task.id}: could not pass the quality gate within the limit; blocked.\n{log[-500:]}")
+                log_escalation(f"{task.id}: could not pass the quality gate within the limit; blocked.\n{log}")
                 raise StopLoop(f"{task.id} is blocked. Human intervention needed.", code=1)
             if not self.dry_run:
                 # Finalize the task diff only. The .agentloop/ orchestration state (tasks.yaml status, etc.)
@@ -360,7 +452,7 @@ class Orchestrator:
             ok, log = results[task.id]
             if not ok:
                 set_task_status(task.id, "blocked")
-                log_escalation(f"{task.id}: could not pass the quality gate within the limit; blocked.\n{log[-500:]}")
+                log_escalation(f"{task.id}: could not pass the quality gate within the limit; blocked.\n{log}")
                 blocked_any = True
                 continue
             if self.merge_leaf(task, branches[task.id]):

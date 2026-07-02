@@ -59,6 +59,14 @@ Legend: 🟦 blue = phases the agent runs / 🟧 orange = gates ①–⑤ the hu
 
 Only the human opens each gate. Rewinding approval (`/revise`) is also at the human's discretion.
 
+## Design principles
+
+This template is itself a multi-agent orchestration, and its own machinery follows three design axes:
+
+- **Architecture** — the simplest structure that meets the need: `build_loop.py` is a **deterministic DAG** (controllable, debuggable), and each phase is delegated to a dedicated subagent to separate concerns.
+- **Context** — kept minimal: SSOT files (`state.md` / `tasks.yaml`) hold the truth, subagents read only what they need, failures are **summarized, not dumped**, and oversized logs rotate (see "Context budget" in `CLAUDE.md`).
+- **Tools** — minimal, scoped subagent grants; the quality gate has a **retry cap** (`config.yaml`); `summarize_failure()` returns compact, actionable failures.
+
 ## Setup
 
 Prerequisites: WSL / Linux / macOS and `make` (not Windows-native).
