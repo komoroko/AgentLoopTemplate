@@ -254,9 +254,7 @@ def test_pipeline_stops_at_first_failing_cmd_step(project: Path, monkeypatch: py
     assert log == "boom"
 
 
-def test_pipeline_reruns_passed_cmd_steps_after_agent_change(
-    project: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_pipeline_reruns_passed_cmd_steps_after_agent_change(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # The agent step's fixes invalidate the earlier green evidence: test/check run again after it.
     orch = _steps_orch(project, monkeypatch)
     ran: list[str] = []
@@ -272,9 +270,7 @@ def test_pipeline_reruns_passed_cmd_steps_after_agent_change(
     assert ran == ["test", "check", "test", "check"]  # smoke (empty run) is skipped, never executed
 
 
-def test_pipeline_skips_rerun_when_agent_changed_nothing(
-    project: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_pipeline_skips_rerun_when_agent_changed_nothing(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     orch = _steps_orch(project, monkeypatch)
     ran: list[str] = []
 
@@ -311,9 +307,7 @@ def test_run_task_to_done_budget_is_per_step(project: Path, monkeypatch: pytest.
     assert implementer_calls == ["", "t red", "c red"]  # each failure went back to the implementer
 
 
-def test_run_task_to_done_blocks_when_one_step_budget_runs_out(
-    project: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_run_task_to_done_blocks_when_one_step_budget_runs_out(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     orch = _steps_orch(project, monkeypatch)
     monkeypatch.setattr(orch, "_invoke_implementer", lambda task, cwd, log: None)
     monkeypatch.setattr(orch, "_run_pipeline", lambda task, cwd: ("test", "still red"))
