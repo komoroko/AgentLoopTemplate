@@ -266,15 +266,15 @@ def main(argv: list[str] | None = None) -> int:
 
     print(
         f"\n{prefix}Manual steps (adopt does not touch these):\n"
-        "  1. Add one line to your makefile: `include agentloop.mk` "
+        "  - Add one line to your makefile: `include agentloop.mk` "
         "(or run targets standalone: `make -f agentloop.mk build-loop`).\n"
         + (
-            "  2. Set your test/check commands in .agentloop/config.yaml quality_gate.steps.\n"
+            "  - Set your test/check commands in .agentloop/config.yaml quality_gate.steps.\n"
             if not (args.test_cmd and args.check_cmd)
             else ""
         )
-        + "  3. Recommended: add the gitleaks hook to your .pre-commit-config.yaml (secret scanning).\n"
-        f"  4. Create the work branch when you start a cycle (state.md records: {branch}).\n"
+        + "  - Recommended: add the gitleaks hook to your .pre-commit-config.yaml (secret scanning).\n"
+        f"  - Create the work branch when you start a cycle (state.md records: {branch}).\n"
         "\nNext, in the adopted repo: run /onboard (maps the existing implementation into\n"
         "docs/05-current-state.md), then start the first delta cycle with /req."
     )
