@@ -86,6 +86,45 @@ Prerequisites: WSL / Linux / macOS and `make` (not Windows-native).
    This fills the placeholders (`name` in `pyproject.toml`; `project`/`branch`/`updated_at` in `.agentloop/state.md`), creates and switches to the work branch, and flips `gates.template_mode` off so the gate guard goes live. Implement on the work branch, not directly on main.
 4. Sanity check: `make check` (lint/format/type)・`make test` (pytest; passes on the empty template)・`make test-tools` (self-tests of the deterministic orchestrator in `scripts/agentloop/`).
 
+## Adopting into an existing repository (brownfield)
+
+An ongoing repo doesn't get copied over — AgentLoop is **installed into it**, additively and
+conflict-aware, from a checkout of this template:
+
+```bash
+# run from the template checkout; uv is the only prerequisite in the target
+make adopt TARGET=../myrepo NAME=myrepo TEST_CMD="npm test" CHECK_CMD="npm run lint"
+# preview first: make adopt TARGET=../myrepo NAME=myrepo ARGS=--dry-run
+```
+
+What lands where (idempotent; re-runs skip everything already present):
+
+| Kind | Files | Behavior |
+|------|-------|----------|
+| copy | `.agentloop/`, `scripts/agentloop/`, `agentloop.mk`, `.claude/commands|agents`, docs scaffolds | **Existing files are never overwritten** (skipped and reported) |
+| merge | `CLAUDE.md` | Template rules land in `.agentloop/CLAUDE.agentloop.md`; one `@`-import line is appended to your CLAUDE.md (once) |
+| merge | `.claude/settings.json` | Missing permissions/hook entries appended; yours untouched |
+| adapt | `.agentloop/config.yaml` | **`guard_paths` scoped to docs deliverables only** — pending gates never freeze your existing code; add code paths (e.g. `src/: tasks`) when ready. Quality-gate commands from `TEST_CMD`/`CHECK_CMD` |
+| manual | your `makefile`, `.pre-commit-config.yaml` | Not touched — add one line `include agentloop.mk` (or run `make -f agentloop.mk build-loop`); gitleaks hook recommended |
+
+Then, inside the adopted repo:
+
+1. **`/onboard`** — surveys the existing codebase read-only and fills `docs/05-current-state.md`, the
+   **persistent baseline**: architecture, module roles, reusable assets, conventions, links to your
+   existing documents (kept in place, never converted), and implementation status including
+   in-flight work. Existing behavior is **not** reverse-generated into requirements or done tasks —
+   gates stay human-opened, and traceability (R-N) applies to each cycle's delta only. If you
+   already have an approved-equivalent requirements/design doc, run `/req`/`/design` as a fast
+   intake of it and open the gates — that approval *is* the mapping into this system.
+2. **Delta cycles** — each pass through `brief → /req → … → /verify` describes **one change**, with
+   half-done work resumed as delta requirements. After the release decision, close the cycle:
+   ```bash
+   make cycle-close NAME=<slug>   # archives the cycle's docs to docs/archive/<date>-<slug>/,
+                                  # restores fresh scaffolds, resets gates/phase for the next cycle
+   ```
+   `docs/00-product-brief.md` and `docs/05-current-state.md` persist across cycles (the baseline is
+   updated, not archived). Closing a cycle is a human operation, like opening a gate.
+
 ## Usage
 
 1. Write a few lines on "what you want to build" in `docs/00-product-brief.md` (the only starting point a human writes).
@@ -151,6 +190,7 @@ If you want to make tasks visible to the team/stakeholders, you can **one-way-mi
 - **Every guarded edit is denied and the message says state.md is unreadable** — `.agentloop/state.md` is missing or its front-matter is malformed; the guard fails closed. Restore the file (from git history if needed) so the `gates:` block parses again.
 - **`make build-loop` refuses to start with "template placeholders"** — run `make init NAME=<product>` first (see Setup).
 - **state.md and reality have drifted** (e.g. the task table is stale) — `tasks.yaml` is the truth for tasks; regenerate the human-facing view with `uv run --no-project --with pyyaml python scripts/agentloop/dag.py --render` and paste it into `state.md`. Gates and phase in `state.md` are the truth for the lifecycle; correct them deliberately (only a human opens or rewinds a gate).
+- **No usable `make` in an adopted repo** — the AgentLoop targets are self-contained in `agentloop.mk` (they need only the `uv` binary): run them standalone with `make -f agentloop.mk build-loop`, or call the scripts directly, e.g. `uv run --no-project --with pyyaml python scripts/agentloop/build_loop.py`.
 
 ## Layout
 
@@ -159,7 +199,8 @@ If you want to make tasks visible to the team/stakeholders, you can **one-way-mi
 | `.agentloop/state.md` | SSOT for phase, gates, logs |
 | `.agentloop/tasks.yaml` | machine-readable SSOT of the task graph (DAG) |
 | `.agentloop/config.yaml` | source of knobs for deterministic execution (parallelism, worktree, gate enforcement) and the single definition of the DoD (`quality_gate.steps`) |
-| `scripts/agentloop/` | deterministic orchestration (`dag.py` / `build_loop.py` / `gate_guard.py`). Product scripts go directly under `scripts/` |
+| `scripts/agentloop/` | deterministic orchestration (`dag.py` / `build_loop.py` / `gate_guard.py` / `init.py` / `adopt.py` / `cycle.py`). Product scripts go directly under `scripts/` |
+| `agentloop.mk` | the AgentLoop make targets, self-contained (uv only) — an existing repo takes just this file |
 | `CLAUDE.md` | agent operating rules and gate rules |
 | `.claude/commands/` | entry points for each phase (`/req` – `/status`) |
 | `.claude/agents/` | specialized subagents (requirements/design/implementation) |
