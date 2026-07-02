@@ -463,6 +463,18 @@ def test_implementer_prompt_scopes_to_task_requirement(project: Path) -> None:
     assert "your requirement (R-3) in docs/20-design.md" in prompt
 
 
+def test_implementer_prompt_points_at_baseline_when_present(project: Path) -> None:
+    # An adopted (brownfield) repo has docs/05-current-state.md; the implementer must be told to
+    # match the existing conventions and reuse the asset inventory.
+    _provision(project)
+    orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=True)
+    task = dag.Task(id="T-002", title="leaf A", kind="parallel", blocked_by=("T-001",))
+    assert "05-current-state.md" not in orch._implementer_prompt(task, failure_log="")
+    (project / "docs").mkdir()
+    (project / "docs" / "05-current-state.md").write_text("# baseline\n", encoding="utf-8")
+    assert "Consult docs/05-current-state.md" in orch._implementer_prompt(task, failure_log="")
+
+
 def test_implementer_prompt_falls_back_to_whole_design_when_no_req(project: Path) -> None:
     _provision(project)
     orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=True)

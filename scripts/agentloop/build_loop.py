@@ -312,10 +312,17 @@ class Orchestrator:
             else "docs/20-design.md"
         )
         gate_list = " and ".join(f"`{c}`" for c in self.config.gate_cmds) or "the quality-gate commands"
+        # In an adopted (brownfield) repo the baseline doc carries the conventions and the
+        # reusable-asset inventory the implementer must match — point at it when present.
+        baseline_ref = (
+            " Consult docs/05-current-state.md for the existing architecture, conventions, and reusable assets."
+            if Path("docs/05-current-state.md").exists()
+            else ""
+        )
         prompt = (
             f'You are the implementer subagent. Your only task is {task.id} "{task.title}".\n'
             f"Read docs/tasks/{task.id}.md, {design_ref}, and the existing code, and implement "
-            "following the protocol in .claude/agents/implementer.md.\n"
+            f"following the protocol in .claude/agents/implementer.md.{baseline_ref}\n"
             f"Write automated tests and get {gate_list} green.\n"
             "When done, commit your changes to this branch (excluding the orchestration state .agentloop/):\n"
             f"  git add -A -- . ':(exclude).agentloop' && git commit -m \"{task.id}: <summary>\"\n"
