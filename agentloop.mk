@@ -10,7 +10,7 @@
 
 AGENTLOOP_PY := uv run --no-project --with pyyaml python
 
-.PHONY: init cycle-close build-loop issue-sync revise test-tools
+.PHONY: init adopt cycle-close build-loop issue-sync revise test-tools
 
 # Turn the copied template into a product (idempotent): fills the pyproject / state.md placeholders,
 # snapshots the pristine docs scaffolds, creates the work branch, and flips gates.template_mode off
@@ -18,6 +18,13 @@ AGENTLOOP_PY := uv run --no-project --with pyyaml python
 #   make init NAME=myproduct [BRANCH=build/myproduct]
 init:
 	$(AGENTLOOP_PY) scripts/agentloop/init.py --name "$(NAME)" $(if $(BRANCH),--branch "$(BRANCH)")
+
+# Install AgentLoop into an EXISTING repository (run from this template checkout). Copies the
+# machinery without overwriting anything, merges CLAUDE.md/settings.json additively, and writes
+# brownfield defaults (guard_paths = docs only). See scripts/agentloop/adopt.py for details.
+#   make adopt TARGET=../myrepo NAME=myrepo [TEST_CMD="npm test"] [CHECK_CMD="npm run lint"] [ARGS=--dry-run]
+adopt:
+	$(AGENTLOOP_PY) scripts/agentloop/adopt.py --target "$(TARGET)" --name "$(NAME)" $(if $(BRANCH),--branch "$(BRANCH)") $(if $(TEST_CMD),--test-cmd "$(TEST_CMD)") $(if $(CHECK_CMD),--check-cmd "$(CHECK_CMD)") $(ARGS)
 
 # Close the current delta cycle (human decision, after /verify's release approval): archive the
 # filled deliverables to docs/archive/<date>-<slug>/, restore fresh scaffolds, reset gates/phase.
