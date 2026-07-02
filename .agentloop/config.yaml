@@ -52,6 +52,18 @@ gates:
   # scripts/**) share paths with product deliverables, so the guard would block its own maintenance.
   # `make init` flips this to false when you turn the template into a product (guard goes live).
   template_mode: true
+  # Which paths the guard watches, and the gate each requires. A key ending in "/" guards the whole
+  # prefix; any other key guards that exact file. Exact wins over prefixes; longest prefix wins.
+  # Omit this key to use these same built-in defaults. In an existing (brownfield) repo, scope this
+  # to the docs deliverables first and add your own code paths (e.g. "src/": tasks) when ready.
+  guard_paths:
+    docs/20-design.md: requirements
+    docs/decisions/: requirements
+    docs/tasks/: design
+    docs/test/: build
+    backend/: tasks
+    frontend/: tasks
+    scripts/: tasks        # product scripts (scripts/agentloop/ is always allowed)
 
 github:
   # One-way-mirror tasks.yaml to GitHub Issues (human-facing visibility). Read by scripts/agentloop/issue_sync.py.

@@ -107,6 +107,65 @@ def test_enforce_hook_false_allows_everything(in_tmp: Path) -> None:
     assert allowed is True
 
 
+_CONFIG_DOCS_ONLY = (
+    "gates:\n"
+    "  enforce_hook: true\n"
+    "  template_mode: false\n"
+    "  guard_paths:\n"
+    "    docs/20-design.md: requirements\n"
+    "    docs/decisions/: requirements\n"
+    "    docs/tasks/: design\n"
+    "    docs/test/: build\n"
+)
+
+_CONFIG_SRC_LAYOUT = (
+    "gates:\n"
+    "  enforce_hook: true\n"
+    "  template_mode: false\n"
+    "  guard_paths:\n"
+    "    docs/20-design.md: requirements\n"
+    "    src/: tasks\n"
+    "    src/design-notes/: design\n"
+)
+
+
+def test_guard_paths_docs_only_lets_existing_code_flow(in_tmp: Path) -> None:
+    # The brownfield default: only docs deliverables are guarded, so normal development on the
+    # existing codebase is not frozen by pending gates right after adoption.
+    _setup(in_tmp, tasks="pending", config=_CONFIG_DOCS_ONLY)
+    assert gate_guard.evaluate("backend/app/main.py") == (True, "")
+    assert gate_guard.evaluate("src/anything.py") == (True, "")
+    allowed, reason = gate_guard.evaluate("docs/20-design.md")
+    assert allowed is False
+    assert "requirements" in reason
+
+
+def test_guard_paths_maps_custom_layout(in_tmp: Path) -> None:
+    _setup(in_tmp, tasks="pending", config=_CONFIG_SRC_LAYOUT)
+    allowed, reason = gate_guard.evaluate("src/feature/api.py")
+    assert allowed is False
+    assert "tasks" in reason
+    # The longest matching prefix wins over the shorter one, deterministically.
+    allowed, reason = gate_guard.evaluate("src/design-notes/plan.md")
+    assert allowed is False
+    assert "design" in reason
+    # Paths outside the configured rules are unguarded (the built-in backend/ rule is replaced).
+    assert gate_guard.evaluate("backend/app/main.py") == (True, "")
+
+
+def test_guard_paths_absent_falls_back_to_defaults(in_tmp: Path) -> None:
+    # _CONFIG_ON has no guard_paths key → the built-in default rules apply (backward compat).
+    _setup(in_tmp, tasks="pending", config=_CONFIG_ON)
+    allowed, _ = gate_guard.evaluate("backend/app/main.py")
+    assert allowed is False
+
+
+def test_guard_paths_agentloop_tools_stay_unguarded(in_tmp: Path) -> None:
+    # The self-protection exclusion is hardcoded and cannot be re-guarded via config.
+    _setup(in_tmp, tasks="pending", config="gates:\n  guard_paths:\n    scripts/: tasks\n")
+    assert gate_guard.evaluate("scripts/agentloop/build_loop.py") == (True, "")
+
+
 def test_template_mode_allows_everything(in_tmp: Path) -> None:
     # The template repo itself: scaffold originals share deliverable paths, so the guard steps aside.
     _setup(in_tmp, tasks="pending", config=_CONFIG_TEMPLATE)
