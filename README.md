@@ -100,7 +100,7 @@ Prerequisites: WSL / Linux / macOS and `make` (not Windows-native).
    | verification | `/verify` | run functional + non-functional tests | ⑤ decide on release |
 
 3. If an upstream (requirements/design) defect comes to light during implementation, you can roll back with **`/revise <phase>`** (resets the gates from the target onward to `pending` in a chain, and reconciles task impact with `dag.py --impacted`). Rewinding approval is also at the human's discretion.
-4. Check the current phase, gate approval status, and task progress anytime with `/status`. Generate the **big picture (dependency diagram)** of tasks with `uv run python scripts/agentloop/dag.py --mermaid`, which renders directly in GitHub/VS Code/Markdown (status color-coding, critical-path emphasis).
+4. Check the current phase, gate approval status, and task progress anytime with `/status`. Generate the **big picture (dependency diagram)** of tasks with `uv run --no-project --with pyyaml python scripts/agentloop/dag.py --mermaid`, which renders directly in GitHub/VS Code/Markdown (status color-coding, critical-path emphasis).
 
 > **It does not stall during approval waits**: a notification fires on reaching a gate, and while waiting for approval the agent
 > pulls forward outcome-independent work (environment setup, investigation, test-harness setup, etc.).
@@ -150,7 +150,7 @@ If you want to make tasks visible to the team/stakeholders, you can **one-way-mi
 - **An edit was denied by the gate guard** ("Blocked: gate not approved…") — you are editing a next-phase deliverable while its prerequisite gate is `pending`. That is the mechanism working; get the gate approved first. If the state is genuinely wrong, fix `gates.*` in `.agentloop/state.md` (approval is the human's call). Emergency escape hatch: `gates.enforce_hook: false` in `.agentloop/config.yaml`.
 - **Every guarded edit is denied and the message says state.md is unreadable** — `.agentloop/state.md` is missing or its front-matter is malformed; the guard fails closed. Restore the file (from git history if needed) so the `gates:` block parses again.
 - **`make build-loop` refuses to start with "template placeholders"** — run `make init NAME=<product>` first (see Setup).
-- **state.md and reality have drifted** (e.g. the task table is stale) — `tasks.yaml` is the truth for tasks; regenerate the human-facing view with `uv run python scripts/agentloop/dag.py --render` and paste it into `state.md`. Gates and phase in `state.md` are the truth for the lifecycle; correct them deliberately (only a human opens or rewinds a gate).
+- **state.md and reality have drifted** (e.g. the task table is stale) — `tasks.yaml` is the truth for tasks; regenerate the human-facing view with `uv run --no-project --with pyyaml python scripts/agentloop/dag.py --render` and paste it into `state.md`. Gates and phase in `state.md` are the truth for the lifecycle; correct them deliberately (only a human opens or rewinds a gate).
 
 ## Layout
 
