@@ -24,8 +24,9 @@ updated_at: "2026-06-26"
 # board
 """
 
-_CONFIG_ON = "build:\n  max_parallel: 3\ngates:\n  enforce_hook: true\n"
-_CONFIG_OFF = "build:\n  max_parallel: 3\ngates:\n  enforce_hook: false\n"
+_CONFIG_ON = "build:\n  max_parallel: 3\ngates:\n  enforce_hook: true\n  template_mode: false\n"
+_CONFIG_OFF = "build:\n  max_parallel: 3\ngates:\n  enforce_hook: false\n  template_mode: false\n"
+_CONFIG_TEMPLATE = "build:\n  max_parallel: 3\ngates:\n  enforce_hook: true\n  template_mode: true\n"
 
 
 def _setup(
@@ -104,6 +105,22 @@ def test_enforce_hook_false_allows_everything(in_tmp: Path) -> None:
     _setup(in_tmp, tasks="pending", config=_CONFIG_OFF)
     allowed, _ = gate_guard.evaluate("backend/app/main.py")
     assert allowed is True
+
+
+def test_template_mode_allows_everything(in_tmp: Path) -> None:
+    # The template repo itself: scaffold originals share deliverable paths, so the guard steps aside.
+    _setup(in_tmp, tasks="pending", config=_CONFIG_TEMPLATE)
+    allowed, _ = gate_guard.evaluate("backend/app/main.py")
+    assert allowed is True
+    allowed, _ = gate_guard.evaluate("docs/20-design.md")
+    assert allowed is True
+
+
+def test_template_mode_defaults_off(in_tmp: Path) -> None:
+    # A config without the key behaves as product mode (guard live).
+    _setup(in_tmp, tasks="pending", config="gates:\n  enforce_hook: true\n")
+    allowed, _ = gate_guard.evaluate("backend/app/main.py")
+    assert allowed is False
 
 
 def test_fail_open_when_no_state(in_tmp: Path) -> None:

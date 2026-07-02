@@ -13,8 +13,11 @@ Decision:
 However, scripts/agentloop/** (the template's foundational tools) is **always allowed** (so as not to block
 the hook's own maintenance / speculative work). Any path not above is also allowed unconditionally.
 
-If gates.enforce_hook in `.agentloop/config.yaml` is false, always allow
-(if config cannot be read, it defaults to enabled = enforce-on).
+If gates.template_mode in `.agentloop/config.yaml` is true, always allow: the repo is the
+template itself, whose scaffold originals share paths with product deliverables (`make init`
+flips it to false when the template becomes a product).
+If gates.enforce_hook is false, always allow
+(if config cannot be read, it defaults to enabled = enforce-on, template_mode off).
 On anomalies such as state.md gates being unreadable, **fail open (allow)**
 (reliable stopping in the build phase is separately ensured by the code check in scripts/agentloop/build_loop.py).
 
@@ -89,13 +92,21 @@ def required_gate(file_path: str) -> str | None:
     return None
 
 
-def _enforce_enabled() -> bool:
+def _gates_config() -> dict[str, object]:
     try:
         data = yaml.safe_load(Path(CONFIG_PATH).read_text(encoding="utf-8")) or {}
     except (OSError, yaml.YAMLError):
-        return True  # default to enabled if config is absent (fail-secure; fail-open only when state is absent)
-    gates = data.get("gates") or {}
-    return bool(gates.get("enforce_hook", True))
+        return {}  # absent config = enabled defaults (fail-secure; fail-open only when state is absent)
+    gates = data.get("gates")
+    return gates if isinstance(gates, dict) else {}
+
+
+def _enforce_enabled() -> bool:
+    return bool(_gates_config().get("enforce_hook", True))
+
+
+def _template_mode() -> bool:
+    return bool(_gates_config().get("template_mode", False))
 
 
 def _read_gates() -> dict[str, str] | None:
@@ -124,7 +135,7 @@ def evaluate(file_path: str) -> tuple[bool, str]:
     gate = required_gate(file_path)
     if gate is None:
         return True, ""
-    if not _enforce_enabled():
+    if _template_mode() or not _enforce_enabled():
         return True, ""
     gates = _read_gates()
     if gates is None:

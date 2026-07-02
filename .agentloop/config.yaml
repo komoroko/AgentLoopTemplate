@@ -33,6 +33,10 @@ gates:
   # If true, scripts/agentloop/gate_guard.py (the PreToolUse hook) mechanically blocks
   # deliverable edits while the prerequisite gate is unapproved. Set false to fall back to the convention layer (CLAUDE.md) only.
   enforce_hook: true
+  # true while this repo IS the template itself: scaffold originals (docs/20-design.md, docs/tasks/**,
+  # scripts/**) share paths with product deliverables, so the guard would block its own maintenance.
+  # `make init` flips this to false when you turn the template into a product (guard goes live).
+  template_mode: true
 
 github:
   # One-way-mirror tasks.yaml to GitHub Issues (human-facing visibility). Read by scripts/agentloop/issue_sync.py.
