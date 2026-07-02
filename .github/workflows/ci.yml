@@ -3,8 +3,11 @@ name: CI
 # Run the same quality gate as local development: pre-commit (commit + pre-push
 # hooks = ruff / gitleaks / ruff-format / mypy, via `make check`) plus the test suites.
 on:
+  # `develop` is a template default for users who adopt a main + develop (Git Flow) model;
+  # harmless when the repo only uses main. `pull_request` is unfiltered, so PRs into any base
+  # branch (including a future develop) already run CI.
   push:
-    branches: [main]
+    branches: [main, develop]
   pull_request:
 
 jobs:
