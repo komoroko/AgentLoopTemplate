@@ -182,3 +182,158 @@ def test_consume_parallel_partial_failure_blocks_only_failed(project: Path, monk
     by_id = {t.id: t.status for t in dag.load(".agentloop/tasks.yaml").tasks}
     assert by_id["T-002"] == "done"
     assert by_id["T-003"] == "blocked"
+
+
+# --- failure summarization (retry-friendly, token-lean) ---------------------
+
+
+def test_summarize_failure_keeps_pytest_salient_and_drops_noise() -> None:
+    # A pytest run buried in passing-test noise: keep FAILED/assertion/summary lines, drop the noise.
+    out = "\n".join(
+        ["test_a.py::test_ok PASSED"] * 200
+        + [
+            "test_a.py::test_bad FAILED",
+            "    def test_bad():",
+            ">       assert add(1, 2) == 4",
+            "E       assert 3 == 4",
+            "=================== 1 failed, 200 passed in 0.42s ===================",
+            "FAILED test_a.py::test_bad - assert 3 == 4",
+        ]
+    )
+    summary = build_loop.summarize_failure("make test", 1, out)
+    assert summary.startswith("$ make test (rc=1)")
+    assert "E       assert 3 == 4" in summary  # the actionable assertion survives
+    assert "1 failed, 200 passed" in summary  # the summary rule line survives
+    assert "PASSED" not in summary  # passing-test noise is dropped
+    assert "omitted" in summary  # the omission is disclosed
+
+
+def test_summarize_failure_keeps_ruff_and_mypy_locations() -> None:
+    out = "\n".join(
+        [
+            "backend/foo.py:12:5: F401 `os` imported but unused",
+            "backend/bar.py:3:1: E402 module level import not at top of file",
+            'backend/foo.py:20: error: Incompatible return value type (got "int", expected "str")',
+            "Found 1 error in 1 file (checked 12 source files)",
+        ]
+    )
+    summary = build_loop.summarize_failure("make check", 1, out)
+    assert "F401" in summary
+    assert "error: Incompatible return value type" in summary
+
+
+def test_summarize_failure_falls_back_to_tail_and_caps_budget() -> None:
+    # No recognizable markers: keep the non-empty tail, capped to the line budget.
+    out = "\n".join(f"line {i}" for i in range(500))
+    summary = build_loop.summarize_failure("make test", 2, out)
+    assert summary.startswith("$ make test (rc=2)")
+    assert "line 499" in summary  # the tail is kept
+    assert "line 0" not in summary  # the head is dropped
+    assert len(summary.splitlines()) <= build_loop._FAILURE_MAX_LINES + 3  # header + note + budget
+
+
+def test_summarize_failure_empty_output_is_just_header() -> None:
+    assert build_loop.summarize_failure("make test", 1, "") == "$ make test (rc=1)"
+
+
+def test_summarize_failure_whitespace_only_is_just_header() -> None:
+    # Whitespace-only output must not emit a bare "N line(s) omitted" note with no body.
+    assert build_loop.summarize_failure("make test", 1, "\n \n\t\n") == "$ make test (rc=1)"
+
+
+def test_summarize_failure_keeps_frontend_and_verbose_diagnostics() -> None:
+    # eslint/tsc/mypy lowercase "error" and inline verbose pytest FAILED/ERROR must survive — the quality
+    # gate (CLAUDE.md) covers eslint/tsc, and a line-start-uppercase-only regex would silently drop these.
+    out = "\n".join(
+        [
+            "src/app.ts(10,3): error TS2322: Type 'number' is not assignable to type 'string'.",
+            "  12:5  error  'x' is assigned a value but never used  no-unused-vars",
+            "backend/foo.py:20: error: Incompatible return value type",
+            "tests/test_x.py::test_login FAILED",
+            "tests/test_x.py::test_db ERROR",
+        ]
+    )
+    s = build_loop.summarize_failure("make check", 1, out)
+    assert "TS2322" in s
+    assert "no-unused-vars" in s
+    assert "Incompatible return value type" in s
+    assert "test_login FAILED" in s
+    assert "test_db ERROR" in s
+
+
+def test_summarize_failure_drops_passing_tests_named_like_exceptions() -> None:
+    # Passing tests whose names contain "error"/"…Error" must not be treated as salient, or they can
+    # evict the real failure under the line cap and surface passing-test noise instead.
+    out = "\n".join(
+        ["tests/test_x.py::test_raises_ValueError PASSED", "tests/test_error_handling.py::test_ok PASSED"] * 60
+        + ["tests/test_x.py::test_add FAILED", "E       assert 3 == 4"]
+    )
+    s = build_loop.summarize_failure("make test", 1, out)
+    assert "PASSED" not in s  # no passing-test noise leaked in
+    assert "test_add FAILED" in s and "assert 3 == 4" in s  # the real failure survived the cap
+
+
+def test_summarize_failure_keeps_exception_line_not_named_test() -> None:
+    out = "raise happened\nValueError: bad input\ntests/x.py::test_uses_ValueError PASSED"
+    s = build_loop.summarize_failure("make test", 1, out)
+    assert "ValueError: bad input" in s  # the real exception line is kept (colon-anchored branch)
+    assert "PASSED" not in s  # the passing test merely naming ValueError is not
+
+
+def test_summarize_failure_long_single_line_keeps_head_with_location() -> None:
+    # A single salient line over the char budget keeps its head (the file:line:col prefix), not the tail.
+    out = "backend/foo.py:20:5: error: " + ("x" * 3000)
+    s = build_loop.summarize_failure("make check", 1, out)
+    assert "backend/foo.py:20:5: error:" in s
+
+
+# --- log rotation (context hygiene) -----------------------------------------
+
+
+def test_rotate_log_if_large_rotates_when_over_budget(tmp_path: Path) -> None:
+    log = tmp_path / "build-loop.log"
+    log.write_text("x" * 2048, encoding="utf-8")
+    assert build_loop.rotate_log_if_large(str(log), max_bytes=1024) is True
+    assert not log.exists()  # the live log was moved aside
+    assert (tmp_path / "build-loop.log.1").read_text(encoding="utf-8") == "x" * 2048
+
+
+def test_rotate_log_if_large_noop_when_small_or_absent(tmp_path: Path) -> None:
+    log = tmp_path / "build-loop.log"
+    assert build_loop.rotate_log_if_large(str(log), max_bytes=1024) is False  # absent: nothing to do
+    log.write_text("small", encoding="utf-8")
+    assert build_loop.rotate_log_if_large(str(log), max_bytes=1024) is False  # under budget: kept
+    assert log.exists()
+
+
+def test_rotate_log_if_large_best_effort_on_replace_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A failed rename (e.g. read-only .1 / permission) must be swallowed, never abort the build run.
+    log = tmp_path / "build-loop.log"
+    log.write_text("x" * 2048, encoding="utf-8")
+
+    def boom(self: Path, target: object) -> None:
+        raise OSError("rename failed")
+
+    monkeypatch.setattr(build_loop.Path, "replace", boom)
+    assert build_loop.rotate_log_if_large(str(log), max_bytes=1024) is False
+
+
+# --- implementer prompt scoping (Context: read only the relevant design section) --------
+
+
+def test_implementer_prompt_scopes_to_task_requirement(project: Path) -> None:
+    # When the task carries a req, the prompt points the implementer at that requirement's design
+    # section (not the whole design doc) — keeping the subagent context lean.
+    _provision(project)
+    orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=True)
+    task = dag.Task(id="T-002", title="leaf A", kind="parallel", blocked_by=("T-001",), req="R-3")
+    prompt = orch._implementer_prompt(task, failure_log="")
+    assert "your requirement (R-3) in docs/20-design.md" in prompt
+
+
+def test_implementer_prompt_falls_back_to_whole_design_when_no_req(project: Path) -> None:
+    _provision(project)
+    orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=True)
+    task = dag.Task(id="T-002", title="leaf A", kind="parallel", blocked_by=("T-001",))  # req defaults to ""
+    prompt = orch._implementer_prompt(task, failure_log="")
+    assert "docs/tasks/T-002.md, docs/20-design.md, and the existing code" in prompt

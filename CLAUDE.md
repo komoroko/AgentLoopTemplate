@@ -70,6 +70,7 @@ common to all gates (①–⑤):
 - **Confidence**: high / medium / low (may be split by area). **Always attach a reason for low spots** and direct the human's attention there.
 - **Open questions / points for the human to decide** (most important).
 - **Anticipated risks and trade-offs** (decisions that bite later).
+- **Context-bloat signal** (when relevant): if a deliverable or a log has grown long enough to risk *Context Rot* / *Lost in the Middle* (see "Context budget"), note it and propose trimming — linking detail out to an ADR, or summarizing/archiving resolved log rows.
 
 Do not pretend to high confidence and let the human skip verification — **surfacing uncertainty honestly** raises the gate's value.
 This is distinct from the "speculative work log" (that one records throwaway-by-default work). For requirements/design/task tickets,
@@ -117,6 +118,15 @@ Treat tasks not as a flat list but as a **dependency graph (DAG)**.
 - **Small and sure.** One commit = one concern. Get approval before destructive or outward-facing operations.
 - **Context isolation.** Delegate requirements/design/implementation each to their dedicated subagent (`.claude/agents/`) so the main context stays clean. Unify code review on `/code-review` and cleanup on `/simplify`.
 - Write deliverable documents in the user's language (see "Language" above).
+
+## Context budget (context hygiene)
+
+More context is not better. Past a point it **degrades** the agent's answers — long inputs suffer *Context Rot* (contradictory/stale facts blur the response) and *Lost in the Middle* (the middle of a long input is ignored, so buried facts get missed). The main session and every subagent re-read the SSOT and deliverables, so keeping them lean is a first-class quality lever, not just tidiness. Keep the working context to the **minimum necessary**:
+
+- **Keep deliverables lean; push detail out to linked files.** Requirements/design/task tickets state the decision concisely and link the depth (e.g. an `ADR-*.md`) rather than inlining it. A short, well-linked doc reads better — for both humans and agents — than a long one.
+- **Compress and rotate the append-only logs.** The escalation / speculative / roll-back logs in `state.md` and `.agentloop/build-loop.log` grow across runs and are re-read every session. Summarize or archive **resolved** rows (keep the decision, drop the transcript). `build_loop.py` rotates `build-loop.log` to `build-loop.log.1` past a size threshold — do the equivalent by hand for the `state.md` tables when they get long.
+- **Retry/escalation failures are summarized, not dumped.** `build_loop.py`'s `summarize_failure()` reduces a red `make test`/`make check` to only its salient lines before it reaches the implementer retry prompt or the escalation log — actionable and token-lean, never a raw traceback. Follow the same discipline when you surface a failure yourself.
+- **Prefer fetch-on-demand over holding everything.** Read the slice of a file you need, not the whole file; consult a doc when the task needs it rather than pre-loading it "just in case".
 
 ## Quality-check commands (stack assumptions and substitution)
 
