@@ -68,4 +68,3 @@ Identify the task ripple with `dag.py --impacted` and reconcile (keep/modify/obs
 | Date | Target (phase) | Gates reset to pending in chain | Reason |
 |------|---------------|-------------------------------|------|
 <!-- REVISE-LOG -->
-</content>

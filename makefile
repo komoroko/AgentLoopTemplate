@@ -30,9 +30,10 @@ pre-push:
 # Implementation quality gate: run all commit + pre-push hooks (lint / format / type-check) together
 check: pre-commit pre-push
 
-# Run pytest
+# Run pytest. Exit code 5 = "no tests collected" is tolerated so a freshly
+# copied template (empty backend/) passes; the same tolerance is used in CI.
 test:
-	uv run pytest -vv --lf backend/
+	uv run pytest -vv --lf backend/ || test $$? -eq 5
 
 # Self-tests for the template's foundational tools (scripts/agentloop/). Unit tests of the deterministic orchestrator, DAG, and gate hook.
 test-tools:
