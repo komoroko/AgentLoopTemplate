@@ -30,6 +30,19 @@
 
 <!-- Continue per requirement -->
 
+## AI agent application design (only if the product is an AI agent app)
+
+> Fill this **only when the product itself is an AI agent** (an LLM that plans, calls tools, and loops). Delete it otherwise.
+> These are decided by the human like any other technical choice (options + trade-offs → ADR).
+
+- **Architecture (chosen pattern + why it is the simplest sufficient one)**:
+  <!-- Single Agent / Graph / Agents as Tools / Swarm. Note the autonomy↔control trade-off and the deciding ADR. -->
+  - Pattern: | Rationale (simplest that meets the requirements): | ADR-
+- **Context strategy (keep it minimal — Context Rot / Lost in the Middle)**:
+  <!-- compression (sliding-window / summarization) + external persistence + retrieve-only-what's-relevant on demand -->
+- **Tool design (reliable tool use)**:
+  <!-- specific/unambiguous definitions; retry-friendly structured errors {status,error,received,expected,example}; per-session invocation cap -->
+
 ## How non-functional requirements are met
 - **Performance**:
 - **Security**:
