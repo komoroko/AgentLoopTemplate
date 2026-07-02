@@ -14,17 +14,32 @@ build:
     dir: .worktrees          # the directory to create worktrees in (already .gitignore'd)
     branch_pattern: "{branch}/{task_id}"  # e.g. build/myproduct/T-003
 
-  # The cap on sending a task back to implementer to retry when the quality gate fails.
-  # A task that exceeds it is set to blocked, stopping the loop, and escalated to the human.
-  retries:
-    test_fix: 2              # number of retries when make test is red
-    check_fix: 2             # number of retries when make check (lint/format/type) fails
-
-  # The commands used for the deterministic gate decision. The orchestrator decides pass/fail by exit code.
-  # If copied into a project without make, substitute these with that project's commands.
+  # The quality gate = **the single definition of the DoD** (CLAUDE.md and /build refer to this list).
+  # build_loop.py runs the steps in order per task:
+  #   kind: cmd   — run the command; pass/fail is decided deterministically by exit code.
+  #                 `retries` is that step's own budget for sending a failure back to the
+  #                 implementer; when it runs out the task becomes blocked (escalated to the human).
+  #                 An empty `run` skips the step.
+  #   kind: agent — a headless `claude -p` review+simplify pass that fixes findings in place.
+  #                 If it changes code, the cmd steps that already passed are re-run (re-verified).
+  # If copied into a project without make, substitute the commands with that project's own.
   quality_gate:
-    test_cmd: "make test"
-    check_cmd: "make check"
+    agent_steps: true        # false = skip agent steps (cmd-only gate; cheaper but below the documented DoD)
+    steps:
+      - name: test
+        kind: cmd
+        run: "make test"
+        retries: 2
+      - name: check
+        kind: cmd
+        run: "make check"
+        retries: 2
+      - name: review         # /code-review + /simplify discipline, applied in place
+        kind: agent
+      - name: smoke          # minimal real-launch smoke test. **Required for runnable deliverables**
+        kind: cmd            # (CLI/server: it actually launches and the main commands work).
+        run: ""              # empty = skipped; fill in e.g. "make smoke" once the product is runnable
+        retries: 1
 
   merge:
     strategy: sequential     # merge leaf branches into work sequentially in the order they became done
