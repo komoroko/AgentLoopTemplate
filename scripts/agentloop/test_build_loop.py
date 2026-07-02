@@ -314,7 +314,7 @@ def test_rotate_log_if_large_best_effort_on_replace_error(tmp_path: Path, monkey
     def boom(self: Path, target: object) -> None:
         raise OSError("rename failed")
 
-    monkeypatch.setattr(build_loop.Path, "replace", boom)
+    monkeypatch.setattr(Path, "replace", boom)  # build_loop uses pathlib.Path; patch the class method
     assert build_loop.rotate_log_if_large(str(log), max_bytes=1024) is False
 
 
