@@ -91,6 +91,14 @@ def project(tmp_path: Path) -> Iterator[Path]:
         os.chdir(prev)
 
 
+def test_dry_run_blocks_when_placeholders_remain(project: Path) -> None:
+    # A template that was never `make init`-ed must not start consuming tasks.
+    state = _STATE.format(tasks="approved").replace('project: "demo"', 'project: "<enter the product name>"')
+    (project / ".agentloop" / "state.md").write_text(state, encoding="utf-8")
+    (project / ".agentloop" / "tasks.yaml").write_text(_TASKS, encoding="utf-8")
+    assert build_loop.main(["--dry-run"]) == 2
+
+
 def test_dry_run_blocks_when_tasks_not_approved(project: Path) -> None:
     (project / ".agentloop" / "state.md").write_text(_STATE.format(tasks="pending"), encoding="utf-8")
     (project / ".agentloop" / "tasks.yaml").write_text(_TASKS, encoding="utf-8")

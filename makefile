@@ -7,7 +7,7 @@
 #   → use WSL or Git Bash
 # =========================================================
 
-.PHONY: install setup pre-commit pre-push check test test-tools audit build-loop issue-sync revise clean
+.PHONY: install setup init pre-commit pre-push check test test-tools audit build-loop issue-sync revise clean
 
 # Install tools (uv / pnpm binaries)
 install:
@@ -18,6 +18,12 @@ install:
 # If using the frontend, also run `cd frontend && pnpm install`
 setup:
 	uv sync
+
+# Turn the copied template into a product (idempotent): fills the pyproject / state.md placeholders,
+# creates the work branch, and flips gates.template_mode off so the gate guard goes live.
+#   make init NAME=myproduct [BRANCH=build/myproduct]
+init:
+	uv run python scripts/agentloop/init.py --name "$(NAME)" $(if $(BRANCH),--branch "$(BRANCH)")
 
 # Commit-stage hooks (ruff lint / eslint / various checks)
 pre-commit:

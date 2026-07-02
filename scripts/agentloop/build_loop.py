@@ -495,6 +495,13 @@ class Orchestrator:
                 print(f"  [recover] {t.id}: reset in_progress → todo (resuming from a previous interruption)")
 
     def run(self) -> int:
+        project = self.front.get("project")
+        if isinstance(project, str) and project.startswith("<"):
+            print(
+                "state.md still carries the template placeholders. Run `make init NAME=<product>` first.",
+                file=sys.stderr,
+            )
+            return 2
         gates = self.front.get("gates") or {}
         if not (isinstance(gates, dict) and gates.get("tasks") == "approved"):
             print("gates.tasks is not approved. Approve /tasks first.", file=sys.stderr)
