@@ -41,7 +41,7 @@ flowchart TD
     brief --> req --> g1 --> design --> g2 --> tasks
     tasks -->|generates| T1
     TI --> g3
-    g3 -->|parallel consumption (max 3)| build
+    g3 -->|"parallel consumption (max 3)"| build
     build --> g4 --> verify --> g5 --> done
 
     req -. roll back /revise .- build

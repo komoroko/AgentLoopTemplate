@@ -41,7 +41,7 @@ flowchart TD
     brief --> req --> g1 --> design --> g2 --> tasks
     tasks -->|生成| T1
     TI --> g3
-    g3 -->|並列消化（最大3）| build
+    g3 -->|"並列消化（最大3）"| build
     build --> g4 --> verify --> g5 --> done
 
     req -. 上流へ /revise .- build
