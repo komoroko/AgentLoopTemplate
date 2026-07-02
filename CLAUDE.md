@@ -29,6 +29,8 @@ brief → requirements → design → tasks → build → verify → done
 
 Check progress anytime with `/status`. At `done`, `/verify` records a retrospective in `docs/retrospective.md` and closes any open logs. An upstream defect rolls back via `/revise` (see "Roll back").
 
+**Cycles**: an ongoing repo runs this lifecycle repeatedly as **delta cycles** — each cycle's docs describe one change, not the whole product. After `done`, the human runs `make cycle-close NAME=<slug>` to archive the filled deliverables to `docs/archive/` and reset gates/phase for the next cycle (`docs/00-product-brief.md` and the baseline `docs/05-current-state.md` persist). In an adopted (brownfield) repo, `docs/05-current-state.md` is the persistent baseline of the existing codebase — `/req`/`/design` read it first, and traceability (R-N) applies to each cycle's delta only, never reverse-generated from existing behavior.
+
 ## Single Source of Truth (SSOT)
 
 The truth is split across three files. Their roles differ, so do not conflate them:
