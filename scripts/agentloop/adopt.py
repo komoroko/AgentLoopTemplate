@@ -78,7 +78,7 @@ COPY_ROOTS = (".agentloop", "scripts/agentloop", ".claude/commands", ".claude/ag
 COPY_FILES = ("agentloop.mk",)
 # Handled by dedicated logic, not the generic copy loop.
 SPECIAL = {".agentloop/config.yaml", ".agentloop/state.md", "docs/00-product-brief.md"}
-_EXCLUDE_DIR_NAMES = {"__pycache__", ".pytest_cache", "archive", "scaffold"}
+_EXCLUDE_DIR_NAMES = {"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", "archive", "scaffold"}
 _EXCLUDE_FILE_PREFIXES = ("build-loop.log", "adopt-manifest.yaml")
 
 # Ownership of installed files, recorded per file in the manifest. `template` = the mechanism
@@ -345,10 +345,20 @@ def upgrade_settings(
                 notes.append(f"hooks.{event}: an installed group was locally modified or removed — left as-is")
             else:
                 del lst[idx]
-    merged, merge_notes, added = merge_settings(existing, template)
+    retracted_allow = set(installed.get("permissions_allow") or [])
+    retracted_groups = {_canon(g) for gs in (installed.get("hooks") or {}).values() for g in gs}
+    merged, _merge_notes, added = merge_settings(existing, template)
+    # Note only the net changes — re-adding what step 1 just retracted is not news.
+    for entry in added["permissions_allow"]:
+        if entry not in retracted_allow:
+            notes.append(f"permissions.allow += {entry}")
+    for event, groups in added["hooks"].items():
+        for group in groups:
+            if _canon(group) not in retracted_groups:
+                notes.append(f"hooks.{event} += 1 group")
     for event in [e for e, v in (merged.get("hooks") or {}).items() if v == []]:
         del merged["hooks"][event]
-    return merged, notes + merge_notes, added
+    return merged, notes, added
 
 
 def plan_uninstall(

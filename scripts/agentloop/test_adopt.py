@@ -345,6 +345,15 @@ def test_adopt_writes_manifest_with_ownership(template: Path, target: Path) -> N
     assert data["template"]["source"] == str(template)
 
 
+def test_adopt_never_copies_cache_dirs(template: Path, target: Path) -> None:
+    cache = template / "scripts" / "agentloop" / ".mypy_cache"
+    cache.mkdir()
+    (cache / "cache.db").write_text("x", encoding="utf-8")
+    adopt.main(["--target", str(target), "--name", "demo"])
+    assert not (target / "scripts" / "agentloop" / ".mypy_cache").exists()
+    assert "scripts/agentloop/.mypy_cache/cache.db" not in _manifest(target)["files"]
+
+
 def test_adopt_never_copies_a_manifest_from_the_source(template: Path, target: Path) -> None:
     # Adopting *from* an adopted repo must not carry its stale manifest over.
     (template / ".agentloop" / "adopt-manifest.yaml").write_text("version: 1\nfiles: {stale: {}}\n", encoding="utf-8")
