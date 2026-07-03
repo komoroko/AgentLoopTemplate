@@ -30,6 +30,10 @@ Two more manifest-driven modes (adopt-only — a greenfield `make init` records 
                overwritten only while **pristine** (its hash still matches the manifest); local
                modifications are skipped and reported (--force overrides). Repo-owned state
                (config.yaml, state.md, tasks.yaml, filled docs, your CLAUDE.md) is never touched.
+  --from-git URL [--ref branch-or-tag] — shallow-clone the template into a temp dir instead of
+               running from a checkout. Inside an adopted repo, `--upgrade` without --from-git
+               falls back to the source recorded in the manifest (self-upgrade):
+                 make -f agentloop.mk agentloop-upgrade [FROM=<url-or-path>]
 
 Next step in the adopted repo: run /onboard to map the existing implementation into
 docs/05-current-state.md, then start the first delta cycle with /req.
@@ -44,6 +48,8 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -228,6 +234,52 @@ def plan_upgrade(
     return items
 
 
+def detect_commands(files: dict[str, str]) -> dict[str, list[str]]:
+    """Best-effort test/check command suggestions from a repo's build files (pure; propose-only).
+
+    `files` maps a known filename (package.json, lockfiles, pyproject.toml, Cargo.toml, go.mod,
+    makefile) to its content. Returns {"test": [...], "check": [...]} — printed as suggestions
+    in the adopt report, never written into config.yaml.
+    """
+    test: list[str] = []
+    check: list[str] = []
+    pkg = files.get("package.json")
+    if pkg:
+        try:
+            scripts = json.loads(pkg).get("scripts") or {}
+        except ValueError:
+            scripts = {}
+        runner = "pnpm" if "pnpm-lock.yaml" in files else "yarn" if "yarn.lock" in files else "npm"
+        if "test" in scripts:
+            test.append(f"{runner} test" if runner != "npm" else "npm test")
+        for name in ("lint", "check"):
+            if name in scripts:
+                check.append(f"{runner} run {name}")
+                break
+    pyproject = files.get("pyproject.toml")
+    if pyproject:
+        if "pytest" in pyproject:
+            test.append("uv run pytest" if "uv.lock" in files else "pytest")
+        if "ruff" in pyproject:
+            check.append("ruff check .")
+    if "Cargo.toml" in files:
+        test.append("cargo test")
+        check.append("cargo clippy -- -D warnings")
+    if "go.mod" in files:
+        test.append("go test ./...")
+        check.append("go vet ./...")
+    makefile = files.get("makefile") or files.get("Makefile")
+    if makefile:
+        targets = set(re.findall(r"^([A-Za-z][\w-]*):", makefile, flags=re.MULTILINE))
+        if "test" in targets:
+            test.append("make test")
+        for name in ("check", "lint"):
+            if name in targets:
+                check.append(f"make {name}")
+                break
+    return {"test": test, "check": check}
+
+
 def merge_settings(
     existing: dict[str, Any], template: dict[str, Any]
 ) -> tuple[dict[str, Any], list[str], dict[str, Any]]:
@@ -340,6 +392,44 @@ def template_items(template_root: Path) -> dict[str, tuple[str, str, Path | str]
 def git_head(root: Path) -> str:
     proc = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"], capture_output=True, text=True)
     return proc.stdout.strip() if proc.returncode == 0 else "unknown"
+
+
+def resolve_template_root(from_git: str, ref: str) -> tuple[Path, Callable[[], None]]:
+    """Shallow-clone the template from a URL/path into a temp dir; returns (root, cleanup).
+
+    `ref` must be a branch or tag (a bare commit SHA cannot be shallow-cloned).
+    """
+    tmp = Path(tempfile.mkdtemp(prefix="agentloop-template-"))
+    cmd = ["git", "clone", "--depth", "1", *(["--branch", ref] if ref else []), from_git, str(tmp / "template")]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        shutil.rmtree(tmp, ignore_errors=True)
+        detail = proc.stderr.strip().splitlines()[-1] if proc.stderr.strip() else from_git
+        raise RuntimeError(f"git clone failed: {detail}")
+    return tmp / "template", lambda: shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _manifest_source(target: Path) -> tuple[str, str]:
+    """The template source/ref an adopted repo recorded at adopt time ("" when unavailable)."""
+    path = target / MANIFEST_PATH
+    if not path.is_file():
+        return "", ""
+    try:
+        data = parse_manifest(path.read_text(encoding="utf-8"))
+    except ValueError:
+        return "", ""
+    template = data.get("template") or {}
+    return str(template.get("source") or ""), str(template.get("ref") or "")
+
+
+def _detect_target_commands(target: Path) -> dict[str, list[str]]:
+    names = ("package.json", "pnpm-lock.yaml", "yarn.lock", "pyproject.toml", "uv.lock", "Cargo.toml", "go.mod")
+    files: dict[str, str] = {}
+    for name in (*names, "makefile", "Makefile"):
+        path = target / name
+        if path.is_file():
+            files[name] = path.read_text(encoding="utf-8", errors="replace")
+    return detect_commands(files)
 
 
 def tracked_dirty_paths(target: Path, rels: list[str]) -> list[str]:
@@ -638,60 +728,104 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--branch", default="", help="the work branch to record (default: build/<name>)")
     parser.add_argument("--test-cmd", default="", help="this repo's test command for the quality gate")
     parser.add_argument("--check-cmd", default="", help="this repo's lint/type command for the quality gate")
+    parser.add_argument("--from-git", default="", help="clone the template from this URL/path instead of a checkout")
+    parser.add_argument("--ref", default="", help="branch or tag for --from-git (default: the default branch)")
     parser.add_argument("--force", action="store_true", help="upgrade: also overwrite/remove locally modified files")
     parser.add_argument("--dry-run", action="store_true", help="print the plan only")
     args = parser.parse_args(argv)
 
     name = args.name.strip()
     target_arg = args.target.strip()
+    from_git = args.from_git.strip()
+    ref = args.ref.strip()
     if not target_arg or (not name and not args.upgrade):
         print('usage: make adopt TARGET=../myrepo NAME=myproduct [TEST_CMD="..."] [CHECK_CMD="..."]', file=sys.stderr)
+        return 2
+    if ref and not from_git:
+        print("--ref requires --from-git", file=sys.stderr)
         return 2
     target = Path(target_arg).resolve()
     if not target.is_dir():
         print(f"target is not a directory: {target}", file=sys.stderr)
         return 1
+
     template_root = TEMPLATE_ROOT
-    if target == template_root:
-        print("target is the template checkout itself — adopt installs into another repo.", file=sys.stderr)
-        return 1
+    source_label = str(TEMPLATE_ROOT)
+    cleanup: Callable[[], None] | None = None
+    if not from_git and args.upgrade and target == TEMPLATE_ROOT:
+        # Self-upgrade from inside the adopted repo: this adopt.py *is* the installed copy, so
+        # fall back to the template source recorded in the manifest at adopt time.
+        from_git, ref = _manifest_source(target)
+        if from_git and "://" not in from_git and not from_git.startswith("git@"):
+            local = Path(from_git)
+            if local.is_dir() and local.resolve() != target:
+                template_root, source_label, from_git = local.resolve(), from_git, ""
+            else:
+                print("the recorded template source is unavailable — pass --from-git <url-or-path>", file=sys.stderr)
+                return 1
+        elif not from_git:
+            print("cannot locate a template: run from a checkout or pass --from-git <url-or-path>", file=sys.stderr)
+            return 1
+    if from_git:
+        source_label = from_git
+        try:
+            template_root, cleanup = resolve_template_root(from_git, ref)
+        except RuntimeError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
 
-    if args.upgrade:
-        return Upgrader(target, template_root, args.dry_run, args.force).run(str(template_root), "")
+    try:
+        if target == template_root:
+            print("target is the template checkout itself — adopt installs into another repo.", file=sys.stderr)
+            return 1
 
-    branch = args.branch.strip() or f"build/{name}"
-    inst = Installer(target, template_root, dry_run=args.dry_run)
-    inst.copy_tree()
-    inst.install_special(name, branch, args.test_cmd.strip(), args.check_cmd.strip())
-    inst.install_claude_md()
-    inst.install_settings()
-    inst.snapshot()
-    inst.write_manifest(str(template_root), "", git_head(template_root))
+        if args.upgrade:
+            return Upgrader(target, template_root, args.dry_run, args.force).run(source_label, ref)
 
-    prefix = "[dry-run] " if args.dry_run else ""
-    counts: dict[str, int] = {}
-    for a in inst.actions:
-        counts[a.status] = counts.get(a.status, 0) + 1
-        if a.status == "copy" and not a.note:
-            continue  # plain copies are summarized by count; only annotated rows are itemized
-        print(f"{prefix}{a.status:<6} {a.path}" + (f"  ({a.note})" if a.note else ""))
-    print(f"{prefix}summary: " + ", ".join(f"{k}={v}" for k, v in sorted(counts.items())))
+        branch = args.branch.strip() or f"build/{name}"
+        inst = Installer(target, template_root, dry_run=args.dry_run)
+        inst.copy_tree()
+        inst.install_special(name, branch, args.test_cmd.strip(), args.check_cmd.strip())
+        inst.install_claude_md()
+        inst.install_settings()
+        inst.snapshot()
+        inst.write_manifest(source_label, ref, git_head(template_root))
 
-    print(
-        f"\n{prefix}Manual steps (adopt does not touch these):\n"
-        "  - Add one line to your makefile: `include agentloop.mk` "
-        "(or run targets standalone: `make -f agentloop.mk build-loop`).\n"
-        + (
-            "  - Set your test/check commands in .agentloop/config.yaml quality_gate.steps.\n"
-            if not (args.test_cmd and args.check_cmd)
-            else ""
+        prefix = "[dry-run] " if args.dry_run else ""
+        counts: dict[str, int] = {}
+        for a in inst.actions:
+            counts[a.status] = counts.get(a.status, 0) + 1
+            if a.status == "copy" and not a.note:
+                continue  # plain copies are summarized by count; only annotated rows are itemized
+            print(f"{prefix}{a.status:<6} {a.path}" + (f"  ({a.note})" if a.note else ""))
+        print(f"{prefix}summary: " + ", ".join(f"{k}={v}" for k, v in sorted(counts.items())))
+
+        hints: list[str] = []
+        if not (args.test_cmd and args.check_cmd):
+            detected = _detect_target_commands(target)
+            if not args.test_cmd and detected["test"]:
+                hints.append("test → " + "  or  ".join(f'"{c}"' for c in detected["test"]))
+            if not args.check_cmd and detected["check"]:
+                hints.append("check → " + "  or  ".join(f'"{c}"' for c in detected["check"]))
+        print(
+            f"\n{prefix}Manual steps (adopt does not touch these):\n"
+            "  - Add one line to your makefile: `include agentloop.mk` "
+            "(or run targets standalone: `make -f agentloop.mk build-loop`).\n"
+            + (
+                "  - Set your test/check commands in .agentloop/config.yaml quality_gate.steps.\n"
+                if not (args.test_cmd and args.check_cmd)
+                else ""
+            )
+            + (f"    Detected here (suggestions only): {'; '.join(hints)}\n" if hints else "")
+            + "  - Recommended: add the gitleaks hook to your .pre-commit-config.yaml (secret scanning).\n"
+            f"  - Create the work branch when you start a cycle (state.md records: {branch}).\n"
+            "\nNext, in the adopted repo: run /onboard (maps the existing implementation into\n"
+            "docs/05-current-state.md), then start the first delta cycle with /req."
         )
-        + "  - Recommended: add the gitleaks hook to your .pre-commit-config.yaml (secret scanning).\n"
-        f"  - Create the work branch when you start a cycle (state.md records: {branch}).\n"
-        "\nNext, in the adopted repo: run /onboard (maps the existing implementation into\n"
-        "docs/05-current-state.md), then start the first delta cycle with /req."
-    )
-    return 0
+        return 0
+    finally:
+        if cleanup:
+            cleanup()
 
 
 if __name__ == "__main__":

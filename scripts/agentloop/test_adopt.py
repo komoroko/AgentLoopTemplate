@@ -449,6 +449,73 @@ def test_upgrade_dry_run_writes_nothing(template: Path, target: Path) -> None:
     assert (target / adopt.MANIFEST_PATH).read_text(encoding="utf-8") == manifest_before
 
 
+# --- --from-git sourcing and command detection ------------------------------------
+
+
+def test_detect_commands_node_with_lockfiles() -> None:
+    pkg = json.dumps({"scripts": {"test": "vitest", "lint": "eslint ."}})
+    assert adopt.detect_commands({"package.json": pkg}) == {"test": ["npm test"], "check": ["npm run lint"]}
+    assert adopt.detect_commands({"package.json": pkg, "pnpm-lock.yaml": ""})["test"] == ["pnpm test"]
+    assert adopt.detect_commands({"package.json": pkg, "yarn.lock": ""})["check"] == ["yarn run lint"]
+
+
+def test_detect_commands_python_rust_go_make() -> None:
+    out = adopt.detect_commands({"pyproject.toml": "[tool.pytest.ini_options]\n[tool.ruff]\n", "uv.lock": ""})
+    assert out == {"test": ["uv run pytest"], "check": ["ruff check ."]}
+    assert adopt.detect_commands({"Cargo.toml": "[package]"})["test"] == ["cargo test"]
+    assert adopt.detect_commands({"go.mod": "module x"})["check"] == ["go vet ./..."]
+    out = adopt.detect_commands({"makefile": "test:\n\tpytest\nlint:\n\truff check .\n"})
+    assert out == {"test": ["make test"], "check": ["make lint"]}
+    assert adopt.detect_commands({}) == {"test": [], "check": []}
+
+
+def test_adopt_prints_detected_suggestions(template: Path, target: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    pkg = json.dumps({"scripts": {"test": "vitest", "lint": "eslint"}})
+    (target / "package.json").write_text(pkg, encoding="utf-8")
+    adopt.main(["--target", str(target), "--name", "demo"])
+    out = capsys.readouterr().out
+    assert "npm test" in out and "npm run lint" in out and "suggestions only" in out
+
+
+def test_ref_requires_from_git(template: Path, target: Path) -> None:
+    assert adopt.main(["--target", str(target), "--name", "demo", "--ref", "main"]) == 2
+
+
+def test_from_git_clones_and_cleans_up(template: Path, target: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = {"cleanup": 0}
+
+    def fake_resolve(url: str, ref: str) -> tuple[Path, object]:
+        assert url == "https://example.com/tpl.git" and ref == "v2"
+
+        def _cleanup() -> None:
+            calls["cleanup"] += 1
+
+        return template, _cleanup
+
+    monkeypatch.setattr(adopt, "resolve_template_root", fake_resolve)
+    rc = adopt.main(
+        ["--target", str(target), "--name", "demo", "--from-git", "https://example.com/tpl.git", "--ref", "v2"]
+    )
+    assert rc == 0
+    assert calls["cleanup"] == 1  # the temp clone is removed even on success
+    data = _manifest(target)
+    assert data["template"]["source"] == "https://example.com/tpl.git"
+    assert data["template"]["ref"] == "v2"
+
+
+def test_self_upgrade_falls_back_to_recorded_source(
+    template: Path, target: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    adopt.main(["--target", str(target), "--name", "demo"])
+    (template / "scripts" / "agentloop" / "dag.py").write_text("# tool v2\n", encoding="utf-8")
+    # Simulate running the *installed* adopt.py from inside the adopted repo: TEMPLATE_ROOT
+    # resolves to the repo itself, so the manifest's recorded source must take over.
+    monkeypatch.setattr(adopt, "TEMPLATE_ROOT", target)
+    rc = adopt.main(["--target", str(target), "--upgrade"])
+    assert rc == 0
+    assert (target / "scripts" / "agentloop" / "dag.py").read_text(encoding="utf-8") == "# tool v2\n"
+
+
 def _git(*args: str, cwd: Path) -> None:
     subprocess.run(["git", *args], cwd=cwd, capture_output=True, check=True)
 

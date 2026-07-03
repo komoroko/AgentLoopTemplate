@@ -10,7 +10,7 @@
 
 AGENTLOOP_PY := uv run --no-project --with pyyaml python
 
-.PHONY: init adopt cycle-close build-loop issue-sync revise test-tools
+.PHONY: init adopt agentloop-upgrade cycle-close build-loop issue-sync revise test-tools
 
 # Turn the copied template into a product (idempotent): fills the pyproject / state.md placeholders,
 # snapshots the pristine docs scaffolds, creates the work branch, and flips gates.template_mode off
@@ -25,6 +25,14 @@ init:
 #   make adopt TARGET=../myrepo NAME=myrepo [TEST_CMD="npm test"] [CHECK_CMD="npm run lint"] [ARGS=--dry-run]
 adopt:
 	$(AGENTLOOP_PY) scripts/agentloop/adopt.py --target "$(TARGET)" --name "$(NAME)" $(if $(BRANCH),--branch "$(BRANCH)") $(if $(TEST_CMD),--test-cmd "$(TEST_CMD)") $(if $(CHECK_CMD),--check-cmd "$(CHECK_CMD)") $(ARGS)
+
+# Refresh an adopted repo's template-owned tooling from a newer template (manifest-driven,
+# hash-checked: your local edits are never overwritten — they are skipped and listed; FORCE=1
+# overrides). Run inside the adopted repo; FROM is a git URL or local path, and without it the
+# source recorded at adopt time is reused. Review with `git diff`, then commit.
+#   make -f agentloop.mk agentloop-upgrade [FROM=https://github.com/you/AgentLoopTemplate.git] [REF=main] [FORCE=1] [ARGS=--dry-run]
+agentloop-upgrade:
+	$(AGENTLOOP_PY) scripts/agentloop/adopt.py --upgrade --target "$(or $(TARGET),.)" $(if $(FROM),--from-git "$(FROM)") $(if $(REF),--ref "$(REF)") $(if $(FORCE),--force) $(ARGS)
 
 # Close the current delta cycle (human decision, after /verify's release approval): archive the
 # filled deliverables to docs/archive/<date>-<slug>/, restore fresh scaffolds, reset gates/phase.
