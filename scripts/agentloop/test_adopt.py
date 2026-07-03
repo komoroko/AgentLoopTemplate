@@ -509,16 +509,30 @@ def test_uninstall_requires_manifest_and_rejects_from_git(template: Path, target
 def test_uninstall_restores_pre_adopt_state(template: Path, target: Path) -> None:
     before = sorted(p.relative_to(target).as_posix() for p in target.rglob("*") if p.is_file())
     claude_before = (target / "CLAUDE.md").read_text(encoding="utf-8")
-    settings_before = json.loads((target / ".claude" / "settings.json").read_text(encoding="utf-8"))
+    settings_before = (target / ".claude" / "settings.json").read_text(encoding="utf-8")
     adopt.main(["--target", str(target), "--name", "demo"])
     rc = adopt.main(["--target", str(target), "--uninstall"])
     assert rc == 0
     after = sorted(p.relative_to(target).as_posix() for p in target.rglob("*") if p.is_file())
     assert after == before
     assert (target / "CLAUDE.md").read_text(encoding="utf-8") == claude_before
-    assert json.loads((target / ".claude" / "settings.json").read_text(encoding="utf-8")) == settings_before
+    # Byte-for-byte, not just semantically: the manifest keeps the pre-adopt text.
+    assert (target / ".claude" / "settings.json").read_text(encoding="utf-8") == settings_before
     assert not (target / ".agentloop").exists()
     assert not (target / "scripts").exists()
+
+
+def test_uninstall_of_uncommitted_adoption_needs_no_force(template: Path, target: Path) -> None:
+    _git("init", cwd=target)
+    _git("add", "-A", cwd=target)
+    _git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "pre-adopt", cwd=target)
+    adopt.main(["--target", str(target), "--name", "demo"])
+    # CLAUDE.md / settings.json are now tracked-dirty, but the adoption itself was never
+    # committed (the manifest is untracked) — aborting the trial must not demand --force.
+    rc = adopt.main(["--target", str(target), "--uninstall"])
+    assert rc == 0
+    proc = subprocess.run(["git", "status", "--porcelain"], cwd=target, capture_output=True, text=True)
+    assert proc.stdout == ""  # the tree is byte-identical to the pre-adopt commit
 
 
 def test_uninstall_leaves_modified_files(template: Path, target: Path) -> None:

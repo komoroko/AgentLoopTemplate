@@ -627,6 +627,8 @@ class Installer:
         self._write("CLAUDE.md", existing.rstrip("\n") + "\n" + claude_import_block(), "merge", "@import appended")
 
     def install_settings(self) -> None:
+        """Merge (or create) settings.json, recording the pre-adopt text so uninstall can restore
+        it byte-for-byte while our merged version is the last writer (hash check)."""
         template_path = self.template_root / SETTINGS_PATH
         template = json.loads(template_path.read_text(encoding="utf-8"))
         dst = self.target / SETTINGS_PATH
@@ -634,14 +636,18 @@ class Installer:
             text = template_path.read_text(encoding="utf-8")
             self._write(SETTINGS_PATH, text, "copy")
             _merged, _notes, added = merge_settings({}, template)
-            self.settings_record = {"created": True, "hash": norm_hash(text.encode("utf-8")), **added}
+            self.settings_record = {"created": True, "hash": norm_hash(text.encode("utf-8")), "original": "", **added}
             return
-        merged, notes, added = merge_settings(json.loads(dst.read_text(encoding="utf-8")), template)
-        self.settings_record = {"created": False, **added}
+        original = dst.read_text(encoding="utf-8")
+        merged, notes, added = merge_settings(json.loads(original), template)
         if not notes:
             self.actions.append(Action("skip", SETTINGS_PATH, "nothing missing"))
-            return
-        self._write(SETTINGS_PATH, json.dumps(merged, ensure_ascii=False, indent=2) + "\n", "merge", "; ".join(notes))
+            record_hash = norm_hash(original.encode("utf-8"))
+        else:
+            text = json.dumps(merged, ensure_ascii=False, indent=2) + "\n"
+            self._write(SETTINGS_PATH, text, "merge", "; ".join(notes))
+            record_hash = norm_hash(text.encode("utf-8"))
+        self.settings_record = {"created": False, "hash": record_hash, "original": original, **added}
 
     def snapshot(self) -> None:
         if self.dry_run:
@@ -751,13 +757,15 @@ class Upgrader:
             merged, settings_notes, added = upgrade_settings(
                 existing, old_settings_record, json.loads(template_settings_path.read_text(encoding="utf-8"))
             )
-            new_settings_record = {"created": bool(old_settings_record.get("created")), **added}
+            new_settings_record = {
+                "created": bool(old_settings_record.get("created")),
+                "hash": old_settings_record.get("hash") or "",
+                "original": old_settings_record.get("original") or "",
+                **added,
+            }
             if _canon(merged) != before:
                 new_settings_text = json.dumps(merged, ensure_ascii=False, indent=2) + "\n"
-                if new_settings_record["created"]:
-                    new_settings_record["hash"] = norm_hash(new_settings_text.encode("utf-8"))
-            elif old_settings_record.get("hash"):
-                new_settings_record["hash"] = old_settings_record["hash"]
+                new_settings_record["hash"] = norm_hash(new_settings_text.encode("utf-8"))
 
         to_touch = [i.rel for i in plan if i.op in ("update", "remove", "restore")]
         if new_settings_text:
@@ -831,6 +839,16 @@ class Uninstaller:
         self.dry_run = dry_run
         self.force = force
 
+    def _adoption_committed(self) -> bool:
+        """False while the manifest is untracked — aborting a never-committed (trial) adoption
+        must not demand a clean tree; the uninstall itself restores the pre-adopt state."""
+        proc = subprocess.run(
+            ["git", "-C", str(self.target), "status", "--porcelain", "--", MANIFEST_PATH],
+            capture_output=True,
+            text=True,
+        )
+        return proc.returncode == 0 and not proc.stdout.startswith("??")
+
     def run(self) -> int:
         manifest_path = self.target / MANIFEST_PATH
         if not manifest_path.is_file():
@@ -862,7 +880,9 @@ class Uninstaller:
                 if stripped != text:
                     claude_new_text = stripped
 
-        # settings.json: same rule — wholesale delete only while pristine-created, else retract entries.
+        # settings.json: while we were the last writer (hash matches), delete a created file or
+        # restore the recorded pre-adopt text byte-for-byte; once the user edited it, fall back
+        # to retracting just our entries.
         settings_record: dict[str, Any] = manifest.get("settings") or {}
         settings_path = self.target / SETTINGS_PATH
         settings_delete = False
@@ -870,8 +890,13 @@ class Uninstaller:
         settings_notes: list[str] = []
         if settings_path.is_file():
             text = settings_path.read_text(encoding="utf-8")
-            if settings_record.get("created") and settings_record.get("hash") == norm_hash(text.encode("utf-8")):
+            pristine = settings_record.get("hash") == norm_hash(text.encode("utf-8"))
+            if pristine and settings_record.get("created"):
                 settings_delete = True
+            elif pristine and settings_record.get("original"):
+                if settings_record["original"] != text:
+                    settings_new_text = settings_record["original"]
+                    settings_notes = ["pre-adopt content restored verbatim"]
             else:
                 merged, settings_notes = unmerge_settings(json.loads(text), settings_record)
                 if settings_notes:
@@ -882,7 +907,7 @@ class Uninstaller:
             to_touch.append("CLAUDE.md")
         if settings_delete or settings_new_text is not None:
             to_touch.append(SETTINGS_PATH)
-        if not self.force and not self.dry_run:
+        if not self.force and not self.dry_run and self._adoption_committed():
             dirty = tracked_dirty_paths(self.target, to_touch)
             if dirty:
                 print(
