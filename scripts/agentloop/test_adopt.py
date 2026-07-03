@@ -522,6 +522,17 @@ def test_uninstall_restores_pre_adopt_state(template: Path, target: Path) -> Non
     assert not (target / "scripts").exists()
 
 
+def test_uninstall_sweeps_interpreter_caches(template: Path, target: Path) -> None:
+    adopt.main(["--target", str(target), "--name", "demo"])
+    # Running the installed tooling regenerates caches — they must not keep dirs alive.
+    cache = target / "scripts" / "agentloop" / "__pycache__"
+    cache.mkdir()
+    (cache / "adopt.cpython-313.pyc").write_bytes(b"\x00")
+    rc = adopt.main(["--target", str(target), "--uninstall"])
+    assert rc == 0
+    assert not (target / "scripts").exists()
+
+
 def test_uninstall_of_uncommitted_adoption_needs_no_force(template: Path, target: Path) -> None:
     _git("init", cwd=target)
     _git("add", "-A", cwd=target)

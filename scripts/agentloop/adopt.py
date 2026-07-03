@@ -78,7 +78,8 @@ COPY_ROOTS = (".agentloop", "scripts/agentloop", ".claude/commands", ".claude/ag
 COPY_FILES = ("agentloop.mk",)
 # Handled by dedicated logic, not the generic copy loop.
 SPECIAL = {".agentloop/config.yaml", ".agentloop/state.md", "docs/00-product-brief.md"}
-_EXCLUDE_DIR_NAMES = {"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", "archive", "scaffold"}
+_CACHE_DIR_NAMES = {"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache"}
+_EXCLUDE_DIR_NAMES = _CACHE_DIR_NAMES | {"archive", "scaffold"}
 _EXCLUDE_FILE_PREFIXES = ("build-loop.log", "adopt-manifest.yaml")
 
 # Ownership of installed files, recorded per file in the manifest. `template` = the mechanism
@@ -484,11 +485,20 @@ def template_items(template_root: Path) -> dict[str, tuple[str, str, Path | str]
 
 
 def _remove_and_prune(target: Path, rel: str) -> None:
-    """Delete one installed file and any directories that emptied out around it."""
+    """Delete one installed file and any directories that emptied out around it.
+
+    Interpreter/test caches never block the pruning — running the tooling regenerates them as a
+    side effect (e.g. __pycache__ appears while this very uninstall executes), so they are swept.
+    """
     dst = target / rel
     dst.unlink(missing_ok=True)
     parent = dst.parent
-    while parent != target and parent.is_dir() and not any(parent.iterdir()):
+    while parent != target and parent.is_dir():
+        for child in list(parent.iterdir()):
+            if child.is_dir() and child.name in _CACHE_DIR_NAMES:
+                shutil.rmtree(child, ignore_errors=True)
+        if any(parent.iterdir()):
+            break
         parent.rmdir()
         parent = parent.parent
 
