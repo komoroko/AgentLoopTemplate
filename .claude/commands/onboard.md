@@ -18,9 +18,8 @@ the template's machinery: `/req` and `/design` start from the baseline this comm
   "uncovered requirement" noise forever. Requirement IDs and traceability apply to **each
   cycle's delta only**. The existing system is captured as a *baseline*, not as requirements.
 - Gates are untouched: onboarding adds no new gate, and none is set to approved by it.
-  "Starting mid-phase" (e.g. a repo that already has an approved-equivalent design doc) is done
-  by running `/req`/`/design` as a fast intake of those documents and having the human open the
-  gates normally — the human's approval *is* the mapping of the old document into this system.
+  How to enter the lifecycle from each starting state (existing mid-phase documents, in-flight
+  code, no documents at all) is the "Entry points by starting state" table below.
 
 ## Steps
 
@@ -36,6 +35,13 @@ the template's machinery: `/req` and `/design` start from the baseline this comm
    Keep it lean — link out instead of inlining (CLAUDE.md "Context budget").
 3. Write a short summary of the current product into `docs/00-product-brief.md` (what it is
    today), keeping the brief's brownfield note about delta-scoped cycles.
+   - **Finding no documents at all is a supported, normal state** — the baseline's "Existing
+     documents" section just says "none". What the code survey cannot recover is *intent*
+     (who this is for, the qualities that matter, non-goals): gather those in a **single
+     AskUserQuestion** and write the answers into the brief's own sections (What / For whom /
+     Non-goals / Constraints). Recover only those few lines of intent — do not slide into
+     reverse-writing a specification (the scope guard above). From then on this brief plus
+     the baseline stand in for the missing documents, and `/req` runs as usual.
 4. Check `.agentloop/config.yaml` against the survey: propose `quality_gate.steps` commands if
    still the defaults, and propose `gates.guard_paths` entries for the repo's real code layout
    (e.g. `src/: tasks`) — **propose only**; the human decides when to enable code-path guarding.
@@ -47,6 +53,19 @@ the template's machinery: `/req` and `/design` start from the baseline this comm
    - next step: write the chosen change into `docs/00-product-brief.md` and run `/req`.
 
 Write the deliverables in the user's language.
+
+## Entry points by starting state
+
+Adopted repos arrive with any mix of documentation and implementation progress. The lifecycle
+is always the same; only the intake differs:
+
+| Starting state | Entry |
+|---|---|
+| No documents at all (implementation only) | `/onboard` alone — the survey is code-driven, so it succeeds; recover intent into the brief (step 3 note), then the next change starts a normal `/req` cycle. |
+| No docs beyond a README, implementation stable | Same as above (link the README etc. from the baseline). |
+| Requirements/design documents exist for not-yet-built work | Run `/req` → `/design` as a **fast intake**: shape each existing document into the deliverable and have the human open gates ①② normally — that approval *is* the adoption of the old document into this system. |
+| Implementation in flight (half-done) | Fast intake as above, then `/tasks`' brownfield note: plan only the **remaining delta**, anchored by an **absorb task** that pins the existing partial implementation green. |
+| Docs and implementation both complete (adopting for future work) | `/onboard` alone; the first delta cycle starts when the next change arrives. |
 
 ## At each cycle close
 

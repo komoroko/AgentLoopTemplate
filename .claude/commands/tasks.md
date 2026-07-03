@@ -20,6 +20,7 @@ On the first run (no tasks generated yet), create them with the steps below.
 
 ## Steps
 1. Read `docs/20-design.md`.
+   - **Brownfield**: if `docs/05-current-state.md` exists (an adopted repo), **read it first**. Cut tasks to **this cycle's remaining delta** — never create a task that re-implements a capability the baseline already lists as implemented. When the cycle completes an in-flight partial implementation, put an **absorb task** first (kind: foundation): write acceptance-level tests around the existing partial code and pin it green, so the remaining-work tasks stack on a verified base; reference the existing code in the ticket's "Notes / design decisions". **Never create a task as `done`** (a new task is always `todo`) — what already works is baseline description, not a task. If a delta requirement names the combined capability (existing part + remaining work), give the absorb task that requirement's `req` and the `dag.py --trace` coverage holds.
 2. Split the design into **review-sized task tickets** and create `docs/tasks/T-NNN.md` (following the `T-template.md` scaffold). Each ticket must have:
    - the requirement/design it covers
    - acceptance criteria

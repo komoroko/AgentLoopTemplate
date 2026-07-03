@@ -113,9 +113,16 @@ Then, inside the adopted repo:
    **persistent baseline**: architecture, module roles, reusable assets, conventions, links to your
    existing documents (kept in place, never converted), and implementation status including
    in-flight work. Existing behavior is **not** reverse-generated into requirements or done tasks —
-   gates stay human-opened, and traceability (R-N) applies to each cycle's delta only. If you
-   already have an approved-equivalent requirements/design doc, run `/req`/`/design` as a fast
-   intake of it and open the gates — that approval *is* the mapping into this system.
+   gates stay human-opened, and traceability (R-N) applies to each cycle's delta only. Any starting
+   state maps in (the full table lives in `/onboard`):
+   - **No documents at all** — the survey is code-driven, so it still succeeds; `/onboard` asks you
+     for the few lines of intent code can't reveal (who it's for, non-goals) and writes them into
+     the brief. No specification is reverse-written.
+   - **Approved-equivalent requirements/design docs exist** — run `/req`/`/design` as a fast intake
+     of them and open the gates; that approval *is* the mapping into this system.
+   - **Implementation half-done** — the first cycle plans only the remaining delta, anchored by an
+     **absorb task** that pins the existing partial code green before new work stacks on it
+     (`/tasks`' brownfield note).
 2. **Delta cycles** — each pass through `brief → /req → … → /verify` describes **one change**, with
    half-done work resumed as delta requirements. After the release decision, close the cycle:
    ```bash

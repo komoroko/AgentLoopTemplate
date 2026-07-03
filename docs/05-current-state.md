@@ -30,7 +30,9 @@
 -
 
 ## Existing documents
-<!-- Links to the requirements/design/ADR/README documents that already exist, wherever they live -->
+<!-- Links to the requirements/design/ADR/README documents that already exist, wherever they live.
+     Finding none is a normal, supported state — write "none"; the baseline itself is then the
+     only map (see /onboard's no-docs note). -->
 -
 
 ## Implementation status
