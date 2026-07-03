@@ -10,7 +10,7 @@
 
 AGENTLOOP_PY := uv run --no-project --with pyyaml python
 
-.PHONY: init adopt agentloop-upgrade cycle-close build-loop issue-sync revise test-tools
+.PHONY: init adopt agentloop-upgrade agentloop-uninstall cycle-close build-loop issue-sync revise test-tools
 
 # Turn the copied template into a product (idempotent): fills the pyproject / state.md placeholders,
 # snapshots the pristine docs scaffolds, creates the work branch, and flips gates.template_mode off
@@ -33,6 +33,13 @@ adopt:
 #   make -f agentloop.mk agentloop-upgrade [FROM=https://github.com/you/AgentLoopTemplate.git] [REF=main] [FORCE=1] [ARGS=--dry-run]
 agentloop-upgrade:
 	$(AGENTLOOP_PY) scripts/agentloop/adopt.py --upgrade --target "$(or $(TARGET),.)" $(if $(FROM),--from-git "$(FROM)") $(if $(REF),--ref "$(REF)") $(if $(FORCE),--force) $(ARGS)
+
+# Remove everything adopt installed from THIS repo (pristine files only: anything you edited is
+# left in place and listed for manual review). Retracts the CLAUDE.md @import block and the
+# merged settings.json entries too. Manifest-driven — needs no template checkout.
+#   make -f agentloop.mk agentloop-uninstall [FORCE=1] [ARGS=--dry-run]
+agentloop-uninstall:
+	$(AGENTLOOP_PY) scripts/agentloop/adopt.py --uninstall --target "$(or $(TARGET),.)" $(if $(FORCE),--force) $(ARGS)
 
 # Close the current delta cycle (human decision, after /verify's release approval): archive the
 # filled deliverables to docs/archive/<date>-<slug>/, restore fresh scaffolds, reset gates/phase.

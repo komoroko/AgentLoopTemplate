@@ -449,6 +449,100 @@ def test_upgrade_dry_run_writes_nothing(template: Path, target: Path) -> None:
     assert (target / adopt.MANIFEST_PATH).read_text(encoding="utf-8") == manifest_before
 
 
+# --- uninstall ---------------------------------------------------------------------
+
+
+def test_plan_uninstall_pristine_only() -> None:
+    mf = {
+        "a": {"hash": "sha256:x", "owner": "template"},
+        "b": {"hash": "sha256:x", "owner": "seeded"},
+        "c": {"hash": "sha256:x", "owner": "template"},
+    }
+    cur: dict[str, str | None] = {"a": "sha256:x", "b": "sha256:edited", "c": None}
+    ops = {i.rel: i.op for i in adopt.plan_uninstall(mf, cur, force=False)}
+    assert ops == {"a": "remove", "b": "leave-modified", "c": "unchanged"}
+    forced = {i.rel: i.op for i in adopt.plan_uninstall(mf, cur, force=True)}
+    assert forced["b"] == "remove"
+
+
+def test_unmerge_settings_removes_only_recorded_entries() -> None:
+    ours = {"matcher": "Write|Edit", "hooks": [{"type": "command", "command": "python gate_guard.py"}]}
+    users = {"matcher": "Bash", "hooks": [{"type": "command", "command": "./my-hook.sh"}]}
+    session = {"hooks": [{"type": "command", "command": "cat state.md"}]}
+    existing = {
+        "permissions": {"allow": ["Read", "Bash(make build-loop:*)"]},
+        "hooks": {"PreToolUse": [users, json.loads(json.dumps(ours))], "SessionStart": [session]},
+    }
+    installed = {
+        "permissions_allow": ["Bash(make build-loop:*)"],
+        "hooks": {"PreToolUse": [ours], "SessionStart": [session]},
+    }
+    merged, notes = adopt.unmerge_settings(existing, installed)
+    assert merged["permissions"]["allow"] == ["Read"]
+    assert merged["hooks"]["PreToolUse"] == [users]
+    assert "SessionStart" not in merged["hooks"]  # emptied event pruned
+    assert notes
+
+
+def test_remove_claude_import_is_idempotent() -> None:
+    original = "# My rules\nDo the thing.\n"
+    merged = original.rstrip("\n") + "\n" + adopt.claude_import_block()
+    stripped = adopt.remove_claude_import(merged)
+    assert stripped == original
+    assert adopt.remove_claude_import(stripped) == stripped
+
+
+def test_uninstall_requires_manifest_and_rejects_from_git(template: Path, target: Path) -> None:
+    assert adopt.main(["--target", str(target), "--uninstall"]) == 1
+    assert adopt.main(["--target", str(target), "--uninstall", "--from-git", "https://x.git"]) == 2
+
+
+def test_uninstall_restores_pre_adopt_state(template: Path, target: Path) -> None:
+    before = sorted(p.relative_to(target).as_posix() for p in target.rglob("*") if p.is_file())
+    claude_before = (target / "CLAUDE.md").read_text(encoding="utf-8")
+    settings_before = json.loads((target / ".claude" / "settings.json").read_text(encoding="utf-8"))
+    adopt.main(["--target", str(target), "--name", "demo"])
+    rc = adopt.main(["--target", str(target), "--uninstall"])
+    assert rc == 0
+    after = sorted(p.relative_to(target).as_posix() for p in target.rglob("*") if p.is_file())
+    assert after == before
+    assert (target / "CLAUDE.md").read_text(encoding="utf-8") == claude_before
+    assert json.loads((target / ".claude" / "settings.json").read_text(encoding="utf-8")) == settings_before
+    assert not (target / ".agentloop").exists()
+    assert not (target / "scripts").exists()
+
+
+def test_uninstall_leaves_modified_files(template: Path, target: Path) -> None:
+    adopt.main(["--target", str(target), "--name", "demo"])
+    (target / ".agentloop" / "config.yaml").write_text("gates: {}\n", encoding="utf-8")  # the human tuned it
+    rc = adopt.main(["--target", str(target), "--uninstall"])
+    assert rc == 0
+    assert (target / ".agentloop" / "config.yaml").read_text(encoding="utf-8") == "gates: {}\n"
+    assert not (target / adopt.MANIFEST_PATH).exists()
+    assert not (target / "scripts").exists()  # pristine tooling is still removed
+
+
+def test_uninstall_deletes_created_claude_md_and_settings(template: Path, target: Path) -> None:
+    (target / "CLAUDE.md").unlink()
+    (target / ".claude" / "settings.json").unlink()
+    adopt.main(["--target", str(target), "--name", "demo"])
+    assert (target / "CLAUDE.md").exists()
+    assert (target / ".claude" / "settings.json").exists()
+    rc = adopt.main(["--target", str(target), "--uninstall"])
+    assert rc == 0
+    assert not (target / "CLAUDE.md").exists()
+    assert not (target / ".claude").exists()
+
+
+def test_uninstall_dry_run_changes_nothing(template: Path, target: Path) -> None:
+    adopt.main(["--target", str(target), "--name", "demo"])
+    rc = adopt.main(["--target", str(target), "--uninstall", "--dry-run"])
+    assert rc == 0
+    assert (target / adopt.MANIFEST_PATH).exists()
+    assert (target / "scripts" / "agentloop" / "dag.py").exists()
+    assert adopt.CLAUDE_IMPORT_MARKER in (target / "CLAUDE.md").read_text(encoding="utf-8")
+
+
 # --- --from-git sourcing and command detection ------------------------------------
 
 

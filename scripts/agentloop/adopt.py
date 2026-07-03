@@ -30,6 +30,10 @@ Two more manifest-driven modes (adopt-only — a greenfield `make init` records 
                overwritten only while **pristine** (its hash still matches the manifest); local
                modifications are skipped and reported (--force overrides). Repo-owned state
                (config.yaml, state.md, tasks.yaml, filled docs, your CLAUDE.md) is never touched.
+  --uninstall — remove everything adopt installed, restoring the pre-adopt state. Pristine files
+               only: anything the human edited (filled docs, tuned config, updated state) stays
+               and is listed for manual review. The CLAUDE.md @import block and the merged
+               settings.json entries are retracted too. Needs no template checkout.
   --from-git URL [--ref branch-or-tag] — shallow-clone the template into a temp dir instead of
                running from a checkout. Inside an adopted repo, `--upgrade` without --from-git
                falls back to the source recorded in the manifest (self-upgrade):
@@ -347,6 +351,86 @@ def upgrade_settings(
     return merged, notes + merge_notes, added
 
 
+def plan_uninstall(
+    manifest_files: dict[str, dict[str, str]],
+    target_hashes: dict[str, str | None],
+    force: bool,
+) -> list[PlanItem]:
+    """The deterministic uninstall decision per installed file (template **and** seeded).
+
+    Only pristine files (hash still matches the record) are removed — anything the human or the
+    cycles have edited (filled docs, tuned config.yaml, updated state.md) is left in place and
+    reported for manual review (--force removes those too).
+    """
+    items: list[PlanItem] = []
+    for rel in sorted(manifest_files):
+        recorded = manifest_files[rel].get("hash")
+        current = target_hashes.get(rel)
+        if current is None:
+            items.append(PlanItem("unchanged", rel, "already gone"))
+        elif current == recorded:
+            items.append(PlanItem("remove", rel))
+        elif force:
+            items.append(PlanItem("remove", rel, "forced — locally modified file removed"))
+        else:
+            items.append(PlanItem("leave-modified", rel, "locally modified — left for manual removal"))
+    return items
+
+
+def unmerge_settings(existing: dict[str, Any], installed: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """Retract exactly the settings entries the manifest says adopt appended (pristine groups only).
+
+    A hook group the user has since modified no longer canonically matches the record — it is
+    theirs now and stays, with a note. Event lists that end up empty are pruned.
+    """
+    notes: list[str] = []
+    allow = existing.get("permissions", {}).get("allow")
+    if isinstance(allow, list):
+        for entry in installed.get("permissions_allow") or []:
+            if entry in allow:
+                allow.remove(entry)
+                notes.append(f"permissions.allow -= {entry}")
+    hooks = existing.get("hooks") or {}
+    for event, groups in (installed.get("hooks") or {}).items():
+        lst = hooks.get(event)
+        if not isinstance(lst, list):
+            continue
+        for old_group in groups:
+            idx = next((i for i, g in enumerate(lst) if _canon(g) == _canon(old_group)), None)
+            if idx is None:
+                notes.append(f"hooks.{event}: an installed group was locally modified — left as-is")
+            else:
+                del lst[idx]
+                notes.append(f"hooks.{event} -= 1 group")
+    for event in [e for e, v in (existing.get("hooks") or {}).items() if v == []]:
+        del existing["hooks"][event]
+    # Drop the containers the merge's setdefault may have introduced, once they empty out.
+    perms = existing.get("permissions")
+    if isinstance(perms, dict) and perms.get("allow") == []:
+        del perms["allow"]
+    for key in ("permissions", "hooks"):
+        if existing.get(key) == {}:
+            del existing[key]
+    return existing, notes
+
+
+def remove_claude_import(text: str) -> str:
+    """Strip the marker..@import block adopt appended to CLAUDE.md (idempotent; pure).
+
+    Works line-wise from the marker through the @import line, so it also removes blocks written
+    by other template versions whose wording differs.
+    """
+    lines = text.split("\n")
+    start = next((i for i, line in enumerate(lines) if line.strip() == CLAUDE_IMPORT_MARKER), None)
+    if start is None:
+        return text
+    end = next((i for i in range(start, len(lines)) if lines[i].startswith("@")), start)
+    del lines[start : end + 1]
+    if 0 < start <= len(lines) and lines[start - 1].strip() == "":
+        del lines[start - 1]  # the one blank line the appended block contributed
+    return "\n".join(lines)
+
+
 # --- installation steps ---------------------------------------------------------
 
 
@@ -387,6 +471,16 @@ def template_items(template_root: Path) -> dict[str, tuple[str, str, Path | str]
     rules = (template_root / "CLAUDE.md").read_text(encoding="utf-8")
     items[AGENTLOOP_RULES_PATH] = (norm_hash(rules.encode("utf-8")), "template", rules)
     return items
+
+
+def _remove_and_prune(target: Path, rel: str) -> None:
+    """Delete one installed file and any directories that emptied out around it."""
+    dst = target / rel
+    dst.unlink(missing_ok=True)
+    parent = dst.parent
+    while parent != target and parent.is_dir() and not any(parent.iterdir()):
+        parent.rmdir()
+        parent = parent.parent
 
 
 def git_head(root: Path) -> str:
@@ -598,11 +692,7 @@ class Upgrader:
             return
         dst = self.target / item.rel
         if item.op == "remove":
-            dst.unlink(missing_ok=True)
-            parent = dst.parent
-            while parent != self.target and parent.is_dir() and not any(parent.iterdir()):
-                parent.rmdir()
-                parent = parent.parent
+            _remove_and_prune(self.target, item.rel)
             return
         src = items[item.rel][2]
         dst.parent.mkdir(parents=True, exist_ok=True)
@@ -719,10 +809,123 @@ class Upgrader:
         return 0
 
 
+class Uninstaller:
+    """Remove everything adopt installed, restoring the pre-adopt state (manifest-driven).
+
+    Pristine files only — anything the human edited (filled docs, tuned config, updated state)
+    stays and is listed for manual review. Needs no template checkout.
+    """
+
+    def __init__(self, target: Path, dry_run: bool, force: bool) -> None:
+        self.target = target
+        self.dry_run = dry_run
+        self.force = force
+
+    def run(self) -> int:
+        manifest_path = self.target / MANIFEST_PATH
+        if not manifest_path.is_file():
+            print(
+                f"no {MANIFEST_PATH} — this repo was set up greenfield (`make init`) or never adopted;"
+                " --upgrade/--uninstall are adopt-only.",
+                file=sys.stderr,
+            )
+            return 1
+        manifest = parse_manifest(manifest_path.read_text(encoding="utf-8"))
+        mf_files: dict[str, dict[str, str]] = manifest.get("files") or {}
+        target_hashes: dict[str, str | None] = {
+            rel: (norm_hash((self.target / rel).read_bytes()) if (self.target / rel).is_file() else None)
+            for rel in mf_files
+        }
+        plan = plan_uninstall(mf_files, target_hashes, self.force)
+
+        # CLAUDE.md: delete outright if we created it and it is untouched; otherwise strip the block.
+        claude_record: dict[str, Any] = manifest.get("claude_md") or {}
+        claude_path = self.target / "CLAUDE.md"
+        claude_delete = False
+        claude_new_text: str | None = None
+        if claude_path.is_file():
+            text = claude_path.read_text(encoding="utf-8")
+            if claude_record.get("mode") == "created" and claude_record.get("hash") == norm_hash(text.encode("utf-8")):
+                claude_delete = True
+            else:
+                stripped = remove_claude_import(text)
+                if stripped != text:
+                    claude_new_text = stripped
+
+        # settings.json: same rule — wholesale delete only while pristine-created, else retract entries.
+        settings_record: dict[str, Any] = manifest.get("settings") or {}
+        settings_path = self.target / SETTINGS_PATH
+        settings_delete = False
+        settings_new_text: str | None = None
+        settings_notes: list[str] = []
+        if settings_path.is_file():
+            text = settings_path.read_text(encoding="utf-8")
+            if settings_record.get("created") and settings_record.get("hash") == norm_hash(text.encode("utf-8")):
+                settings_delete = True
+            else:
+                merged, settings_notes = unmerge_settings(json.loads(text), settings_record)
+                if settings_notes:
+                    settings_new_text = json.dumps(merged, ensure_ascii=False, indent=2) + "\n"
+
+        to_touch = [i.rel for i in plan if i.op == "remove"] + [MANIFEST_PATH]
+        if claude_delete or claude_new_text is not None:
+            to_touch.append("CLAUDE.md")
+        if settings_delete or settings_new_text is not None:
+            to_touch.append(SETTINGS_PATH)
+        if not self.force and not self.dry_run:
+            dirty = tracked_dirty_paths(self.target, to_touch)
+            if dirty:
+                print(
+                    "refusing to uninstall over uncommitted changes — commit first so `git diff` shows"
+                    " exactly what was removed (--force overrides):",
+                    file=sys.stderr,
+                )
+                for p in dirty:
+                    print(f"  {p}", file=sys.stderr)
+                return 1
+
+        prefix = "[dry-run] " if self.dry_run else ""
+        counts: dict[str, int] = {}
+        for item in plan:
+            counts[item.op] = counts.get(item.op, 0) + 1
+            if item.op != "unchanged":
+                print(f"{prefix}{item.op:<14} {item.rel}" + (f"  ({item.note})" if item.note else ""))
+            if item.op == "remove" and not self.dry_run:
+                _remove_and_prune(self.target, item.rel)
+        if claude_delete:
+            print(f"{prefix}{'remove':<14} CLAUDE.md  (created by adopt, still pristine)")
+        elif claude_new_text is not None:
+            print(f"{prefix}{'unmerge':<14} CLAUDE.md  (@import block removed)")
+        if settings_delete:
+            print(f"{prefix}{'remove':<14} {SETTINGS_PATH}  (created by adopt, still pristine)")
+        for note in settings_notes:
+            print(f"{prefix}{'unmerge':<14} {SETTINGS_PATH}  ({note})")
+        if not self.dry_run:
+            if claude_delete:
+                _remove_and_prune(self.target, "CLAUDE.md")
+            elif claude_new_text is not None:
+                claude_path.write_text(claude_new_text, encoding="utf-8")
+            if settings_delete:
+                _remove_and_prune(self.target, SETTINGS_PATH)
+            elif settings_new_text is not None:
+                settings_path.write_text(settings_new_text, encoding="utf-8")
+            _remove_and_prune(self.target, MANIFEST_PATH)
+        print(f"{prefix}{'remove':<14} {MANIFEST_PATH}")
+        counts["remove"] = counts.get("remove", 0) + 1
+        print(f"{prefix}summary: " + ", ".join(f"{k}={v}" for k, v in sorted(counts.items())))
+        left = [i.rel for i in plan if i.op == "leave-modified"]
+        if left:
+            print(f"\n{prefix}Left for manual removal (you edited these since adopt):")
+            for rel in left:
+                print(f"  {rel}")
+        return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="install AgentLoop into an existing repository")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--upgrade", action="store_true", help="refresh the template-owned tooling of an adopted repo")
+    mode.add_argument("--uninstall", action="store_true", help="remove what adopt installed (pristine files only)")
     parser.add_argument("--target", default="", help="path to the existing repository")
     parser.add_argument("--name", default="", help="the product name (state.md project)")
     parser.add_argument("--branch", default="", help="the work branch to record (default: build/<name>)")
@@ -738,16 +941,22 @@ def main(argv: list[str] | None = None) -> int:
     target_arg = args.target.strip()
     from_git = args.from_git.strip()
     ref = args.ref.strip()
-    if not target_arg or (not name and not args.upgrade):
+    if not target_arg or (not name and not (args.upgrade or args.uninstall)):
         print('usage: make adopt TARGET=../myrepo NAME=myproduct [TEST_CMD="..."] [CHECK_CMD="..."]', file=sys.stderr)
         return 2
     if ref and not from_git:
         print("--ref requires --from-git", file=sys.stderr)
         return 2
+    if args.uninstall and from_git:
+        print("--uninstall is manifest-driven and needs no template — drop --from-git", file=sys.stderr)
+        return 2
     target = Path(target_arg).resolve()
     if not target.is_dir():
         print(f"target is not a directory: {target}", file=sys.stderr)
         return 1
+
+    if args.uninstall:
+        return Uninstaller(target, args.dry_run, args.force).run()
 
     template_root = TEMPLATE_ROOT
     source_label = str(TEMPLATE_ROOT)
