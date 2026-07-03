@@ -124,6 +124,25 @@ Then, inside the adopted repo:
    ```
    `docs/00-product-brief.md` and `docs/05-current-state.md` persist across cycles (the baseline is
    updated, not archived). Closing a cycle is a human operation, like opening a gate.
+3. **Upgrade / uninstall (any time)** — adoption records `.agentloop/adopt-manifest.yaml`: the
+   template source/commit plus a hash of every installed file. Two manifest-driven commands build
+   on it (adopt-only; a greenfield `make init` records no manifest). Both are hash-checked —
+   **a file you edited since adopt is never overwritten or removed**; it is skipped and listed
+   (`FORCE=1` overrides). Review with `git diff` afterwards and commit:
+   ```bash
+   # inside the adopted repo — refresh the template-owned tooling (scripts/agentloop/,
+   # .claude/commands|agents, agentloop.mk, the imported rules). FROM is a git URL or local
+   # path; without it the source recorded at adopt time is reused. REF = branch/tag, not a SHA.
+   make -f agentloop.mk agentloop-upgrade FROM=https://github.com/you/AgentLoopTemplate.git
+
+   # retract the adoption: everything adopt installed is removed while pristine; the CLAUDE.md
+   # @import block and the merged settings.json entries are retracted too
+   make -f agentloop.mk agentloop-uninstall ARGS=--dry-run
+   ```
+   Upgrade never touches repo-owned state (`config.yaml`, `state.md`, `tasks.yaml`, filled docs,
+   your CLAUDE.md); uninstall removes it only while still unedited. And when `TEST_CMD`/`CHECK_CMD`
+   are omitted at adopt time, commands detected from your build files (package.json,
+   pyproject.toml, Cargo.toml, go.mod, makefile) are printed as suggestions — never auto-written.
 
 ## Usage
 
@@ -191,6 +210,7 @@ If you want to make tasks visible to the team/stakeholders, you can **one-way-mi
 - **`make build-loop` refuses to start with "template placeholders"** — run `make init NAME=<product>` first (see Setup).
 - **state.md and reality have drifted** (e.g. the task table is stale) — `tasks.yaml` is the truth for tasks; regenerate the human-facing view with `uv run --no-project --with pyyaml python scripts/agentloop/dag.py --render` and paste it into `state.md`. Gates and phase in `state.md` are the truth for the lifecycle; correct them deliberately (only a human opens or rewinds a gate).
 - **No usable `make` in an adopted repo** — the AgentLoop targets are self-contained in `agentloop.mk` (they need only the `uv` binary): run them standalone with `make -f agentloop.mk build-loop`, or call the scripts directly, e.g. `uv run --no-project --with pyyaml python scripts/agentloop/build_loop.py`.
+- **`agentloop-upgrade`/`agentloop-uninstall` says "no adopt-manifest"** — these two are adopt-only; a greenfield `make init` records no manifest (the whole copied template is yours, so there is nothing to distinguish). In a repo adopted before manifests existed, re-run `make adopt` once (existing files are skipped, the manifest is recorded) and upgrade from there.
 
 ## Layout
 

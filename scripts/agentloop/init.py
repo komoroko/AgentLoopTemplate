@@ -13,7 +13,9 @@ One idempotent command replaces the manual, easy-to-forget setup edits:
 
 The text replacements are surgical regexes (comments and layout survive), pure and unit-tested.
 Re-running with the same arguments is a no-op. build_loop.py refuses to start while the
-state.md placeholders are still present, pointing here.
+state.md placeholders are still present, pointing here. Unlike adopt.py, init records no
+adopt-manifest — the whole copied template is the product's own, so `adopt.py --upgrade` /
+`--uninstall` do not apply to greenfield repos.
 
 Usage:
   make init NAME=myproduct [BRANCH=build/myproduct]
