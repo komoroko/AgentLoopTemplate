@@ -29,6 +29,8 @@ brief → requirements → design → tasks → build → verify → done
 
 Check progress anytime with `/status`. At `done`, `/verify` records a retrospective in `docs/retrospective.md` and closes any open logs. An upstream defect rolls back via `/revise` (see "Roll back").
 
+**Cycles**: an ongoing repo runs this lifecycle repeatedly as **delta cycles** — each cycle's docs describe one change, not the whole product. After `done`, the human runs `make cycle-close NAME=<slug>` to archive the filled deliverables to `docs/archive/` and reset gates/phase for the next cycle (`docs/00-product-brief.md` and the baseline `docs/05-current-state.md` persist). In an adopted (brownfield) repo, `docs/05-current-state.md` is the persistent baseline of the existing codebase — `/req`/`/design` read it first, and traceability (R-N) applies to each cycle's delta only, never reverse-generated from existing behavior. Adopted repos also carry `.agentloop/adopt-manifest.yaml`; `make -f agentloop.mk agentloop-upgrade` / `agentloop-uninstall` are manifest-driven and only ever touch pristine template-owned files.
+
 ## Single Source of Truth (SSOT)
 
 The truth is split across three files. Their roles differ, so do not conflate them:
@@ -45,7 +47,7 @@ The truth is split across three files. Their roles differ, so do not conflate th
 
 **Gates are enforced in two layers**:
 - **Convention layer**: rule 1 above, checked by each command.
-- **Mechanism layer**: `scripts/agentloop/gate_guard.py` (a PreToolUse hook in `.claude/settings.json`) **denies** in code any Write/Edit to a next-phase deliverable path while its prerequisite gate is unapproved (`docs/20-design.md`, `docs/decisions/**` ← requirements; `docs/tasks/**` ← design; `backend/**`, `frontend/**`, `scripts/**` (product scripts) ← tasks; `docs/test/**` ← build). `scripts/agentloop/**` (the template's foundational tools) is always allowed. If state.md's gates are unreadable, the guard **fails closed** for guarded paths. `/build` additionally code-checks `gates.tasks==approved` at the start of `build_loop.py`. Escape hatch: `gates.enforce_hook: false` in config. The hook launches with `uv run --no-project --with pyyaml`, so it works right after copying without `make setup`.
+- **Mechanism layer**: `scripts/agentloop/gate_guard.py` (a PreToolUse hook in `.claude/settings.json`) **denies** in code any Write/Edit to a next-phase deliverable path while its prerequisite gate is unapproved (defaults: `docs/20-design.md`, `docs/decisions/**` ← requirements; `docs/tasks/**` ← design; `backend/**`, `frontend/**`, `scripts/**` (product scripts) ← tasks; `docs/test/**` ← build). The watched paths are configurable via `gates.guard_paths` in config — an adopted (brownfield) repo scopes them to the docs deliverables so pending gates never freeze existing code, then maps its own layout (e.g. `src/`) when ready. `scripts/agentloop/**` (the template's foundational tools) is always allowed. If state.md's gates are unreadable, the guard **fails closed** for guarded paths. `/build` additionally code-checks `gates.tasks==approved` at the start of `build_loop.py`. Escape hatch: `gates.enforce_hook: false` in config. The hook launches with `uv run --no-project --with pyyaml`, so it works right after copying without `make setup`.
 
 > **Note when maintaining the template itself**: the scaffold originals (`docs/20-design.md`, `docs/tasks/**`, `scripts/**`) share paths with real product deliverables — the mechanism does not distinguish them (we prioritize the gate's simplicity). The template repo therefore keeps `gates.template_mode: true` in config, which makes the hook allow everything; `make init` flips it to `false` when the template becomes a product, so the guard goes live without a manual toggle to forget.
 
@@ -115,7 +117,7 @@ Three layers: **gitleaks** at commit stage (in `make check`; false positives →
 ## Directories
 
 - `.agentloop/` — SSOT (`state.md`, `tasks.yaml`, `config.yaml`)
-- `scripts/agentloop/` — deterministic orchestration (`dag.py`, `build_loop.py`, `gate_guard.py`, `issue_sync.py`, `revise.py`, `init.py`). **Product scripts go directly under `scripts/`, not mixed in here.**
+- `scripts/agentloop/` — deterministic orchestration (`dag.py`, `build_loop.py`, `gate_guard.py`, `issue_sync.py`, `revise.py`, `init.py`, `adopt.py`, `cycle.py`). **Product scripts go directly under `scripts/`, not mixed in here.**
 - `docs/` — phase deliverables; `docs/retrospective.md` holds the retrospective at `done`
 - `.claude/commands/` — per-phase entry points (the procedure detail lives here)
 - `.claude/agents/` — specialized subagents

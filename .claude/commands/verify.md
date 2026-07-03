@@ -25,4 +25,5 @@ Write the deliverable (`docs/test/test-plan.md`) in the user's language.
 - **Leave a retrospective (recovering the metacognition)**: generate/update `docs/retrospective.md`.
   - Classify needs-revision / blocked into "upstream (requirements/design) defect / implementation convenience / external factor" and summarize the lessons for upstream.
   - **Close the open items** of the "escalation log" and "speculative work log" in `state.md` (blank resolution/adoption columns) — do not leave them dangling.
-- Report completion.
+- **If `docs/05-current-state.md` exists** (an adopted/ongoing repo), update it with what this cycle changed: new modules, new reusable assets, convention changes, in-flight work that got finished.
+- Report completion. **To start the next delta cycle** (ongoing repos run AgentLoop as a series of change-scoped cycles), tell the human to run `make cycle-close NAME=<slug>` — it archives this cycle's deliverables to `docs/archive/`, restores fresh scaffolds, and resets gates/phase. Closing a cycle is the human's operation, like opening a gate; do not run it yourself.

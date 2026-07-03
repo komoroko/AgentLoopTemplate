@@ -5,13 +5,15 @@ It blocks in code, not relying on CLAUDE.md's convention layer (each command che
 Registered as a Claude Code PreToolUse hook on Write/Edit, it cross-checks the edit's target path
 against the gates in `.agentloop/state.md` and **denies** unless the prerequisite is approved.
 
-Decision:
+Decision (the built-in default rules; override per repo with gates.guard_paths in config):
   docs/20-design.md, docs/decisions/**           → requirements must be approved
   docs/tasks/**                                  → design       must be approved
   backend/**, frontend/**, scripts/** (impl code) → tasks        must be approved
   docs/test/** (filling in test results)          → build        must be approved
 However, scripts/agentloop/** (the template's foundational tools) is **always allowed** (so as not to block
-the hook's own maintenance / speculative work). Any path not above is also allowed unconditionally.
+the hook's own maintenance / speculative work). Any path not matched is also allowed unconditionally.
+A brownfield repo (adopted into via adopt.py) typically scopes guard_paths to the docs deliverables
+only — so existing code keeps flowing — and adds its own code paths (e.g. src/) when ready.
 
 If gates.template_mode in `.agentloop/config.yaml` is true, always allow: the repo is the
 template itself, whose scaffold originals share paths with product deliverables (`make init`
@@ -45,19 +47,19 @@ CONFIG_PATH = ".agentloop/config.yaml"
 # the hook itself runs, and the build gate must not block their maintenance.
 _UNGUARDED_PREFIXES: tuple[str, ...] = ("scripts/agentloop/",)
 
-# (path test, required gate name). Evaluated from the top; the first match wins.
+# Built-in guard rules: path → prerequisite gate. A key ending in "/" guards the whole prefix;
+# any other key guards that exact file. Overridable per repo via gates.guard_paths in config
+# (a brownfield repo scopes this to the docs deliverables, or maps its own layout, e.g. src/).
 # scripts/ requires tasks approval as product-script implementation code
 # (scripts/agentloop/ is filtered out earlier by the exclusion above).
-_RULES: list[tuple[str, str]] = [
-    ("docs/decisions/", "requirements"),
-    ("docs/tasks/", "design"),
-    ("docs/test/", "build"),
-    ("backend/", "tasks"),
-    ("frontend/", "tasks"),
-    ("scripts/", "tasks"),
-]
-_EXACT: dict[str, str] = {
+_DEFAULT_GUARD_PATHS: dict[str, str] = {
     "docs/20-design.md": "requirements",
+    "docs/decisions/": "requirements",
+    "docs/tasks/": "design",
+    "docs/test/": "build",
+    "backend/": "tasks",
+    "frontend/": "tasks",
+    "scripts/": "tasks",
 }
 
 _PHASE_LABEL = {
@@ -79,19 +81,27 @@ def _repo_relative(file_path: str) -> str | None:
     return PurePosixPath(rel).as_posix()
 
 
-def required_gate(file_path: str) -> str | None:
-    """The gate name this edit requires. None if not guarded."""
+def required_gate(file_path: str, rules: dict[str, str] | None = None) -> str | None:
+    """The gate name this edit requires. None if not guarded.
+
+    An exact entry wins over prefix entries; among matching prefixes the longest wins
+    (deterministic regardless of the config's key order).
+    """
     rel = _repo_relative(file_path)
     if rel is None:
         return None
     if any(rel.startswith(p) for p in _UNGUARDED_PREFIXES):
         return None
-    if rel in _EXACT:
-        return _EXACT[rel]
-    for prefix, gate in _RULES:
-        if rel.startswith(prefix):
-            return gate
-    return None
+    if rules is None:
+        rules = _guard_paths()
+    exact = rules.get(rel)
+    if exact is not None:
+        return exact
+    best: tuple[int, str] | None = None
+    for key, gate in rules.items():
+        if key.endswith("/") and rel.startswith(key) and (best is None or len(key) > best[0]):
+            best = (len(key), gate)
+    return best[1] if best else None
 
 
 def _gates_config() -> dict[str, object]:
@@ -109,6 +119,14 @@ def _enforce_enabled() -> bool:
 
 def _template_mode() -> bool:
     return bool(_gates_config().get("template_mode", False))
+
+
+def _guard_paths() -> dict[str, str]:
+    """The active guard rules: gates.guard_paths from config, or the built-in defaults."""
+    raw = _gates_config().get("guard_paths")
+    if isinstance(raw, dict) and raw:
+        return {str(k): str(v) for k, v in raw.items()}
+    return _DEFAULT_GUARD_PATHS
 
 
 def _read_gates() -> dict[str, str] | None:

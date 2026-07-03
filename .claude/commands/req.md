@@ -10,6 +10,7 @@ You drive this project's requirements definition. **Human on the Loop**: you do 
 1. Read `.agentloop/state.md`. Check `current_phase`.
    - If `gates.requirements == approved` already, say "Requirements are approved; changing them needs re-approval" and wait for the human's instruction.
 2. Read `docs/00-product-brief.md`. If empty, first prompt the human to fill it in and stop.
+   - **Brownfield**: if `docs/05-current-state.md` exists (an adopted repo), **read it first**. Requirements are scoped to **this cycle's delta** (the change), not the whole product. If it links existing requirement documents, take them as the starting point rather than re-deriving from scratch — the human approving gate ① is what adopts them as this cycle's truth. In-flight/unfinished work listed there is candidate delta scope.
 3. Delegate to the `requirements-analyst` subagent to produce a requirements draft, gaps, and open points.
 4. Fill ambiguities and important branches by asking the human via **AskUserQuestion**.
 5. Write the agreed content into `docs/10-requirements.md` (in the scaffold structure).

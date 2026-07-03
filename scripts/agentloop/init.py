@@ -6,12 +6,16 @@ One idempotent command replaces the manual, easy-to-forget setup edits:
   2. .agentloop/state.md  — fill the `project` / `branch` / `updated_at` placeholders.
   3. .agentloop/config.yaml — flip `gates.template_mode` to false (the gate guard goes live;
      the template repo ships with true so scaffold maintenance is not self-blocked).
-  4. git                  — create/switch to the work branch (best-effort: a repo without
+  4. scaffold snapshot    — copy the pristine docs scaffolds to .agentloop/scaffold/docs/
+     (cycle.py restores fresh ones from here when `make cycle-close` archives a cycle).
+  5. git                  — create/switch to the work branch (best-effort: a repo without
      `git init` gets a hint instead of a hard failure).
 
 The text replacements are surgical regexes (comments and layout survive), pure and unit-tested.
 Re-running with the same arguments is a no-op. build_loop.py refuses to start while the
-state.md placeholders are still present, pointing here.
+state.md placeholders are still present, pointing here. Unlike adopt.py, init records no
+adopt-manifest — the whole copied template is the product's own, so `adopt.py --upgrade` /
+`--uninstall` do not apply to greenfield repos.
 
 Usage:
   make init NAME=myproduct [BRANCH=build/myproduct]
@@ -27,6 +31,8 @@ import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path
+
+import cycle
 
 PYPROJECT_PATH = "pyproject.toml"
 STATE_PATH = ".agentloop/state.md"
@@ -111,6 +117,12 @@ def main(argv: list[str] | None = None) -> int:
 
     for path, updated in results:
         print(f"  {'updated' if updated else 'ok (already set)'}: {path}")
+    # Snapshot the pristine docs scaffolds while they are still unfilled, so `make cycle-close`
+    # can restore fresh ones after archiving a finished cycle. No-op if already snapshotted.
+    if cycle.snapshot_scaffold():
+        print(f"  snapshot: docs scaffolds → {cycle.SCAFFOLD_DIR}")
+    else:
+        print(f"  ok (already set): {cycle.SCAFFOLD_DIR}")
     print(f"  {_switch_branch(branch)}")
     print(
         f'\nInitialized "{name}" (work branch: {branch}; the gate guard is now live).\n'
