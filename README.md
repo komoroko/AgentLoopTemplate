@@ -59,6 +59,17 @@ Legend: 🟦 blue = phases the agent runs / 🟧 orange = gates ①–⑤ the hu
 
 Only the human opens each gate. Rewinding approval (`/revise`) is also at the human's discretion.
 
+## Where to start
+
+| Your situation | Entry point |
+|---|---|
+| Building a new product from scratch | "Setup (new repository / greenfield)" → "Usage" |
+| Installing into an ongoing repository | "Adopting into an existing repository (brownfield)" → `/onboard` (the full per-starting-state table lives in `/onboard`) |
+| Already set up — starting the next change | Write the change into `docs/00-product-brief.md` and run `/req` (if the previous cycle is still open, run `make cycle-close` first) |
+| The release decision (gate ⑤) is made | `make cycle-close NAME=<slug>` — archive this cycle's docs and reset for the next |
+| Refreshing / retracting the template tooling (adopted repos) | `make -f agentloop.mk agentloop-upgrade` / `agentloop-uninstall` |
+| Lost, or resuming after an interruption | `/status` — it also tells you the next command to run |
+
 ## Design principles
 
 This template is itself a multi-agent orchestration, and its own machinery follows three design axes:
@@ -67,7 +78,7 @@ This template is itself a multi-agent orchestration, and its own machinery follo
 - **Context** — kept minimal: SSOT files (`state.md` / `tasks.yaml`) hold the truth, subagents read only what they need, failures are **summarized, not dumped**, and oversized logs rotate (see "Context budget" in `CLAUDE.md`).
 - **Tools** — minimal, scoped subagent grants; the quality gate has a **retry cap** (`config.yaml`); `summarize_failure()` returns compact, actionable failures.
 
-## Setup
+## Setup (new repository / greenfield)
 
 Prerequisites: WSL / Linux / macOS and `make` (not Windows-native).
 
@@ -124,7 +135,7 @@ Then, inside the adopted repo:
      **absorb task** that pins the existing partial code green before new work stacks on it
      (`/tasks`' brownfield note).
 2. **Delta cycles** — each pass through `brief → /req → … → /verify` describes **one change**, with
-   half-done work resumed as delta requirements. After the release decision, close the cycle:
+   half-done work resumed as delta requirements (each pass runs exactly the steps in "Usage" below). After the release decision, close the cycle:
    ```bash
    make cycle-close NAME=<slug>   # archives the cycle's docs to docs/archive/<date>-<slug>/,
                                   # restores fresh scaffolds, resets gates/phase for the next cycle
@@ -166,6 +177,7 @@ Then, inside the adopted repo:
 
 3. If an upstream (requirements/design) defect comes to light during implementation, you can roll back with **`/revise <phase>`** (resets the gates from the target onward to `pending` in a chain, and reconciles task impact with `dag.py --impacted`). Rewinding approval is also at the human's discretion.
 4. Check the current phase, gate approval status, and task progress anytime with `/status`. Generate the **big picture (dependency diagram)** of tasks with `uv run --no-project --with pyyaml python scripts/agentloop/dag.py --mermaid`, which renders directly in GitHub/VS Code/Markdown (status color-coding, critical-path emphasis).
+5. After the release decision (gate ⑤), close the cycle with `make cycle-close NAME=<slug>`: it archives this cycle's docs to `docs/archive/<date>-<slug>/`, restores fresh scaffolds, and resets gates/phase for the next cycle. This applies to greenfield and brownfield repos alike (`docs/00-product-brief.md` and the `docs/05-current-state.md` baseline persist). Closing a cycle is a human operation, like opening a gate.
 
 > **It does not stall during approval waits**: a notification fires on reaching a gate, and while waiting for approval the agent
 > pulls forward outcome-independent work (environment setup, investigation, test-harness setup, etc.).
@@ -229,7 +241,7 @@ If you want to make tasks visible to the team/stakeholders, you can **one-way-mi
 | `scripts/agentloop/` | deterministic orchestration (`dag.py` / `build_loop.py` / `gate_guard.py` / `init.py` / `adopt.py` / `cycle.py`). Product scripts go directly under `scripts/` |
 | `agentloop.mk` | the AgentLoop make targets, self-contained (uv only) — an existing repo takes just this file |
 | `CLAUDE.md` | agent operating rules and gate rules |
-| `.claude/commands/` | entry points for each phase (`/req` – `/status`) |
+| `.claude/commands/` | entry points for each phase (`/req`–`/verify`, plus `/onboard`, `/revise`, `/status`) |
 | `.claude/agents/` | specialized subagents (requirements/design/implementation) |
 | `docs/` | phase deliverables (requirements, design, ADR, task tickets, test plan) |
 
