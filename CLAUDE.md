@@ -118,7 +118,7 @@ Three layers: **gitleaks** at commit stage (in `make check`; false positives →
 
 ## Tool-execution permissions (distinct from gate approvals)
 
-**Gate approvals** (①–⑤) are the Human-on-the-Loop essence — never reduce them. **Tool-execution permission prompts** are separate: pre-authorizing known-safe commands in `.claude/settings.json`'s `permissions.allow` cuts repeated prompts without touching the gates. Keep the shared, template-owned `settings.json` to **generic AgentLoop commands**; put **product-specific** ones (a product's run/smoke, its test command) in that product's own `settings.json` (or the gitignored `settings.local.json`), so the additive-merge upgrade path stays clean. Destructive / outward-facing actions (push, PR, merge, `make cycle-close`) stay human-run — never add them to `allow`.
+**Gate approvals** (①–⑤) are the Human-on-the-Loop essence — never reduce them. **Tool-execution permission prompts** are separate: pre-authorizing known-safe commands in `.claude/settings.json`'s `permissions.allow` cuts repeated prompts without touching the gates. Keep the shared, template-owned `settings.json` to **generic AgentLoop commands**; put **product-specific** ones (a product's run/smoke, its test command) in that product's own committed `settings.json` (shared with the team and the build loop), so the template's additive-merge upgrade path stays clean. Destructive / outward-facing actions (push, PR, merge, `make cycle-close`) stay human-run — never add them to `allow`.
 
 ## Directories
 

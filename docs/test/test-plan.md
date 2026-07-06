@@ -45,8 +45,8 @@ your product; unrun items become remaining issues at gate ⑤.
 
 | Check | How | Result | Notes |
 |-------|-----|--------|-------|
-| Real player / device playback | open the output in the real target app / device | ⬜ | |
-| Visual / aesthetic review | eyeball the output against the intent | ⬜ | |
+| Real user-facing behaviour in the target environment | exercise the output where a real user would | ⬜ | |
+| Output quality / correctness by eye | eyeball the output against the intent | ⬜ | |
 | Supported-OS matrix | run on each Must-support OS | ⬜ | |
 | Long-input / end-to-end performance | measure on a realistic full-size input | ⬜ | |
 
