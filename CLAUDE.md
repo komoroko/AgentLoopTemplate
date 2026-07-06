@@ -42,7 +42,7 @@ The truth is split across three files. Their roles differ, so do not conflate th
 ## Gate rules (strict)
 
 1. **Do not work on the next phase while its prerequisite gate is unapproved.** Each command checks its prerequisite gate up front (`/design`←requirements, `/tasks`←design, `/build`←tasks, `/verify`←build). If unapproved, stop and tell the human what is needed.
-2. **Only humans open a gate.** The agent goes only as far as presenting the deliverable. Only after a human signals approval (approving plan mode, or an explicit "approve") do you set the gate in `state.md` to `approved` and move on.
+2. **Only humans open a gate.** The agent goes only as far as presenting the deliverable. Only after a human signals approval (approving plan mode, or an explicit "approve") do you set the gate in `state.md` to `approved` and move on. **Invoking the next-phase command is not itself approval** — e.g. running `/verify` while `build` is still `pending` does not consent to gate ④; stop and ask for explicit approval instead of treating the invocation as consent.
 3. **Do not silently fix problems in requirements/design.** On finding an upstream defect, set the affected task to `needs-revision`, record it in the escalation log, and raise it to the human.
 
 **Gates are enforced in two layers**:
@@ -86,7 +86,8 @@ Tasks form a **DAG**, not a flat list: kind = **foundation** (shared base) / **p
 ## Principles
 
 - **Reusing existing implementation comes first.** Before writing new code, look for existing functions, utilities, and patterns.
-- **Move forward only after passing the quality gate.** The DoD is defined **once**, as `quality_gate.steps` in `.agentloop/config.yaml` (default: `test` → `check` → `review` (= the `/code-review`+`/simplify` disciplines) → `smoke`); `build_loop.py` runs exactly that list. A task is `done` only when every step passes. **For runnable deliverables (CLI, server, etc.), fill in the `smoke` step's command** — tests can pass while the launch path is broken; the smoke step catches that within build.
+- **Move forward only after passing the quality gate.** The DoD is defined **once**, as `quality_gate.steps` in `.agentloop/config.yaml` (default: `test` → `check` → `review` (= the `/code-review`+`/simplify` disciplines) → `smoke`); `build_loop.py` runs exactly that list. A task is `done` only when every step passes. **For runnable deliverables (CLI, server, etc.), fill in the `smoke` step's command** — tests can pass while the launch path is broken; the smoke step catches that within build. In interactive mode (`/loop /build`), the lead **re-runs each `cmd` step (`make test`, `make check`) itself and reads its exit status before marking a task `done`** — a subagent's textual "green" report is never sufficient evidence (deterministic mode A already gates on exit code in `build_loop.py`).
+- **Durable lessons are promoted into the template, not archived away.** `docs/retrospective.md` is per-cycle and is archived at `cycle-close`; at gate ⑤ decide with the human whether each process/template lesson belongs in the always-loaded template files (`CLAUDE.md`, `.claude/commands/*`, `.claude/agents/*`) and lift it there. A recurring lesson must not stay only in the retrospective or a product's `state.md`.
 - **Small and sure.** One commit = one concern. Get approval before destructive or outward-facing operations.
 - **Context isolation.** Delegate requirements/design/implementation to their dedicated subagents (`.claude/agents/`) so the main context stays clean.
 - Write deliverable documents in the user's language (see "Language").
@@ -112,7 +113,12 @@ Three layers: **gitleaks** at commit stage (in `make check`; false positives →
 
 - Implement **on a work branch** (recorded in `branch` of `state.md`; created by `make init`), never directly on main. Parallel leaf tasks use worktree-derived branches (`<branch>/T-NNN`) merged back on completion.
 - Per-task commits: **`T-NNN: <summary>`**, one commit = one task. Approving `/build` covers that loop's local commits (no per-commit confirmation).
+- **Commit each phase's deliverables at its gate approval** — ADRs, task tickets, `state.md`/`tasks.yaml` updates — with a `docs: gate ③ tasks`-style message. Don't leave phase deliverables uncommitted across the whole build.
 - **Push / PR creation / merging to main are outward-facing** — only after separate human approval. **Writing to GitHub Issues is also outward-facing**: only with the `github.enabled: true` opt-in; `make issue-sync` mirrors one-way and never reads Issues back.
+
+## Tool-execution permissions (distinct from gate approvals)
+
+**Gate approvals** (①–⑤) are the Human-on-the-Loop essence — never reduce them. **Tool-execution permission prompts** are a different thing: pre-authorizing known-safe commands in `.claude/settings.json`'s `permissions.allow` cuts repeated prompts without touching the gates. Keep the shared, template-owned `.claude/settings.json` to **generic AgentLoop commands**; put **product-specific** commands (the product's run/smoke command, its test invocation) in that product's own `.claude/settings.json` (or the gitignored `.claude/settings.local.json`) — not in the template's, so the upgrade path (additive settings merge) stays clean. Destructive / outward-facing actions (push, PR, merge, `make cycle-close`) stay human-run — never add them to `allow`.
 
 ## Directories
 
