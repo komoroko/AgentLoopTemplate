@@ -38,11 +38,25 @@ Legend: ✅ pass / ❌ fail / ⬜ not run
 - [ ] Behavior on error is as defined
 - [ ] Logs/monitoring emit the necessary information
 
-## 3. Defects found
+## 3. Manual verification checklist (human-run acceptance)
+
+Acceptance that automated tests can't cover — a human runs these and records the result. Make it concrete for
+your product; unrun items become remaining issues at gate ⑤.
+
+| Check | How | Result | Notes |
+|-------|-----|--------|-------|
+| Real user-facing behaviour in the target environment | exercise the output where a real user would | ⬜ | |
+| Output quality / correctness by eye | eyeball the output against the intent | ⬜ | |
+| Supported-OS matrix | run on each Must-support OS | ⬜ | |
+| Long-input / end-to-end performance | measure on a realistic full-size input | ⬜ | |
+
+Legend: ✅ pass / ❌ fail / ⬜ not run
+
+## 4. Defects found
 | ID | Content | Severity | Task | Status |
 |----|------|--------|-----------|------|
 | | | | | |
 
-## 4. Overall judgment (filled by the human)
+## 5. Overall judgment (filled by the human)
 - **Release decision**: hold / go / conditional go
 - **Remaining issues**:

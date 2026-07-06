@@ -6,11 +6,11 @@ description: Phase 5 test phase. Run and record functional and non-functional te
 
 ## Prerequisite gate check (always first)
 Read `.agentloop/state.md` and confirm `gates.build == approved`.
-If unapproved, do not work; say "please complete and approve `/build` first" and stop.
+If unapproved, do not work — **invoking `/verify` is not itself the gate-④ approval**: say `build` is still `pending` and needs explicit approval first, and stop.
 
 ## Steps
 1. Read `docs/test/test-plan.md` and `docs/10-requirements.md` (acceptance points, non-functional requirements).
-2. **Functional tests**: confirm each requirement's acceptance points are satisfied. Run the automated tests and add any missing verification. Record results in the test-plan table.
+2. **Functional tests**: confirm each requirement's acceptance points are satisfied. Run the automated tests and add any missing verification. Record results in the test-plan table. Also fill the test-plan's **Manual verification checklist** (acceptance automated tests can't cover — real-player/device playback, visual/aesthetic review, supported-OS matrix, long-input/end-to-end performance); mark unrun items and surface them as remaining issues at gate ⑤.
 3. **Non-functional requirement tests**: check the criteria checklist (performance, security, reliability/operations). Security is mandatory — run the following and record results in the test-plan's security column:
    - **`/security-review`** — a vulnerability review of the whole codebase.
    - **`make audit`** — a dependency vulnerability audit (Python/frontend).
@@ -25,5 +25,6 @@ Write the deliverable (`docs/test/test-plan.md`) in the user's language.
 - **Leave a retrospective (recovering the metacognition)**: generate/update `docs/retrospective.md`.
   - Classify needs-revision / blocked into "upstream (requirements/design) defect / implementation convenience / external factor" and summarize the lessons for upstream.
   - **Close the open items** of the "escalation log" and "speculative work log" in `state.md` (blank resolution/adoption columns) — do not leave them dangling.
+  - **Promote durable lessons into the template before `cycle-close` archives the retrospective.** For each item in the retrospective's "Process / template improvement" and "Lessons for upstream" sections, decide with the human whether to lift it into the always-loaded template files (`CLAUDE.md`, `.claude/commands/*`, `.claude/agents/*`); apply the agreed promotions and record where each landed (retrospective §5).
 - **If `docs/05-current-state.md` exists** (an adopted/ongoing repo), update it with what this cycle changed: new modules, new reusable assets, convention changes, in-flight work that got finished.
 - Report completion. **To start the next delta cycle** (ongoing repos run AgentLoop as a series of change-scoped cycles), tell the human to run `make cycle-close NAME=<slug>` — it archives this cycle's deliverables to `docs/archive/`, restores fresh scaffolds, and resets gates/phase. Closing a cycle is the human's operation, like opening a gate; do not run it yourself.
