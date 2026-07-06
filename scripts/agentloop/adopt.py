@@ -671,6 +671,11 @@ class Installer:
                 inner = path.relative_to(snap_root).as_posix()
                 owner = "template" if f"docs/{inner}" in self.copied_docs else "seeded"
                 self.files[SCAFFOLD_PREFIX + inner] = {"hash": norm_hash(path.read_bytes()), "owner": owner}
+            # The state.md snapshot (cycle-close restores the board from it) is target-adapted like
+            # state.md itself → record it `seeded`: upgrade leaves it, uninstall removes it if pristine.
+            state_snap = self.target / cycle.SCAFFOLD_STATE
+            if state_snap.is_file():
+                self.files[cycle.SCAFFOLD_STATE] = {"hash": norm_hash(state_snap.read_bytes()), "owner": "seeded"}
 
     def write_manifest(self, source: str, ref: str, commit: str) -> None:
         """Record provenance + per-file hashes, written last (see the module docstring)."""

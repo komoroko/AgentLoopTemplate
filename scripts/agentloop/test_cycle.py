@@ -32,6 +32,62 @@ updated_at: "2026-06-26"
 """
 
 
+# A pristine state snapshot (fresh body, empty logs) and a stale live state (checked boxes, a task
+# row, an accumulated roll-back row) — the inputs to the body-refresh path.
+_PRISTINE = """---
+project: "<enter the product name>"
+branch: "<enter the work branch name>"
+current_phase: brief
+gates:
+  requirements: pending
+  design: pending
+  tasks: pending
+  build: pending
+  release: pending
+updated_at: "<YYYY-MM-DD>"
+---
+
+# Progress board
+
+## Phase progress
+- [ ] brief
+- [ ] requirements
+
+## Roll-back (revision) log
+
+| Date | Target (phase) | Gates reset to pending in chain | Reason |
+|------|---------------|-------------------------------|------|
+<!-- REVISE-LOG -->
+"""
+
+_LIVE_STALE = """---
+project: "demo"
+branch: "build/demo"
+current_phase: verify
+gates:
+  requirements: approved
+  design: approved
+  tasks: approved
+  build: approved
+  release: approved
+updated_at: "2026-06-26"
+---
+
+# Progress board
+
+## Phase progress
+- [x] brief
+- [x] requirements
+
+## Roll-back (revision) log
+
+| Date | Target (phase) | Gates reset to pending in chain | Reason |
+|------|---------------|-------------------------------|------|
+| 2026-06-01 | requirements | requirements, design, tasks, build, release | earlier revise |
+<!-- REVISE-LOG -->
+"""
+
+
 @pytest.fixture
 def project(tmp_path: Path) -> Iterator[Path]:
     docs = tmp_path / "docs"
@@ -130,3 +186,68 @@ def test_main_dry_run_changes_nothing(project: Path) -> None:
     assert (project / "docs" / "10-requirements.md").exists()
     assert not (project / "docs" / "archive").exists()
     assert "approved" in (project / ".agentloop" / "state.md").read_text(encoding="utf-8")
+
+
+def test_snapshot_scaffold_copies_state(project: Path) -> None:
+    assert cycle.snapshot_scaffold() is True
+    snap = project / ".agentloop" / "scaffold" / "state.md"
+    assert snap.read_text(encoding="utf-8") == _STATE
+    # Once taken, a re-run must not overwrite the pristine copy.
+    (project / ".agentloop" / "state.md").write_text("FILLED\n", encoding="utf-8")
+    assert cycle.snapshot_scaffold() is False
+    assert snap.read_text(encoding="utf-8") == _STATE
+
+
+def test_snapshot_scaffold_state_is_target_relative(project: Path, tmp_path: Path) -> None:
+    # adopt.py calls snapshot_scaffold with a *foreign* repo's paths (target != cwd); the state
+    # snapshot must follow those paths, not hardcoded cwd-relative ones.
+    target = tmp_path / "foreign"
+    (target / "docs").mkdir(parents=True)
+    (target / "docs" / "10-requirements.md").write_text("scaffold\n", encoding="utf-8")
+    (target / ".agentloop").mkdir()
+    (target / ".agentloop" / "state.md").write_text(_STATE, encoding="utf-8")
+
+    assert cycle.snapshot_scaffold(str(target / "docs"), str(target / ".agentloop" / "scaffold" / "docs")) is True
+    # Landed in the target …
+    assert (target / ".agentloop" / "scaffold" / "state.md").read_text(encoding="utf-8") == _STATE
+    # … and did not pollute the cwd repo.
+    assert not (project / ".agentloop" / "scaffold" / "state.md").exists()
+
+
+def test_reset_state_text_with_pristine_refreshes_body(project: Path) -> None:
+    out = cycle.reset_state_text(_LIVE_STALE, "demo", "2026-07-03", "docs/archive/2026-07-03-demo", _PRISTINE)
+    # Body is restored from the pristine snapshot: checked boxes gone, fresh ones back.
+    assert "- [x]" not in out
+    assert "- [ ] brief" in out
+    # Identity (project/branch) is carried over from the live repo, not the placeholder.
+    assert 'project: "demo"' in out and 'branch: "build/demo"' in out
+    assert "<enter the product name>" not in out
+    # Front-matter reset as usual.
+    assert out.count(": pending") == 5
+    assert "approved" not in out.split("---")[1]
+    assert "current_phase: brief" in out and 'updated_at: "2026-07-03"' in out
+    # The accumulated roll-back row is carried, and the close is appended below it.
+    assert "| 2026-06-01 | requirements |" in out
+    assert "| 2026-07-03 | cycle-close (demo) |" in out
+
+
+def test_reset_state_text_without_pristine_is_frontmatter_only(project: Path) -> None:
+    out = cycle.reset_state_text(_LIVE_STALE, "demo", "2026-07-03", "docs/archive/2026-07-03-demo")
+    # Fallback: gates reset and the close logged, but the body is left untouched (stale boxes stay).
+    assert out.count(": pending") == 5
+    assert "current_phase: brief" in out
+    assert "| 2026-07-03 | cycle-close (demo) |" in out
+    assert "- [x] brief" in out  # body not refreshed without a snapshot
+
+
+def test_main_close_refreshes_body_from_snapshot(project: Path) -> None:
+    # Snapshot a pristine state, then dirty the live state's body, then close.
+    (project / ".agentloop" / "state.md").write_text(_PRISTINE, encoding="utf-8")
+    cycle.snapshot_scaffold()
+    (project / ".agentloop" / "state.md").write_text(_LIVE_STALE, encoding="utf-8")
+    assert cycle.main(["--name", "first"]) == 0
+    state = (project / ".agentloop" / "state.md").read_text(encoding="utf-8")
+    assert "- [x]" not in state and "- [ ] brief" in state
+    assert 'project: "demo"' in state
+    assert "current_phase: brief" in state and "release: approved" not in state
+    assert "cycle-close (first)" in state

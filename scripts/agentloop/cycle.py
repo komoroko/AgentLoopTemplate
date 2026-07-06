@@ -9,9 +9,13 @@ reaches `done` (release approved at gate ⑤ and the retrospective is written), 
      `00-product-brief.md` and `05-current-state.md` (the persistent baseline) stay.
   2. Fresh scaffolds are restored from the snapshot in `.agentloop/scaffold/docs/`
      (taken by `make init` / `adopt.py` while the docs were still pristine).
-  3. `tasks.yaml` resets to an empty task list; every gate resets to pending,
-     `current_phase` returns to brief, and a row lands in the state.md roll-back log
-     (reusing revise.py's surgical front-matter rewrites).
+  3. `tasks.yaml` resets to an empty task list; every gate resets to pending and
+     `current_phase` returns to brief. state.md's human-facing body (phase progress,
+     task table, execution plan, escalation/speculative logs, and the stale gate
+     comments) is refreshed from the pristine state.md snapshot taken at init — the
+     accumulating roll-back log is carried forward and a cycle-close row appended.
+     (When no state snapshot exists — a repo initialised before this feature — the
+     reset falls back to front-matter only, leaving the body as-is.)
 
 Closing a cycle is a human decision, like opening a gate — the agent never runs this on its own.
 Idempotent: already-archived items are skipped; `--dry-run` prints the plan only.
@@ -24,6 +28,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import re
 import shutil
 import subprocess
 import sys
@@ -35,6 +40,7 @@ import revise
 
 DOCS_DIR = "docs"
 SCAFFOLD_DIR = ".agentloop/scaffold/docs"
+SCAFFOLD_STATE = ".agentloop/scaffold/state.md"
 ARCHIVE_DIR = "docs/archive"
 # The per-cycle deliverables (relative to docs/). Everything else in docs/ persists across
 # cycles: 00-product-brief.md (the product vision) and 05-current-state.md (the baseline).
@@ -49,26 +55,37 @@ CYCLE_ITEMS: tuple[str, ...] = (
 
 
 def snapshot_scaffold(docs_dir: str = DOCS_DIR, scaffold_dir: str = SCAFFOLD_DIR) -> bool:
-    """Copy the pristine docs scaffolds aside, once. Returns True if the snapshot was taken.
+    """Copy the pristine docs scaffolds *and* state.md aside, once. Returns True if anything was taken.
 
-    Called by init.py / adopt.py while docs/ is still unfilled. A no-op when the snapshot
-    already exists — re-running init after docs are filled must not overwrite the pristine copy.
+    Called by init.py / adopt.py while docs/ and state.md are still pristine. A no-op per target
+    when its snapshot already exists — re-running init after they are filled must not overwrite the
+    pristine copy. The state.md snapshot is what `reset_state_text` restores the human-facing body
+    from at cycle-close (each is guarded independently, so an older repo can gain the state snapshot
+    on its own).
     """
+    took = False
     dst = Path(scaffold_dir)
-    if dst.exists():
-        return False
     src = Path(docs_dir)
-    if not src.is_dir():
-        return False
-    dst.mkdir(parents=True)
-    for item in sorted(src.iterdir()):
-        if item.name == Path(ARCHIVE_DIR).name:
-            continue
-        if item.is_dir():
-            shutil.copytree(item, dst / item.name)
-        else:
-            shutil.copy2(item, dst / item.name)
-    return True
+    if not dst.exists() and src.is_dir():
+        dst.mkdir(parents=True)
+        for item in sorted(src.iterdir()):
+            if item.name == Path(ARCHIVE_DIR).name:
+                continue
+            if item.is_dir():
+                shutil.copytree(item, dst / item.name)
+            else:
+                shutil.copy2(item, dst / item.name)
+        took = True
+    # state.md lives beside docs/ (repo root = docs_dir's parent), so derive both from docs_dir —
+    # this keeps the snapshot target-relative for adopt.py, which passes a foreign repo's paths.
+    root = Path(docs_dir).parent
+    state_dst = root / SCAFFOLD_STATE
+    state_src = root / revise.STATE_PATH
+    if not state_dst.exists() and state_src.is_file():
+        state_dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(state_src, state_dst)
+        took = True
+    return took
 
 
 def plan_close(slug: str, today: str, docs_dir: str = DOCS_DIR) -> list[tuple[str, str, str]]:
@@ -121,14 +138,61 @@ def _restore_scaffold(scaffold_dir: str = SCAFFOLD_DIR, docs_dir: str = DOCS_DIR
     return restored
 
 
-def reset_state_text(text: str, slug: str, today: str, archive_base: str) -> str:
-    """Reset every gate to pending, phase to brief, and log the close (pure; reuses revise.py)."""
+def _get_field(text: str, field: str) -> str:
+    """Read a `field: "value"` front-matter value (empty string if absent)."""
+    m = re.search(rf'^{re.escape(field)}: "([^"]*)"', text, re.MULTILINE)
+    return m.group(1) if m else ""
+
+
+def _set_field(text: str, field: str, value: str) -> str:
+    """Set a `field: "value"` front-matter value (first occurrence)."""
+    return re.sub(rf'^({re.escape(field)}: ")[^"]*(")', rf"\g<1>{value}\g<2>", text, count=1, flags=re.MULTILINE)
+
+
+def _is_separator_row(row: str) -> bool:
+    """True for a markdown table separator like `|------|-----|` (only pipes/dashes/colons/space)."""
+    s = row.strip()
+    return "-" in s and set(s) <= set("|-: ")
+
+
+def _rollback_rows(text: str) -> list[str]:
+    """The roll-back log's data rows (the `| … |` lines after its header separator, before the marker)."""
+    before = text.split(revise.REVISE_MARKER, 1)[0]
+    block: list[str] = []
+    for line in reversed(before.splitlines()):
+        if not line.strip() or not line.lstrip().startswith("|"):
+            break
+        block.append(line)
+    block.reverse()  # now [header, separator, data...]
+    sep = next((i for i, r in enumerate(block) if _is_separator_row(r)), None)
+    return block[sep + 1 :] if sep is not None else []
+
+
+def _restore_from_pristine(pristine: str, live: str) -> str:
+    """Pristine body with the live repo's identity (`project`/`branch`) and roll-back log carried over."""
+    base = _set_field(pristine, "project", _get_field(live, "project"))
+    base = _set_field(base, "branch", _get_field(live, "branch"))
+    carried = _rollback_rows(live)
+    if carried and revise.REVISE_MARKER in base:
+        base = base.replace(revise.REVISE_MARKER, "\n".join(carried) + "\n" + revise.REVISE_MARKER, 1)
+    return base
+
+
+def reset_state_text(text: str, slug: str, today: str, archive_base: str, pristine: str | None = None) -> str:
+    """Reset gates/phase/updated_at and log the close; when `pristine` is given, also refresh the body.
+
+    Without `pristine` (no state snapshot — a repo initialised before this feature) the reset is
+    front-matter only, leaving the human-facing body untouched (the historical behaviour). With the
+    pristine snapshot, the body is restored from it — carrying the live `project`/`branch` and the
+    accumulating roll-back log across — so cycle-close leaves a clean next-cycle board, not a stale one.
+    """
+    base = text if pristine is None else _restore_from_pristine(pristine, text)
     for gate in revise.GATE_ORDER:
-        text = revise._set_gate_pending(text, gate)
-    text = revise._set_current_phase(text, "brief")
-    text = revise._set_updated_at(text, today)
+        base = revise._set_gate_pending(base, gate)
+    base = revise._set_current_phase(base, "brief")
+    base = revise._set_updated_at(base, today)
     return revise._insert_log(
-        text, f"cycle-close ({slug})", list(revise.GATE_ORDER), f"deliverables archived to {archive_base}", today
+        base, f"cycle-close ({slug})", list(revise.GATE_ORDER), f"deliverables archived to {archive_base}", today
     )
 
 
@@ -166,8 +230,13 @@ def main(argv: list[str] | None = None) -> int:
     Path(build_loop.TASKS_PATH).write_text(build_loop.TASKS_HEADER + "tasks: []\n", encoding="utf-8")
     print(f"  reset   {build_loop.TASKS_PATH} (empty task list)")
     state = Path(revise.STATE_PATH)
-    state.write_text(reset_state_text(state.read_text(encoding="utf-8"), slug, today, archive_base), encoding="utf-8")
-    print(f"  reset   {revise.STATE_PATH} (all gates pending, current_phase: brief)")
+    snapshot = Path(SCAFFOLD_STATE)
+    pristine = snapshot.read_text(encoding="utf-8") if snapshot.is_file() else None
+    state.write_text(
+        reset_state_text(state.read_text(encoding="utf-8"), slug, today, archive_base, pristine), encoding="utf-8"
+    )
+    body = "body refreshed" if pristine is not None else "body kept — no state snapshot"
+    print(f"  reset   {revise.STATE_PATH} (gates pending, phase brief; {body})")
     print(
         f'\nCycle "{slug}" closed (archive: {archive_base}).\n'
         "Next cycle: update docs/00-product-brief.md with the next change and start with /req."
