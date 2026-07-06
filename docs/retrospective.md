@@ -28,9 +28,9 @@ When building something similar next time, what should have been firmed up first
 
 ## 5. Process / template improvement proposals
 Improvement ideas for how this loop is run, the gates, self-assessment, and deterministic orchestration
-(feedback to the template itself is welcome too). **Before `cycle-close` archives this file, decide with the
-human whether each item should be promoted into the always-loaded template (`CLAUDE.md` / `.claude/commands/*`
-/ `.claude/agents/*`), and record where it landed** — a durable lesson must not stay only here.
+(feedback to the template itself is welcome too). **Before `cycle-close` archives this file, promote any keeper
+into the always-loaded template (`CLAUDE.md` / `.claude/commands/*` / `.claude/agents/*`) and record where** —
+a durable lesson must not stay only here.
 
 | Proposal | Promote? | Promoted to (file) |
 |----------|----------|--------------------|
