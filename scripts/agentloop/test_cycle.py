@@ -198,6 +198,22 @@ def test_snapshot_scaffold_copies_state(project: Path) -> None:
     assert snap.read_text(encoding="utf-8") == _STATE
 
 
+def test_snapshot_scaffold_state_is_target_relative(project: Path, tmp_path: Path) -> None:
+    # adopt.py calls snapshot_scaffold with a *foreign* repo's paths (target != cwd); the state
+    # snapshot must follow those paths, not hardcoded cwd-relative ones.
+    target = tmp_path / "foreign"
+    (target / "docs").mkdir(parents=True)
+    (target / "docs" / "10-requirements.md").write_text("scaffold\n", encoding="utf-8")
+    (target / ".agentloop").mkdir()
+    (target / ".agentloop" / "state.md").write_text(_STATE, encoding="utf-8")
+
+    assert cycle.snapshot_scaffold(str(target / "docs"), str(target / ".agentloop" / "scaffold" / "docs")) is True
+    # Landed in the target …
+    assert (target / ".agentloop" / "scaffold" / "state.md").read_text(encoding="utf-8") == _STATE
+    # … and did not pollute the cwd repo.
+    assert not (project / ".agentloop" / "scaffold" / "state.md").exists()
+
+
 def test_reset_state_text_with_pristine_refreshes_body(project: Path) -> None:
     out = cycle.reset_state_text(_LIVE_STALE, "demo", "2026-07-03", "docs/archive/2026-07-03-demo", _PRISTINE)
     # Body is restored from the pristine snapshot: checked boxes gone, fresh ones back.

@@ -76,8 +76,11 @@ def snapshot_scaffold(docs_dir: str = DOCS_DIR, scaffold_dir: str = SCAFFOLD_DIR
             else:
                 shutil.copy2(item, dst / item.name)
         took = True
-    state_dst = Path(SCAFFOLD_STATE)
-    state_src = Path(revise.STATE_PATH)
+    # state.md lives beside docs/ (repo root = docs_dir's parent), so derive both from docs_dir —
+    # this keeps the snapshot target-relative for adopt.py, which passes a foreign repo's paths.
+    root = Path(docs_dir).parent
+    state_dst = root / SCAFFOLD_STATE
+    state_src = root / revise.STATE_PATH
     if not state_dst.exists() and state_src.is_file():
         state_dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(state_src, state_dst)
