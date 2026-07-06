@@ -232,10 +232,8 @@ def main(argv: list[str] | None = None) -> int:
     state.write_text(
         reset_state_text(state.read_text(encoding="utf-8"), slug, today, archive_base, pristine), encoding="utf-8"
     )
-    if pristine is not None:
-        print(f"  reset   {revise.STATE_PATH} (gates pending, phase brief, body refreshed)")
-    else:
-        print(f"  reset   {revise.STATE_PATH} (gates pending, phase brief; body kept — no state snapshot)")
+    body = "body refreshed" if pristine is not None else "body kept — no state snapshot"
+    print(f"  reset   {revise.STATE_PATH} (gates pending, phase brief; {body})")
     print(
         f'\nCycle "{slug}" closed (archive: {archive_base}).\n'
         "Next cycle: update docs/00-product-brief.md with the next change and start with /req."
