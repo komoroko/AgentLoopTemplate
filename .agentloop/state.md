@@ -27,7 +27,7 @@ updated_at: "<YYYY-MM-DD>"
 
 ## Task table (dependency graph)
 The truth of tasks is `.agentloop/tasks.yaml` (the machine-readable SSOT of the task graph). This is a **human-facing view**;
-update it by pasting the output of `uv run python scripts/agentloop/dag.py --render` (do not hold the truth by hand).
+update it by pasting the output of `uv run --no-project --with pyyaml python scripts/agentloop/dag.py --render` (do not hold the truth by hand).
 For the vocabulary and meaning of `kind`/`status`, see the tasks.yaml schema / CLAUDE.md. `fan-out` is a derived value.
 
 | ID    | Title | Kind | blockedBy | fan-out | status | Test | Notes |
