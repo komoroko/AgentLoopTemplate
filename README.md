@@ -67,7 +67,7 @@ Only the human opens each gate. Rewinding approval (`/revise`) is also at the hu
 | Installing into an ongoing repository | "Adopting into an existing repository (brownfield)" → `/onboard` (the full per-starting-state table lives in `/onboard`) |
 | Already set up — starting the next change | Write the change into `docs/00-product-brief.md` and run `/req` (if the previous cycle is still open, run `make cycle-close NAME=<slug>` first) |
 | The release decision (gate ⑤) is made | `make cycle-close NAME=<slug>` — archive this cycle's docs and reset for the next |
-| Refreshing / retracting the template tooling (adopted repos) | `make -f agentloop.mk agentloop-upgrade` / `agentloop-uninstall` |
+| Refreshing / retracting the template tooling | `make -f agentloop.mk agentloop-upgrade` / `agentloop-uninstall` |
 | Lost, or resuming after an interruption | `/status` — it also tells you the next command to run |
 
 ## Design principles
@@ -82,7 +82,12 @@ This template is itself a multi-agent orchestration, and its own machinery follo
 
 Prerequisites: WSL / Linux / macOS and `make` (not Windows-native). The deterministic build loop (`make build-loop`) additionally needs the `claude` CLI installed and authenticated — its implementer and review steps run headless `claude -p`.
 
-1. **Copy this template** into a new product repository and `git init`.
+1. **Copy this template** into a new product repository:
+   ```bash
+   git clone --depth 1 https://github.com/you/AgentLoopTemplate.git myproduct
+   cd myproduct && rm -rf .git && git init
+   # alternative: create the repo with GitHub's "Use this template" button and clone it
+   ```
 2. Install tools and sync dependencies:
    ```bash
    make install   # install the uv / pnpm binaries (runs the official curl|sh installers;
@@ -93,9 +98,16 @@ Prerequisites: WSL / Linux / macOS and `make` (not Windows-native). The determin
    ```
 3. **Initialize the product** (idempotent):
    ```bash
-   make init NAME=<product>   # optionally BRANCH=build/<product>
+   make init NAME=<product> FROM=https://github.com/you/AgentLoopTemplate.git
+   # optionally BRANCH=build/<product>
    ```
    This fills the placeholders (`name` in `pyproject.toml`; `project`/`branch`/`updated_at` in `.agentloop/state.md`), creates and switches to the work branch, and flips `gates.template_mode` off so the gate guard goes live. Implement on the work branch, not directly on main.
+   It also records `.agentloop/adopt-manifest.yaml` (provenance + per-file hashes), which is what
+   makes `agentloop-upgrade` / `agentloop-uninstall` work for a copied template too. `FROM` is the
+   template's git URL (or a local checkout path), remembered as the default upgrade source — omit
+   it and upgrades will ask for `FROM=` each time. The root `CLAUDE.md` and `.claude/settings.json`
+   are yours from day one: upgrades never rewrite them (template rule updates reach greenfield
+   repos only through the other tooling files).
 4. Sanity check: `make check` (lint/format/type)・`make test` (pytest; passes on the empty template)・`make test-tools` (self-tests of the deterministic orchestrator in `scripts/agentloop/`).
 
 ## Adopting into an existing repository (brownfield)
@@ -143,25 +155,29 @@ Then, inside the adopted repo:
    ```
    `docs/00-product-brief.md` and `docs/05-current-state.md` persist across cycles (the baseline is
    updated, not archived). Closing a cycle is a human operation, like opening a gate.
-3. **Upgrade / uninstall (any time)** — adoption records `.agentloop/adopt-manifest.yaml`: the
-   template source/commit plus a hash of every installed file. Two manifest-driven commands build
-   on it (adopt-only; a greenfield `make init` records no manifest). Both are hash-checked —
-   **a file you edited since adopt is never overwritten or removed**; it is skipped and listed
-   (`FORCE=1` overrides). Review with `git diff` afterwards and commit:
+3. **Upgrade / uninstall (any time)** — both entry paths (`make adopt` here, greenfield
+   `make init`) record `.agentloop/adopt-manifest.yaml`: the template source/commit/version plus
+   a hash of every installed file. Two manifest-driven commands build on it. Both are
+   hash-checked — **a file you edited since install is never overwritten or removed**; it is
+   skipped and listed (`FORCE=1` overrides). Review with `git diff` afterwards and commit:
    ```bash
-   # inside the adopted repo — refresh the template-owned tooling (scripts/agentloop/,
+   # inside the repo — refresh the template-owned tooling (scripts/agentloop/,
    # .claude/commands|agents, agentloop.mk, the imported rules). FROM is a git URL or local
-   # path; without it the source recorded at adopt time is reused. REF = branch/tag, not a SHA.
+   # path; without it the source recorded at init/adopt time is reused. REF = branch/tag, not a SHA.
+   # Prints the installed → new template version with the CHANGELOG entries in between;
+   # ARGS=--dry-run previews everything (version, changelog, per-file plan) without applying.
    make -f agentloop.mk agentloop-upgrade FROM=https://github.com/you/AgentLoopTemplate.git
 
-   # retract the adoption: everything adopt installed is removed while pristine; the CLAUDE.md
+   # retract the installation: everything installed is removed while pristine; the CLAUDE.md
    # @import block and the merged settings.json entries are retracted too
    make -f agentloop.mk agentloop-uninstall ARGS=--dry-run
    ```
    Upgrade never touches repo-owned state (`config.yaml`, `state.md`, `tasks.yaml`, filled docs,
-   your CLAUDE.md); uninstall removes it only while still unedited. And when `TEST_CMD`/`CHECK_CMD`
-   are omitted at adopt time, commands detected from your build files (package.json,
-   pyproject.toml, Cargo.toml, go.mod, makefile) are printed as suggestions — never auto-written.
+   your CLAUDE.md); uninstall removes it only while still unedited. The template's identity comes
+   from `VERSION`/`CHANGELOG.md` at its root — neither is copied on adopt; the manifest's
+   `template.version` is the record. And when `TEST_CMD`/`CHECK_CMD` are omitted at adopt time,
+   commands detected from your build files (package.json, pyproject.toml, Cargo.toml, go.mod,
+   makefile) are printed as suggestions — never auto-written.
 
 ## Usage
 
@@ -221,6 +237,22 @@ If you want to make tasks visible to the team/stakeholders, you can **one-way-mi
 - **One-way only**: `tasks.yaml` is always the SSOT. Edits on the Issues side are not read back (preserving deterministic, offline operation). Check just the plan with `make issue-sync ARGS=--dry-run`.
 - Writing issues is an outward-facing operation, so the `github.enabled: true` opt-in serves as consent.
 
+### Feeding lessons back to the template (optional)
+
+A cycle's retrospective (§4/§5) collects template-improvement proposals; rows the human marks
+`Promote? = upstream` can be filed as issues on the **upstream template repository** with
+`make feedback`.
+
+- **Off by default.** Enable with `github.feedback.enabled: true` in `.agentloop/config.yaml`. The
+  upstream repo comes from `github.feedback.repo` (owner/repo) or, when empty, the template source
+  recorded in `.agentloop/adopt-manifest.yaml`.
+- `/verify` drafts one self-contained issue per row into `.agentloop/feedback.yaml` (gitignored);
+  **the human reviews and files** — preview offline with `make feedback ARGS=--dry-run`, then
+  `make feedback`. Filing is outward-facing and never pre-authorized.
+- Idempotent via a hidden content-hash body marker (re-running skips what is already filed);
+  the label is best-effort (non-collaborators can file but not label); one-way and additive —
+  upstream issues are never read back, edited, or closed.
+
 ## Troubleshooting
 
 - **A task went `blocked`** — the quality gate could not be passed within the step's retry budget. Read the summary appended to `.agentloop/build-loop.log` (and the escalation log in `state.md`), fix the cause (or fix the task ticket), set the task's `status` back to `todo` in `.agentloop/tasks.yaml`, and re-run `make build-loop`. If the cause is an upstream (requirements/design) defect, roll back with `/revise <phase>` instead.
@@ -230,7 +262,7 @@ If you want to make tasks visible to the team/stakeholders, you can **one-way-mi
 - **`make build-loop` refuses to start with "template placeholders"** — run `make init NAME=<product>` first (see Setup).
 - **state.md and reality have drifted** (e.g. the task table is stale) — `tasks.yaml` is the truth for tasks; regenerate the human-facing view with `uv run --no-project --with pyyaml python scripts/agentloop/dag.py --render` and paste it into `state.md`. Gates and phase in `state.md` are the truth for the lifecycle; correct them deliberately (only a human opens or rewinds a gate).
 - **No usable `make` in an adopted repo** — the AgentLoop targets are self-contained in `agentloop.mk` (they need only the `uv` binary): run them standalone with `make -f agentloop.mk build-loop`, or call the scripts directly, e.g. `uv run --no-project --with pyyaml python scripts/agentloop/build_loop.py`.
-- **`agentloop-upgrade`/`agentloop-uninstall` says "no adopt-manifest"** — these two are adopt-only; a greenfield `make init` records no manifest (the whole copied template is yours, so there is nothing to distinguish). In a repo adopted before manifests existed, re-run `make adopt` once (existing files are skipped, the manifest is recorded) and upgrade from there.
+- **`agentloop-upgrade`/`agentloop-uninstall` says "no adopt-manifest"** — the repo was set up before manifests existed. Backfill one: in a greenfield copy, re-run `make init NAME=<same-name> FROM=<template-url>`; in an adopted repo, re-run `make adopt` once (existing files are skipped, the manifest is recorded). Note a backfilled manifest records the files **as they are now** as the pristine baseline — a tool you had already edited will look unmodified to the next upgrade.
 
 ## Layout
 
@@ -239,7 +271,8 @@ If you want to make tasks visible to the team/stakeholders, you can **one-way-mi
 | `.agentloop/state.md` | SSOT for phase, gates, logs |
 | `.agentloop/tasks.yaml` | machine-readable SSOT of the task graph (DAG) |
 | `.agentloop/config.yaml` | source of knobs for deterministic execution (parallelism, worktree, gate enforcement) and the single definition of the DoD (`quality_gate.steps`) |
-| `scripts/agentloop/` | deterministic orchestration (`dag.py` / `build_loop.py` / `gate_guard.py` / `revise.py` / `issue_sync.py` / `init.py` / `adopt.py` / `cycle.py`). Product scripts go directly under `scripts/` |
+| `scripts/agentloop/` | deterministic orchestration (`dag.py` / `build_loop.py` / `gate_guard.py` / `revise.py` / `issue_sync.py` / `feedback.py` / `init.py` / `adopt.py` / `cycle.py`). Product scripts go directly under `scripts/` |
+| `VERSION` / `CHANGELOG.md` | the template's release identity; `agentloop-upgrade` shows the changelog between the installed and new versions |
 | `agentloop.mk` | the AgentLoop make targets, self-contained (uv only) — an existing repo takes just this file |
 | `CLAUDE.md` | agent operating rules and gate rules |
 | `.claude/commands/` | entry points for each phase (`/req`–`/verify`, plus `/onboard`, `/revise`, `/status`) |
