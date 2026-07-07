@@ -13,11 +13,12 @@ AGENTLOOP_PY := uv run --no-project --with pyyaml python
 .PHONY: init adopt agentloop-upgrade agentloop-uninstall cycle-close build-loop issue-sync revise test-tools
 
 # Turn the copied template into a product (idempotent): fills the pyproject / state.md placeholders,
-# snapshots the pristine docs scaffolds, creates the work branch, and flips gates.template_mode off
+# snapshots the pristine docs scaffolds, records the adopt-manifest (FROM = the template's git URL,
+# reused later by agentloop-upgrade), creates the work branch, and flips gates.template_mode off
 # so the gate guard goes live.
-#   make init NAME=myproduct [BRANCH=build/myproduct]
+#   make init NAME=myproduct [BRANCH=build/myproduct] [FROM=https://github.com/you/AgentLoopTemplate.git]
 init:
-	$(AGENTLOOP_PY) scripts/agentloop/init.py --name "$(NAME)" $(if $(BRANCH),--branch "$(BRANCH)")
+	$(AGENTLOOP_PY) scripts/agentloop/init.py --name "$(NAME)" $(if $(BRANCH),--branch "$(BRANCH)") $(if $(FROM),--source "$(FROM)")
 
 # Install AgentLoop into an EXISTING repository (run from this template checkout). Copies the
 # machinery without overwriting anything, merges CLAUDE.md/settings.json additively, and writes
@@ -26,10 +27,12 @@ init:
 adopt:
 	$(AGENTLOOP_PY) scripts/agentloop/adopt.py --target "$(TARGET)" --name "$(NAME)" $(if $(BRANCH),--branch "$(BRANCH)") $(if $(TEST_CMD),--test-cmd "$(TEST_CMD)") $(if $(CHECK_CMD),--check-cmd "$(CHECK_CMD)") $(ARGS)
 
-# Refresh an adopted repo's template-owned tooling from a newer template (manifest-driven,
+# Refresh this repo's template-owned tooling from a newer template (manifest-driven,
 # hash-checked: your local edits are never overwritten — they are skipped and listed; FORCE=1
-# overrides). Run inside the adopted repo; FROM is a git URL or local path, and without it the
-# source recorded at adopt time is reused. Review with `git diff`, then commit.
+# overrides). Works for adopted AND greenfield (make init) repos. Run inside the repo; FROM is a
+# git URL or local path, and without it the source recorded at init/adopt time is reused. Prints
+# the installed → new template version with the CHANGELOG sections in between — preview everything
+# without applying via ARGS=--dry-run. Review with `git diff`, then commit.
 #   make -f agentloop.mk agentloop-upgrade [FROM=https://github.com/you/AgentLoopTemplate.git] [REF=main] [FORCE=1] [ARGS=--dry-run]
 agentloop-upgrade:
 	$(AGENTLOOP_PY) scripts/agentloop/adopt.py --upgrade --target "$(or $(TARGET),.)" $(if $(FROM),--from-git "$(FROM)") $(if $(REF),--ref "$(REF)") $(if $(FORCE),--force) $(ARGS)

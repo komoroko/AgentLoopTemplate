@@ -8,18 +8,20 @@ One idempotent command replaces the manual, easy-to-forget setup edits:
      the template repo ships with true so scaffold maintenance is not self-blocked).
   4. scaffold snapshot    — copy the pristine docs scaffolds to .agentloop/scaffold/docs/
      (cycle.py restores fresh ones from here when `make cycle-close` archives a cycle).
-  5. git                  — create/switch to the work branch (best-effort: a repo without
+  5. adopt-manifest       — record provenance (`mode: init`, the template source passed via
+     FROM=, per-file hashes), so `agentloop-upgrade` / `agentloop-uninstall` work for
+     greenfield copies too. An existing manifest is never overwritten; a re-run with FROM=
+     backfills only a missing template source.
+  6. git                  — create/switch to the work branch (best-effort: a repo without
      `git init` gets a hint instead of a hard failure).
 
 The text replacements are surgical regexes (comments and layout survive), pure and unit-tested.
 Re-running with the same arguments is a no-op. build_loop.py refuses to start while the
-state.md placeholders are still present, pointing here. Unlike adopt.py, init records no
-adopt-manifest — the whole copied template is the product's own, so `adopt.py --upgrade` /
-`--uninstall` do not apply to greenfield repos.
+state.md placeholders are still present, pointing here.
 
 Usage:
-  make init NAME=myproduct [BRANCH=build/myproduct]
-  uv run python scripts/agentloop/init.py --name myproduct [--branch build/myproduct]
+  make init NAME=myproduct [BRANCH=build/myproduct] [FROM=<template-url-or-path>]
+  uv run python scripts/agentloop/init.py --name myproduct [--branch ...] [--source ...]
 """
 
 from __future__ import annotations
@@ -32,7 +34,11 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 
+# Circular with adopt.py (which imports init for shared text surgery) — safe: neither module
+# touches the other's attributes at import time, so the partially initialized module binds fine.
+import adopt
 import cycle
+import yaml
 
 PYPROJECT_PATH = "pyproject.toml"
 STATE_PATH = ".agentloop/state.md"
@@ -58,6 +64,63 @@ def disable_template_mode(text: str) -> str:
 
 
 # --- application --------------------------------------------------------------
+
+
+def record_manifest(root: Path, source: str, today: str) -> str:
+    """Write the greenfield adopt-manifest (mode: init) once; returns a summary line.
+
+    An existing manifest is never rebuilt (idempotence; also protects an adopted repo from a
+    stray `make init`) — except that `--source` may backfill a still-empty template source,
+    the one field upgrade cannot work without. Hashes are taken from the files as they are
+    right now, which for a fresh copy is the pristine template state.
+    """
+    manifest_path = root / adopt.MANIFEST_PATH
+    if manifest_path.is_file():
+        data = adopt.parse_manifest(manifest_path.read_text(encoding="utf-8"))
+        template = data.get("template") or {}
+        if source and not template.get("source"):
+            template["source"] = source
+            data["template"] = template
+            manifest_path.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
+            return f"updated (template source recorded): {adopt.MANIFEST_PATH}"
+        return f"ok (already set): {adopt.MANIFEST_PATH}"
+
+    files: dict[str, dict[str, str]] = {}
+    for rel, (digest, owner, _src) in adopt.template_items(root, "init").items():
+        if rel.startswith(adopt.SCAFFOLD_PREFIX):
+            continue  # recorded from the real snapshot below, not the docs/ mirror
+        files[rel] = {"hash": digest, "owner": owner}
+    scaffold_root = root / ".agentloop" / "scaffold"
+    if scaffold_root.is_dir():
+        for path in sorted(scaffold_root.rglob("*")):
+            if not path.is_file():
+                continue
+            rel = path.relative_to(root).as_posix()
+            # The state.md snapshot is target-adapted like state.md itself -> seeded (as in adopt).
+            owner = "seeded" if rel == cycle.SCAFFOLD_STATE else "template"
+            files[rel] = {"hash": adopt.norm_hash(path.read_bytes()), "owner": owner}
+    for rel in sorted(adopt.SPECIAL):
+        path = root / rel
+        if path.is_file():
+            files[rel] = {"hash": adopt.norm_hash(path.read_bytes()), "owner": "seeded"}
+
+    # settings.json / the root CLAUDE.md are the product's own from day one in a greenfield
+    # copy ({"mode": "owned"}): upgrade and uninstall leave both alone. commit is "unknown" —
+    # after `rm -rf .git && git init`, HEAD is the product's history, not the template's.
+    data = adopt.build_manifest(
+        files,
+        {"mode": "owned"},
+        {"mode": "owned"},
+        source,
+        "",
+        "unknown",
+        today,
+        None,
+        version=adopt.read_version(root),
+        mode="init",
+    )
+    manifest_path.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
+    return f"created: {adopt.MANIFEST_PATH} (drives agentloop-upgrade / agentloop-uninstall)"
 
 
 def _apply(path: str, transform: Callable[[str], str]) -> bool:
@@ -96,6 +159,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="initialize the copied template into a product")
     parser.add_argument("--name", default="", help="the product name (pyproject name / state.md project)")
     parser.add_argument("--branch", default="", help="the work branch (default: build/<name>)")
+    parser.add_argument("--source", default="", help="the template's git URL/path (recorded for agentloop-upgrade)")
     args = parser.parse_args(argv)
 
     name = args.name.strip()
@@ -123,6 +187,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  snapshot: docs scaffolds → {cycle.SCAFFOLD_DIR}")
     else:
         print(f"  ok (already set): {cycle.SCAFFOLD_DIR}")
+    # After the snapshot (its files are part of the record) and after the fills above (the
+    # seeded hashes must match what is on disk).
+    try:
+        print(f"  {record_manifest(Path(), args.source.strip(), today)}")
+    except (OSError, ValueError) as exc:
+        print(f"init failed: {exc}", file=sys.stderr)
+        return 1
     print(f"  {_switch_branch(branch)}")
     print(
         f'\nInitialized "{name}" (work branch: {branch}; the gate guard is now live).\n'
