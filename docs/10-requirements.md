@@ -23,7 +23,7 @@ Each item expresses "what the user can do". Priority: Must / Should / Could.
 - **Overview**:
 - **Background / why needed**:
 - **Priority**: Should
-- **Acceptance criteria**:
+- **Acceptance criteria (conditions under which it can be called satisfied)**:
   - [ ]
 
 <!-- Add R-3, R-4... as many as needed -->
@@ -46,4 +46,6 @@ Each item expresses "what the user can do". Priority: Must / Should / Could.
 > Communicated to the human at gate ① as CLAUDE.md "Gate self-assessment". Leave it here, not just spoken.
 - **Assumptions made**: <assumptions taken as given without confirming; points where, if wrong, the requirements break>
 - **Confidence**: high / medium / low (may be split per requirement/area; **attach a reason for low spots**)
+- **Open questions / points for the human to decide**:
 - **Anticipated risks / trade-offs**:
+- **Context-bloat signal** (when relevant): <if this document or the state.md logs have grown enough to risk Context Rot, propose trimming — push detail out to a linked file, compress resolved log rows>

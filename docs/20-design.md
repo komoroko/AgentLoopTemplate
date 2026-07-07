@@ -59,3 +59,6 @@
 > Communicated to the human at gate ② as CLAUDE.md "Gate self-assessment". Do not hide low-confidence design spots.
 - **Assumptions made**: <assumptions taken as given about requirements, existing assets, technical choices>
 - **Confidence**: per area high / medium / low (e.g. architecture=high / technical choices=medium / non-functional=low). **Attach a reason for low spots.**
+- **Open questions / points for the human to decide**:
+- **Anticipated risks / trade-offs**:
+- **Context-bloat signal** (when relevant): <if the design has grown, link detail out to an ADR instead of inlining; propose compressing resolved log rows>

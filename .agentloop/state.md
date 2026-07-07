@@ -3,6 +3,8 @@
 # Every command/agent reads this file first and updates it after working.
 # gates values are one of pending | approved. You cannot advance to the next phase
 # unless the prerequisite gate is approved (see CLAUDE.md "Gate rules").
+# When recording an approval, append the date (and approver, if several humans share the repo)
+# as a trailing comment on the gate line, e.g. `tasks: approved   # 2026-07-07 alice`.
 project: "<enter the product name>"
 branch: "<enter the work branch name>"  # e.g. build/<product>. Implement on this branch.
 current_phase: brief          # brief | requirements | design | tasks | build | verify | done

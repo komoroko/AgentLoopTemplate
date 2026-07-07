@@ -30,3 +30,4 @@
 > Material for making low-confidence tasks explicit to the human at gate ③.
 - **Confidence**: high / medium / low
 - **Assumptions made / risks**: <uncertain points, external dependencies, the risk of misreading due to coarse granularity, etc.>
+- **Open questions** (decisions to surface at gate ③):
