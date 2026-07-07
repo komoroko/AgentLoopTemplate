@@ -94,12 +94,23 @@ Tasks form a **DAG**, not a flat list: kind = **foundation** (shared base) / **p
 
 ## Context budget (context hygiene)
 
-More context is not better — long inputs suffer *Context Rot* and *Lost in the Middle*. The main session and every subagent re-read the SSOT and deliverables, so keeping them lean is a first-class quality lever:
+More context is not better — long inputs suffer *Context Rot* and *Lost in the Middle*. The main session and every subagent re-read the SSOT and deliverables, so keeping them lean is a first-class quality lever.
+
+**Memory lives in three tiers, each with its own refresh cycle and exit** — so no tier grows without bound:
+
+| Tier | Lives in | Refresh cycle | Exit (folds into the next tier) |
+|------|----------|---------------|--------------------------------|
+| **Short** — session | conversation, open log rows in `state.md`, `in_progress` state | every checkpoint (gate approval / build-layer boundary): flush → compress resolved rows → suggest `/compact` | only decisions/outcomes survive, into deliverables and resolved log rows |
+| **Mid** — cycle | phase deliverables (`docs/**`), `state.md`, retrospective | written per phase, committed at each gate; logs closed at `/verify` | archived by `make cycle-close`; durable lessons promoted to the long tier |
+| **Long** — permanent | `CLAUDE.md`, `.claude/commands/*`, `.claude/agents/*`, `docs/00-product-brief.md`, `docs/05-current-state.md`, `docs/archive/` | lessons promoted at gate ⑤; `05-current-state.md` updated at `/verify`; archive appended at `cycle-close` | none — the always-loaded tier, so keep it leanest |
+
+Rules:
 
 - **Keep deliverables lean; push detail out to linked files** (e.g. an `ADR-*.md`) rather than inlining it.
-- **Compress and rotate the append-only logs.** Summarize or archive **resolved** rows of the state.md logs (keep the decision, drop the transcript); `build_loop.py` rotates `build-loop.log` past a size threshold — do the equivalent by hand for state.md tables.
+- **Compress and rotate the append-only logs.** Summarize or archive **resolved** rows of the state.md logs (keep the decision, drop the transcript); `build_loop.py` rotates `build-loop.log` past a size threshold — do the equivalent by hand for state.md tables. The defined moment for this hand-pruning is the short-tier checkpoint below (flush and GC are a pair).
 - **Failures are summarized, not dumped** (`summarize_failure()` keeps only the salient lines). Follow the same discipline when you surface a failure yourself.
 - **Prefer fetch-on-demand over holding everything.** Read the slice of a file you need; consult a doc when the task needs it.
+- **Compact the session at clean checkpoints, not mid-flight.** `/compact` is a human-run command (the agent cannot execute it); the agent's part is to suggest it at the right moment. That moment is a phase boundary — right after a gate approval is recorded in `state.md` and the deliverables are committed — or a build-layer boundary in interactive mode: the next command rehydrates from the SSOT, so nothing is lost. Before suggesting it, pass the **pre-compact check**: ① the gate decision is recorded and the deliverables committed; ② every instruction/decision the human gave in conversation this phase is reflected in a deliverable or the SSOT — an observation with no home yet goes into a `state.md` log row first; ③ no unanswered question or gate presentation is in flight; ④ (interactive build) no task is `in_progress`, completed tasks are merged and marked `done`; ⑤ **checkpoint GC** — apply "Compress and rotate" above to the resolved log rows at the same moment. If any item fails, do not suggest compacting. Never suggest it while a gate is pending decision, and suggesting/running `/compact` has no bearing on approvals — gate truth stays in `state.md`. After a compact, `/status` and each command's `state.md` re-read handle rehydration.
 
 ## Quality-check commands
 

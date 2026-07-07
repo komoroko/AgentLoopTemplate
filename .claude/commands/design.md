@@ -30,6 +30,7 @@ After presenting gate ②, while waiting you may proceed with the following (**o
 
 ## Once approved
 - Set `gates.design` to `approved`, `current_phase` to `tasks`, and update `updated_at` in `state.md`.
+- After committing the gate's deliverables, suggest the human run `/compact` before starting `/tasks` — the next command rehydrates from the SSOT, so nothing is lost (pre-compact check: CLAUDE.md "Context budget").
 - Point to "next is `/tasks`".
 
 Do not finalize technical choices on your own. Always go through the human's decision.

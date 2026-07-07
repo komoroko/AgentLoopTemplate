@@ -55,4 +55,5 @@ After presenting gate ③, while waiting you may proceed with the following (**o
 ## Once approved
 - Set `gates.tasks` to `approved`, `current_phase` to `build`, and update `updated_at` in `state.md`.
 - **(Only with GitHub integration)** Run `make issue-sync` to one-way-mirror the approved tasks to Issues. It only acts when `github.enabled: true` in `.agentloop/config.yaml`, and auto-skips if gh/remote is absent (does not fail). **Do not run it before approval** (avoid making issues for unapproved tasks). tasks.yaml is always the SSOT; Issues are not read back.
+- After committing the gate's deliverables, suggest the human run `/compact` before starting `/build` — the next command rehydrates from the SSOT, so nothing is lost (pre-compact check: CLAUDE.md "Context budget").
 - Point to "next is `/build`".

@@ -28,6 +28,7 @@ After presenting gate ①, while waiting for approval you may proceed with the f
 
 ## Once approved
 - Set `gates.requirements` to `approved`, `current_phase` to `design`, and update `updated_at` in `state.md`.
+- After committing the gate's deliverables, suggest the human run `/compact` before starting `/design` — the next command rehydrates from the SSOT, so nothing is lost (pre-compact check: CLAUDE.md "Context budget").
 - Point to "next is `/design`".
 
 Until approval is given, the gate stays `pending`. Do not set it to approved on your own.

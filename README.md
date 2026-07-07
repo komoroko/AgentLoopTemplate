@@ -75,7 +75,7 @@ Only the human opens each gate. Rewinding approval (`/revise`) is also at the hu
 This template is itself a multi-agent orchestration, and its own machinery follows three design axes:
 
 - **Architecture** — the simplest structure that meets the need: `build_loop.py` is a **deterministic DAG** (controllable, debuggable), and each phase is delegated to a dedicated subagent to separate concerns.
-- **Context** — kept minimal: SSOT files (`state.md` / `tasks.yaml`) hold the truth, subagents read only what they need, failures are **summarized, not dumped**, and oversized logs rotate (see "Context budget" in `CLAUDE.md`).
+- **Context** — kept minimal: SSOT files (`state.md` / `tasks.yaml`) hold the truth, subagents read only what they need, failures are **summarized, not dumped**, oversized logs rotate, and the session itself is compacted at phase-boundary `/compact` checkpoints — memory is tiered (session / cycle / permanent), each tier with its own refresh cycle (see "Context budget" in `CLAUDE.md`).
 - **Tools** — minimal, scoped subagent grants; the quality gate has a **retry cap** (`config.yaml`); `summarize_failure()` returns compact, actionable failures.
 
 ## Setup (new repository / greenfield)
