@@ -53,7 +53,7 @@ The truth is split across three files. Their roles differ, so do not conflate th
 
 ## Roll back (returning upstream)
 
-When an upstream (requirements/design) defect is confirmed, roll back at the human's discretion with `/revise` (`make revise`):
+When an upstream (requirements/design) defect is confirmed — or `/verify` finds an implementation defect serious enough to reopen the build (`--to build`) — roll back at the human's discretion with `/revise` (`make revise`):
 
 - **Gates reset in a chain**: every gate from the target phase onward goes back to `pending` (`revise.py`). Invariant: if an upstream gate is `pending`, no downstream gate stays `approved`. The editing order from then on is enforced by `gate_guard`.
 - **Rewinding approval is a human privilege**, symmetric with opening a gate — the agent never rolls back on its own. The detection trigger is a `needs-revision` raised during implementation (gate rule 3).
