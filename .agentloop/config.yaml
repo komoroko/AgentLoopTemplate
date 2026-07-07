@@ -48,8 +48,8 @@ build:
     cmd_sec: 1800            # quality-gate cmd steps (make test / make check / smoke)
     agent_sec: 3600          # headless claude -p launches (implementer, review agent step)
 
-  merge:
-    strategy: sequential     # merge leaf branches into work sequentially in the order they became done
+  # (merge order is deliberately NOT a knob: leaf branches always merge into work deterministically
+  #  in ascending task-id order — build_loop.py hardcodes it so every run joins the same way.)
 
 gates:
   # If true, scripts/agentloop/gate_guard.py (the PreToolUse hook) mechanically blocks

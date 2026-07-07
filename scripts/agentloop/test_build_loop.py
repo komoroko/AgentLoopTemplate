@@ -69,7 +69,6 @@ _CONFIG = (
     "  worktree: {enabled: true, dir: .worktrees, branch_pattern: '{branch}/{task_id}'}\n"
     "  retries: {test_fix: 2, check_fix: 2}\n"
     "  quality_gate: {test_cmd: 'make test', check_cmd: 'make check'}\n"
-    "  merge: {strategy: sequential}\n"
     "gates:\n  enforce_hook: true\n"
 )
 
