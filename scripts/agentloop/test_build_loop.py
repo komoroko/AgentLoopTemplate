@@ -374,6 +374,43 @@ def test_cmd_step_shlex_splits_quoted_args(project: Path, monkeypatch: pytest.Mo
     assert seen == [["pytest", "-k", "a b"]]
 
 
+# --- non-dry-run real paths (git monkeypatched) -------------------------------
+
+
+def test_consume_serial_commits_task_diff_excluding_agentloop(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _provision(project)
+    calls: list[list[str]] = []
+    monkeypatch.setattr(build_loop, "_run", lambda cmd, cwd, timeout=None: (calls.append(cmd), (0, ""))[1])
+    orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
+    monkeypatch.setattr(orch, "_run_task_to_done", lambda task, cwd: (True, ""))
+    foundation = dag.Task(id="T-001", title="base", kind="foundation")
+    orch._consume_serial([foundation])
+    assert ["git", "add", "-A", "--", ".", ":(exclude).agentloop"] in calls  # one commit = one task
+    assert ["git", "commit", "-m", "T-001: base"] in calls
+    assert {t.id: t.status for t in dag.load(".agentloop/tasks.yaml").tasks}["T-001"] == "done"
+
+
+def test_merge_leaf_success_removes_worktree(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _provision(project)
+    calls: list[list[str]] = []
+    monkeypatch.setattr(build_loop, "_run", lambda cmd, cwd, timeout=None: (calls.append(cmd), (0, ""))[1])
+    orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
+    assert orch.merge_leaf(_leaf("T-002", "leaf A"), "build/demo/T-002") is True
+    assert ["git", "merge", "--no-ff", "--no-edit", "build/demo/T-002"] in calls
+    assert ["git", "worktree", "remove", "--force", str(Path(".worktrees") / "T-002")] in calls
+
+
+def test_run_escalates_when_all_unfinished_are_blocked(project: Path) -> None:
+    blocked = _TASKS.replace("status: todo", "status: blocked")
+    (project / ".agentloop" / "state.md").write_text(_STATE.format(tasks="approved"), encoding="utf-8")
+    (project / ".agentloop" / "tasks.yaml").write_text(blocked, encoding="utf-8")
+    assert build_loop.main(["--dry-run"]) == 1  # frontier empty + unfinished → escalate, stop
+    log = (project / ".agentloop" / "build-loop.log").read_text(encoding="utf-8")
+    assert "Help needed" in log
+
+
 # --- state.md generated-view refresh (mode A keeps the human-facing board fresh) ----
 
 _STATE_WITH_VIEW = _STATE.replace(

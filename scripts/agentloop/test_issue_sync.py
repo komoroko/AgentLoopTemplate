@@ -185,3 +185,42 @@ def test_fetch_existing_stops_when_snapshot_may_be_truncated(monkeypatch: pytest
     monkeypatch.setattr(issue_sync, "_run", lambda args: (0, page))
     with pytest.raises(issue_sync.IssueSyncError, match="truncated"):
         issue_sync.fetch_existing(cfg)
+
+
+def test_preflight_skips_without_gh(monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = issue_sync.GithubConfig(enabled=True, label="agentloop", close_on_done=True, repo="")
+    monkeypatch.setattr(issue_sync.shutil, "which", lambda name: None)
+    ready, reason = issue_sync.preflight(cfg)
+    assert ready is False
+    assert "gh CLI" in reason
+
+
+def test_preflight_skips_without_remote(monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = issue_sync.GithubConfig(enabled=True, label="agentloop", close_on_done=True, repo="")
+    monkeypatch.setattr(issue_sync.shutil, "which", lambda name: "/usr/bin/gh")
+    monkeypatch.setattr(issue_sync, "_run", lambda args: (0, ""))  # `git remote` lists nothing
+    ready, reason = issue_sync.preflight(cfg)
+    assert ready is False
+    assert "remote" in reason
+
+
+def test_preflight_ready_with_explicit_repo(monkeypatch: pytest.MonkeyPatch) -> None:
+    # An explicit github.repo skips the remote probe entirely (works in a detached clone).
+    cfg = issue_sync.GithubConfig(enabled=True, label="agentloop", close_on_done=True, repo="owner/repo")
+    monkeypatch.setattr(issue_sync.shutil, "which", lambda name: "/usr/bin/gh")
+    monkeypatch.setattr(issue_sync, "_run", lambda args: pytest.fail("must not probe git remote"))
+    assert issue_sync.preflight(cfg) == (True, "")
+
+
+def test_apply_one_creates_then_closes_done_task(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A done task mirrored for the first time is created and immediately closed via the URL's number.
+    cfg = issue_sync.GithubConfig(enabled=True, label="agentloop", close_on_done=True, repo="owner/repo")
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        issue_sync, "_run", lambda args: (calls.append(args), (0, "https://github.com/owner/repo/issues/42\n"))[1]
+    )
+    desired = issue_sync.desired_issue(_task("T-001", status="done"), base_label="agentloop", close_on_done=True)
+    issue_sync._apply_one(issue_sync.Action("create", "T-001", None, desired), cfg)
+    assert calls[0][:3] == ["gh", "issue", "create"]
+    assert "--repo" in calls[0] and "owner/repo" in calls[0]
+    assert ["gh", "issue", "close", "42", "--repo", "owner/repo"] in calls

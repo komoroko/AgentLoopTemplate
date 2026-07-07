@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import io
+import json
 import os
+import sys
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -200,3 +203,42 @@ def test_fail_closed_when_gates_malformed(in_tmp: Path) -> None:
     (in_tmp / ".agentloop" / "state.md").write_text("no front matter here", encoding="utf-8")
     allowed, _ = gate_guard.evaluate("docs/tasks/T-001.md")
     assert allowed is False
+
+
+# --- main(): the hook's real stdin→stdout I/O path -----------------------------
+
+
+def _run_main(payload: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> tuple[int, str]:
+    monkeypatch.setattr(sys, "stdin", io.StringIO(payload))
+    rc = gate_guard.main()
+    return rc, capsys.readouterr().out
+
+
+def test_main_emits_deny_decision_for_guarded_path(
+    in_tmp: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _setup(in_tmp, tasks="pending")
+    payload = json.dumps({"tool_input": {"file_path": "backend/app/main.py"}})
+    rc, out = _run_main(payload, monkeypatch, capsys)
+    assert rc == 0  # the hook communicates via the JSON decision, not the exit code
+    decision = json.loads(out)["hookSpecificOutput"]
+    assert decision["permissionDecision"] == "deny"
+    assert "tasks" in decision["permissionDecisionReason"]
+
+
+def test_main_stays_silent_for_allowed_path(
+    in_tmp: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _setup(in_tmp, tasks="approved")
+    payload = json.dumps({"tool_input": {"file_path": "backend/app/main.py"}})
+    rc, out = _run_main(payload, monkeypatch, capsys)
+    assert rc == 0
+    assert out == ""  # no decision printed = the tool call proceeds
+
+
+def test_main_does_not_intervene_on_malformed_input(
+    in_tmp: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    for payload in ("not json", "{}", json.dumps({"tool_input": {"file_path": ""}})):
+        rc, out = _run_main(payload, monkeypatch, capsys)
+        assert (rc, out) == (0, "")
