@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -68,7 +69,6 @@ _CONFIG = (
     "  worktree: {enabled: true, dir: .worktrees, branch_pattern: '{branch}/{task_id}'}\n"
     "  retries: {test_fix: 2, check_fix: 2}\n"
     "  quality_gate: {test_cmd: 'make test', check_cmd: 'make check'}\n"
-    "  merge: {strategy: sequential}\n"
     "gates:\n  enforce_hook: true\n"
 )
 
@@ -314,6 +314,185 @@ def test_run_task_to_done_blocks_when_one_step_budget_runs_out(project: Path, mo
     ok, log = orch._run_task_to_done(_leaf("T-002", "leaf A"), cwd=".")
     assert ok is False  # retries: 1 → initial attempt + 1 send-back, then blocked
     assert log == "still red"
+
+
+# --- robustness: orphan cleanup / single-run lock / quoting / branch guard ----
+
+
+def test_consume_parallel_cleans_up_blocked_worktree(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A blocked leaf never reaches merge_leaf, so without explicit cleanup its worktree orphans
+    # under .worktrees/ (blocked tasks leave the frontier and startup cleanup never sees them).
+    _provision(project)
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], cwd: str, timeout: float | None = None) -> tuple[int, str]:
+        calls.append(cmd)
+        return 0, ""
+
+    monkeypatch.setattr(build_loop, "_run", fake_run)
+
+    def fake_run_task(task: dag.Task, cwd: str) -> tuple[bool, str]:
+        return (task.id != "T-003"), ("" if task.id != "T-003" else "$ make test (rc=1)")
+
+    orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
+    monkeypatch.setattr(orch, "_run_task_to_done", fake_run_task)
+    with pytest.raises(build_loop.StopLoop):
+        orch._consume_parallel([_leaf("T-002", "leaf A"), _leaf("T-003", "leaf B")])
+    assert ["git", "worktree", "remove", "--force", str(Path(".worktrees") / "T-003")] in calls
+    assert ["git", "worktree", "remove", "--force", str(Path(".worktrees") / "T-002")] in calls  # via merge_leaf
+
+
+def test_acquire_lock_blocks_live_pid_and_reclaims_stale(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    lock = tmp_path / "build-loop.lock"
+    lock.write_text("12345", encoding="utf-8")
+    monkeypatch.setattr(build_loop, "_pid_alive", lambda pid: True)
+    assert build_loop.acquire_lock(str(lock)) is False  # another live run holds it
+    monkeypatch.setattr(build_loop, "_pid_alive", lambda pid: False)
+    assert build_loop.acquire_lock(str(lock)) is True  # a crashed run's lock is reclaimed
+    assert lock.read_text(encoding="utf-8") == str(os.getpid())
+    build_loop.release_lock(str(lock))
+    assert not lock.exists()
+
+
+def test_run_refuses_concurrent_loop(project: Path) -> None:
+    _provision(project)
+    (project / ".agentloop" / "build-loop.lock").write_text("1", encoding="utf-8")  # PID 1 is always alive
+    assert build_loop.main(["--dry-run"]) == 2
+
+
+def test_run_refuses_undetermined_work_branch(project: Path) -> None:
+    # Placeholder branch + no git repo → work_branch falls back to "HEAD"; a non-dry run must stop
+    # instead of creating worktrees/commits against an arbitrary base.
+    _provision(project)
+    state = _STATE.format(tasks="approved").replace('branch: "build/demo"', 'branch: "<enter the work branch>"')
+    (project / ".agentloop" / "state.md").write_text(state, encoding="utf-8")
+    orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
+    assert orch.run() == 2
+
+
+def test_cmd_step_shlex_splits_quoted_args(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _provision(project)
+    seen: list[list[str]] = []
+
+    def fake_run(cmd: list[str], cwd: str, timeout: float | None = None) -> tuple[int, str]:
+        seen.append(cmd)
+        return 0, ""
+
+    monkeypatch.setattr(build_loop, "_run", fake_run)
+    orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
+    orch._run_cmd_step(build_loop.GateStep("test", "cmd", "pytest -k 'a b'"), cwd=".")
+    assert seen == [["pytest", "-k", "a b"]]
+
+
+# --- non-dry-run real paths (git monkeypatched) -------------------------------
+
+
+def test_consume_serial_commits_task_diff_excluding_agentloop(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _provision(project)
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], cwd: str, timeout: float | None = None) -> tuple[int, str]:
+        calls.append(cmd)
+        return 0, ""
+
+    monkeypatch.setattr(build_loop, "_run", fake_run)
+    orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
+    monkeypatch.setattr(orch, "_run_task_to_done", lambda task, cwd: (True, ""))
+    foundation = dag.Task(id="T-001", title="base", kind="foundation")
+    orch._consume_serial([foundation])
+    assert ["git", "add", "-A", "--", ".", ":(exclude).agentloop"] in calls  # one commit = one task
+    assert ["git", "commit", "-m", "T-001: base"] in calls
+    assert {t.id: t.status for t in dag.load(".agentloop/tasks.yaml").tasks}["T-001"] == "done"
+
+
+def test_merge_leaf_success_removes_worktree(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _provision(project)
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], cwd: str, timeout: float | None = None) -> tuple[int, str]:
+        calls.append(cmd)
+        return 0, ""
+
+    monkeypatch.setattr(build_loop, "_run", fake_run)
+    orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
+    assert orch.merge_leaf(_leaf("T-002", "leaf A"), "build/demo/T-002") is True
+    assert ["git", "merge", "--no-ff", "--no-edit", "build/demo/T-002"] in calls
+    assert ["git", "worktree", "remove", "--force", str(Path(".worktrees") / "T-002")] in calls
+
+
+def test_run_escalates_when_all_unfinished_are_blocked(project: Path) -> None:
+    blocked = _TASKS.replace("status: todo", "status: blocked")
+    (project / ".agentloop" / "state.md").write_text(_STATE.format(tasks="approved"), encoding="utf-8")
+    (project / ".agentloop" / "tasks.yaml").write_text(blocked, encoding="utf-8")
+    assert build_loop.main(["--dry-run"]) == 1  # frontier empty + unfinished → escalate, stop
+    log = (project / ".agentloop" / "build-loop.log").read_text(encoding="utf-8")
+    assert "Help needed" in log
+
+
+# --- state.md generated-view refresh (mode A keeps the human-facing board fresh) ----
+
+_STATE_WITH_VIEW = _STATE.replace(
+    "# board",
+    "# board\n\n<!-- DAG-VIEW:BEGIN -->\n_(stale view)_\n<!-- DAG-VIEW:END -->\n",
+)
+
+
+def test_update_state_view_replaces_block_and_bumps_date(project: Path) -> None:
+    (project / ".agentloop" / "state.md").write_text(_STATE_WITH_VIEW.format(tasks="approved"), encoding="utf-8")
+    assert build_loop.update_state_view(_graph(done=("T-001",))) is True
+    text = (project / ".agentloop" / "state.md").read_text(encoding="utf-8")
+    assert "_(stale view)_" not in text  # the old view was replaced
+    assert "| T-001 | base | foundation |" in text  # the rendered task table landed between the markers
+    assert build_loop.DAG_VIEW_BEGIN in text and build_loop.DAG_VIEW_END in text  # markers survive re-runs
+    assert '"2026-06-26"' not in text  # updated_at was bumped off the fixture date
+
+
+def test_update_state_view_noop_without_markers(project: Path) -> None:
+    (project / ".agentloop" / "state.md").write_text(_STATE.format(tasks="approved"), encoding="utf-8")
+    before = (project / ".agentloop" / "state.md").read_text(encoding="utf-8")
+    assert build_loop.update_state_view(_graph()) is False
+    assert (project / ".agentloop" / "state.md").read_text(encoding="utf-8") == before
+
+
+# --- subprocess timeouts (a hung process must not stall the loop forever) ----
+
+
+def test_run_kills_hung_process_with_rc_124() -> None:
+    rc, out = build_loop._run([sys.executable, "-c", "import time; time.sleep(30)"], cwd=".", timeout=0.2)
+    assert rc == 124  # the coreutils timeout convention
+    assert "timed out after 0s (process killed)" in out
+
+
+def test_run_no_timeout_by_default() -> None:
+    rc, out = build_loop._run([sys.executable, "-c", "print('ok')"], cwd=".")
+    assert rc == 0
+    assert "ok" in out
+
+
+def test_config_parses_timeouts_and_zero_disables(project: Path) -> None:
+    config = build_loop.Config.load()
+    assert config.timeout_cmd == 1800.0  # defaults apply when the knob is absent
+    assert config.timeout_agent == 3600.0
+    (project / ".agentloop" / "config.yaml").write_text(
+        _CONFIG.replace("build:\n", "build:\n  timeouts: {cmd_sec: 60, agent_sec: 0}\n"), encoding="utf-8"
+    )
+    config = build_loop.Config.load()
+    assert config.timeout_cmd == 60.0
+    assert config.timeout_agent is None  # 0 = no timeout
+
+
+def test_cmd_step_passes_cmd_timeout(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _provision(project)
+    seen: list[float | None] = []
+
+    def fake_run(cmd: list[str], cwd: str, timeout: float | None = None) -> tuple[int, str]:
+        seen.append(timeout)
+        return 0, ""
+
+    monkeypatch.setattr(build_loop, "_run", fake_run)
+    orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
+    assert orch._run_cmd_step(build_loop.GateStep("test", "cmd", "make test"), cwd=".") == ""
+    assert seen == [orch.config.timeout_cmd]
 
 
 # --- failure summarization (retry-friendly, token-lean) ---------------------

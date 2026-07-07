@@ -39,8 +39,10 @@ check: pre-commit pre-push
 
 # Run pytest. Exit code 5 = "no tests collected" is tolerated so a freshly
 # copied template (empty backend/) passes; the same tolerance is used in CI.
+# No --lf here: this target is the quality gate's `test` step (the DoD), and
+# "last failed only" would let a fix regress the rest of the suite unseen.
 test:
-	uv run pytest -vv --lf backend/ || test $$? -eq 5
+	uv run pytest -vv backend/ || test $$? -eq 5
 
 # Dependency vulnerability audit (supply-chain check). Mandatory in /verify.
 # Python: audit resolved dependencies with pip-audit. frontend: pnpm audit if package.json exists.

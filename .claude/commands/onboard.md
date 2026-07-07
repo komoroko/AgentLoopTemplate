@@ -50,7 +50,10 @@ the template's machinery: `/req` and `/design` start from the baseline this comm
      "Gate self-assessment" spirit: assumptions, low-confidence spots);
    - the **candidate list of in-flight/unfinished work** — the human picks what becomes the
      first delta cycle's scope;
-   - next step: write the chosen change into `docs/00-product-brief.md` and run `/req`.
+   - next step: write the chosen change into `docs/00-product-brief.md` and run `/req`. Since the
+     baseline now holds everything the survey learned, this is a clean checkpoint — suggest the
+     human run `/compact` (or start `/req` in a fresh session); the survey conversation is no
+     longer needed (pre-compact check: CLAUDE.md "Context budget").
 
 Write the deliverables in the user's language.
 

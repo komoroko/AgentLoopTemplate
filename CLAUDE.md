@@ -31,6 +31,11 @@ Check progress anytime with `/status`. At `done`, `/verify` records a retrospect
 
 **Cycles**: an ongoing repo runs this lifecycle repeatedly as **delta cycles** — each cycle's docs describe one change, not the whole product. After `done`, the human runs `make cycle-close NAME=<slug>` to archive the filled deliverables to `docs/archive/` and reset gates/phase for the next cycle (`docs/00-product-brief.md` and the baseline `docs/05-current-state.md` persist). In an adopted (brownfield) repo, `docs/05-current-state.md` is the persistent baseline of the existing codebase — `/req`/`/design` read it first, and traceability (R-N) applies to each cycle's delta only, never reverse-generated from existing behavior. Adopted repos also carry `.agentloop/adopt-manifest.yaml`; `make -f agentloop.mk agentloop-upgrade` / `agentloop-uninstall` are manifest-driven and only ever touch pristine template-owned files.
 
+**Mid-cycle scope change / hotfix / abandonment** (each a human decision):
+- **A scope addition that is not a defect** never widens approved requirements silently. Default: defer it to the next delta cycle. If it must land now, reopen gate ① (`/revise` to requirements) and re-approve the enlarged scope — traceability stays intact.
+- **An emergency hotfix** runs as a *minimal* delta cycle: the gates still open in order, but each deliverable may be a paragraph. If even that is too slow, the human fixes and approves directly outside the loop; record it in the escalation log and fold it into `docs/05-current-state.md` at the next cycle's `/verify`.
+- **Abandoning a cycle**: archive it as-is with `make cycle-close NAME=abandoned-<slug>` — the partial deliverables land in `docs/archive/` for the record and gates/phase reset. Keep or delete the work branch by hand.
+
 ## Single Source of Truth (SSOT)
 
 The truth is split across three files. Their roles differ, so do not conflate them:
@@ -42,7 +47,7 @@ The truth is split across three files. Their roles differ, so do not conflate th
 ## Gate rules (strict)
 
 1. **Do not work on the next phase while its prerequisite gate is unapproved.** Each command checks its prerequisite gate up front (`/design`←requirements, `/tasks`←design, `/build`←tasks, `/verify`←build). If unapproved, stop and tell the human what is needed.
-2. **Only humans open a gate.** The agent goes only as far as presenting the deliverable. Only after a human signals approval (approving plan mode, or an explicit "approve") do you set the gate in `state.md` to `approved` and move on. **Invoking the next-phase command is not itself approval** — running `/verify` while `build` is `pending` does not consent to gate ④; stop and ask for explicit approval.
+2. **Only humans open a gate.** The agent goes only as far as presenting the deliverable. Only after a human signals approval (approving plan mode, or an explicit "approve") do you set the gate in `state.md` to `approved` and move on. **Invoking the next-phase command is not itself approval** — running `/verify` while `build` is `pending` does not consent to gate ④; stop and ask for explicit approval. When recording an approval, append the date — and, when several humans share the repo, who approved — as a YAML comment on the gate line (e.g. `tasks: approved   # 2026-07-07 alice`): machine parsing reads only the value, and `revise.py`/`cycle.py` preserve comments.
 3. **Do not silently fix problems in requirements/design.** On finding an upstream defect, set the affected task to `needs-revision`, record it in the escalation log, and raise it to the human.
 
 **Gates are enforced in two layers**:
@@ -53,7 +58,7 @@ The truth is split across three files. Their roles differ, so do not conflate th
 
 ## Roll back (returning upstream)
 
-When an upstream (requirements/design) defect is confirmed, roll back at the human's discretion with `/revise` (`make revise`):
+When an upstream (requirements/design) defect is confirmed — or `/verify` finds an implementation defect serious enough to reopen the build (`--to build`) — roll back at the human's discretion with `/revise` (`make revise`):
 
 - **Gates reset in a chain**: every gate from the target phase onward goes back to `pending` (`revise.py`). Invariant: if an upstream gate is `pending`, no downstream gate stays `approved`. The editing order from then on is enforced by `gate_guard`.
 - **Rewinding approval is a human privilege**, symmetric with opening a gate — the agent never rolls back on its own. The detection trigger is a `needs-revision` raised during implementation (gate rule 3).
@@ -75,7 +80,7 @@ Do not pretend to high confidence and let the human skip verification — surfac
 
 Do not sit idle while a gate is `pending` — but **never compromise the gate**:
 
-- Notify the human immediately with `PushNotification`; batch questions into a single `AskUserQuestion`.
+- Notify the human immediately with `PushNotification`; batch questions into a single `AskUserQuestion`. When they exceed its practical limits (question/option caps), ask only the decisions that block progress and leave the rest as "Open questions" in the deliverable's self-assessment.
 - You may pull forward **only outcome-independent work** (scaffolding, dev-env/CI setup, read-only investigation, fixtures). **Never** produce deliverables premised on the pending decision. Speculative work is throwaway-by-default and recorded in the "speculative work log" of `state.md` (per-phase specifics: each command's "While waiting for approval" section).
 - **Never set a gate to `approved` on the grounds of speculative work.**
 
@@ -94,12 +99,30 @@ Tasks form a **DAG**, not a flat list: kind = **foundation** (shared base) / **p
 
 ## Context budget (context hygiene)
 
-More context is not better — long inputs suffer *Context Rot* and *Lost in the Middle*. The main session and every subagent re-read the SSOT and deliverables, so keeping them lean is a first-class quality lever:
+More context is not better — long inputs suffer *Context Rot* and *Lost in the Middle*. The main session and every subagent re-read the SSOT and deliverables, so keeping them lean is a first-class quality lever.
+
+**Memory lives in three tiers, each with its own refresh cycle and exit** — so no tier grows without bound:
+
+| Tier | Lives in | Refresh cycle | Exit (folds into the next tier) |
+|------|----------|---------------|--------------------------------|
+| **Short** — session | conversation, open log rows in `state.md`, `in_progress` state | every checkpoint (gate approval / build-layer boundary): flush → compress resolved rows → suggest `/compact` | only decisions/outcomes survive, into deliverables and resolved log rows |
+| **Mid** — cycle | phase deliverables (`docs/**`), `state.md`, retrospective | written per phase, committed at each gate; logs closed at `/verify` | archived by `make cycle-close`; durable lessons promoted to the long tier |
+| **Long** — permanent | `CLAUDE.md`, `.claude/commands/*`, `.claude/agents/*`, `docs/00-product-brief.md`, `docs/05-current-state.md`, `docs/archive/` | lessons promoted at gate ⑤; `05-current-state.md` updated at `/verify`; archive appended at `cycle-close` | none — the always-loaded tier, so keep it leanest |
+
+Rules:
 
 - **Keep deliverables lean; push detail out to linked files** (e.g. an `ADR-*.md`) rather than inlining it.
-- **Compress and rotate the append-only logs.** Summarize or archive **resolved** rows of the state.md logs (keep the decision, drop the transcript); `build_loop.py` rotates `build-loop.log` past a size threshold — do the equivalent by hand for state.md tables.
+- **Compress and rotate the append-only logs.** Summarize or archive **resolved** rows of the state.md logs (keep the decision, drop the transcript); `build_loop.py` rotates `build-loop.log` past a size threshold — do the equivalent by hand for state.md tables. The defined moment for this hand-pruning is the short-tier checkpoint below (flush and GC are a pair).
 - **Failures are summarized, not dumped** (`summarize_failure()` keeps only the salient lines). Follow the same discipline when you surface a failure yourself.
 - **Prefer fetch-on-demand over holding everything.** Read the slice of a file you need; consult a doc when the task needs it.
+- **Compact the session at clean checkpoints, not mid-flight.** `/compact` is a human-run command (the agent cannot execute it); the agent's part is to suggest it at the right moment. That moment is a phase boundary — right after a gate approval is recorded in `state.md` and the deliverables are committed — or a build-layer boundary in interactive mode: the next command rehydrates from the SSOT, so nothing is lost. Before suggesting it, pass every item of the **pre-compact check**:
+  1. The gate decision is recorded and the deliverables committed.
+  2. Every instruction/decision the human gave in conversation this phase is reflected in a deliverable or the SSOT — an observation with no home yet goes into a `state.md` log row first.
+  3. No unanswered question or gate presentation is in flight.
+  4. (Interactive build) no task is `in_progress`; completed tasks are merged and marked `done`.
+  5. **Checkpoint GC** — apply "Compress and rotate" above to the resolved log rows at the same moment.
+
+  If any item fails, do not suggest compacting. Never suggest it while a gate is pending decision, and suggesting/running `/compact` has no bearing on approvals — gate truth stays in `state.md`. After a compact, `/status` and each command's `state.md` re-read handle rehydration.
 
 ## Quality-check commands
 

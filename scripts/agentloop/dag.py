@@ -22,6 +22,9 @@ STATUS_VALUES = frozenset({"todo", "in_progress", "blocked", "needs-revision", "
 # The display order of STATUS_VALUES (shared by count display and Mermaid color-coding).
 STATUS_ORDER = ("todo", "in_progress", "blocked", "needs-revision", "done")
 KIND_VALUES = frozenset({"foundation", "parallel", "integration"})
+# The lifecycle phase a task originates from (see .claude/commands/tasks.md). Validated because a
+# typo (e.g. "biuld") would otherwise silently drop the task from --trace's build-coverage check.
+PHASE_VALUES = frozenset({"requirements", "design", "build", "verify"})
 
 # Requirement IDs are `R-<number>` (R-1, R-2, …). Shared vocabulary across requirements/design documents and task `req`.
 # A task's req is validated at load time to ensure the whole token has this form (rejecting typos like R1 / Req-1).
@@ -74,6 +77,8 @@ class Graph:
                 raise DagError(f"{t.id}: invalid kind '{t.kind}' (one of {sorted(KIND_VALUES)})")
             if t.status not in STATUS_VALUES:
                 raise DagError(f"{t.id}: invalid status '{t.status}' (one of {sorted(STATUS_VALUES)})")
+            if t.phase not in PHASE_VALUES:
+                raise DagError(f"{t.id}: invalid phase '{t.phase}' (one of {sorted(PHASE_VALUES)})")
             for tok in _split_req(t.req):
                 if not _REQ_ID_EXACT_RE.match(tok):
                     raise DagError(f"{t.id}: invalid req token '{tok}' (must be in R-<number> form)")
@@ -240,12 +245,28 @@ def load(path: str | Path = ".agentloop/tasks.yaml") -> Graph:
 
 
 def render(graph: Graph) -> str:
-    """Deterministic rendering for /status (execution layers, critical path, frontier, counts)."""
+    """Deterministic rendering of the human-facing DAG view (task table, layers, critical path, frontier).
+
+    /status prints it as-is; state.md embeds it between the DAG-VIEW markers (pasted by hand at
+    /tasks, refreshed automatically by build_loop.py in deterministic mode A).
+    """
     lines: list[str] = []
     counts = graph.counts()
-    lines.append("## Execution plan (deterministically derived from tasks.yaml)")
-    lines.append("")
     lines.append("Counts: " + " / ".join(f"{s}={counts[s]}" for s in STATUS_ORDER))
+    lines.append("")
+    lines.append("### Task table")
+    if graph.tasks:
+        fan = graph.fan_out()
+        lines.append("| ID | Title | Kind | blockedBy | req | fan-out | status | Test |")
+        lines.append("|----|-------|------|-----------|-----|---------|--------|------|")
+        for t in graph.tasks:
+            blocked = ", ".join(t.blocked_by) if t.blocked_by else "-"
+            lines.append(
+                f"| {t.id} | {t.title} | {t.kind} | {blocked} | {t.req or '-'} | {fan[t.id]} "
+                f"| {t.status} | {t.test or '-'} |"
+            )
+    else:
+        lines.append("- (no tasks)")
     lines.append("")
     lines.append("### Execution layers (within a layer, parallel is possible)")
     layers = graph.layers()

@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import re
+from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 import revise
@@ -74,3 +77,39 @@ def test_apply_revision_without_marker_is_safe() -> None:
     assert re.search(r"build: pending\s+# c4", out)
     assert re.search(r"release: pending\s+# c5", out)
     assert re.search(r"requirements: approved\s+# c1", out)  # what is not in the chain is unchanged
+
+
+# --- main(): the CLI entry (dry-run plans only; the real run rewrites state.md) ---
+
+
+@pytest.fixture
+def project(tmp_path: Path) -> Iterator[Path]:
+    (tmp_path / ".agentloop").mkdir()
+    (tmp_path / ".agentloop" / "state.md").write_text(_STATE, encoding="utf-8")
+    prev = os.getcwd()
+    os.chdir(tmp_path)
+    try:
+        yield tmp_path
+    finally:
+        os.chdir(prev)
+
+
+def test_main_dry_run_plans_without_writing(project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert revise.main(["--to", "design", "--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert "design, tasks, build, release" in out
+    assert (project / ".agentloop" / "state.md").read_text(encoding="utf-8") == _STATE  # untouched
+
+
+def test_main_rewrites_state_and_logs(project: Path) -> None:
+    assert revise.main(["--to", "build", "--reason", "verify found a defect"]) == 0
+    state = (project / ".agentloop" / "state.md").read_text(encoding="utf-8")
+    assert re.search(r"build: pending\s+# c4", state) and re.search(r"release: pending\s+# c5", state)
+    assert re.search(r"tasks: approved\s+# c3", state)  # upstream untouched
+    assert "| build | build, release | verify found a defect |" in state
+
+
+def test_main_errors_when_state_missing(project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    (project / ".agentloop" / "state.md").unlink()
+    assert revise.main(["--to", "design"]) == 1
+    assert "cannot read state.md" in capsys.readouterr().err

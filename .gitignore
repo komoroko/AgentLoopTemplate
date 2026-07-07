@@ -25,6 +25,8 @@ backend/logfiles/*.log
 # ---- AgentLoop runtime artifacts ----
 .worktrees/                 # temporary worktrees build_loop.py creates for parallel tasks
 .agentloop/build-loop.log   # the orchestrator's escalation log
+.agentloop/build-loop.log.1 # its rotated previous generation
+.agentloop/build-loop.lock  # the single-run PID lock
 
 # ---- environment variables / secrets ----
 .env

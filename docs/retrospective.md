@@ -23,8 +23,11 @@ For each item in `state.md` "speculative work log", finalize adopt / discard (fi
 
 ## 4. Lessons for upstream
 When building something similar next time, what should have been firmed up first at the requirements/design stage.
+Durable ones are promoted the same way as §5 — record where each landed.
 
--
+| Lesson | Promote? | Promoted to (file) |
+|--------|----------|--------------------|
+| | | |
 
 ## 5. Process / template improvement proposals
 Improvement ideas for how this loop is run, the gates, self-assessment, and deterministic orchestration

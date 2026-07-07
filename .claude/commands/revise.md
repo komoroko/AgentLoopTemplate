@@ -1,5 +1,5 @@
 ---
-description: Roll back. When an upstream (requirements/design) defect is confirmed (e.g. during implementation), reset gates in a chain and analyze task impact.
+description: Roll back. When a defect is confirmed in an already-approved phase (upstream requirements/design, or the implementation at verify), reset gates in a chain and analyze task impact.
 ---
 
 # /revise — Roll back upstream (the going-back loop)
@@ -10,10 +10,11 @@ Symmetric with the human opening a gate, **rewinding approval is also the human'
 ## When to use it
 - When `/build`'s implementer reports `needs-revision` (a requirements/design defect) and the loop has stopped.
 - When `/verify` reveals a requirement/design-level problem (a spec error, etc.).
-- Small implementation-convenience rework is out of scope (handle that with a fix within the task). Use this **only when an upstream deliverable needs fixing**.
+- When `/verify` finds an **implementation-level defect serious enough to reopen the build**: target `build` — `gates.build`/`gates.release` go back to `pending` and gate ④ is re-taken after the fix (see `/verify` step 4).
+- Small implementation-convenience rework within a still-open build is out of scope (handle that with a fix within the task). Use this **only when an already-approved gate needs reopening**.
 
 ## Steps
-1. **Confirm the defect and the human's decision**: present the escalation log / needs-revision points and have the human decide "how far to go back (requirements or design)". Do not roll back on your own.
+1. **Confirm the defect and the human's decision**: present the escalation log / needs-revision points and have the human decide "how far to go back (requirements, design, or build)". Do not roll back on your own.
 2. Finalize the target phase (`requirements` | `design` | `tasks` | `build`) and the reason **in a single AskUserQuestion**.
 3. **Reset gates in a chain** (deterministic process):
    ```

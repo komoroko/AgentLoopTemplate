@@ -237,6 +237,9 @@ def preflight(cfg: GithubConfig) -> tuple[bool, str]:
     return True, ""
 
 
+FETCH_LIMIT = 1000  # gh issue list page cap; hitting it means the mirror snapshot may be incomplete
+
+
 def fetch_existing(cfg: GithubConfig) -> dict[str, ExistingIssue]:
     args = [
         "gh",
@@ -249,7 +252,7 @@ def fetch_existing(cfg: GithubConfig) -> dict[str, ExistingIssue]:
         "--json",
         "number,title,state,labels,body",
         "--limit",
-        "1000",
+        str(FETCH_LIMIT),
     ]
     if cfg.repo:
         args += ["--repo", cfg.repo]
@@ -260,6 +263,13 @@ def fetch_existing(cfg: GithubConfig) -> dict[str, ExistingIssue]:
         data: Any = json.loads(out or "[]")
     except json.JSONDecodeError as exc:
         raise IssueSyncError(f"cannot parse gh issue list output: {exc}") from exc
+    if len(data) >= FETCH_LIMIT:
+        # A truncated snapshot would make plan_actions re-create issues it failed to see. Stop
+        # safe-side rather than risk duplicating the mirror (never plan against a partial view).
+        raise IssueSyncError(
+            f"gh issue list returned {FETCH_LIMIT} issues (the fetch limit) — the snapshot may be"
+            " truncated and syncing could create duplicates. Prune old mirror issues or raise FETCH_LIMIT."
+        )
     result: dict[str, ExistingIssue] = {}
     for item in data:
         title = str(item.get("title", ""))
@@ -302,6 +312,14 @@ def _apply_one(action: Action, cfg: GithubConfig) -> None:
             match = re.search(r"/issues/(\d+)", out)
             if match:
                 _gh(["issue", "close", match.group(1)], cfg)
+            else:
+                # Not fatal: the next sync sees the issue OPEN with desired closed and plans a
+                # "close" op (plan_actions), so the mirror converges — just disclose the miss.
+                print(
+                    f"note: {action.task_id}: could not extract the new issue's number from gh output;"
+                    " it stays open until the next sync closes it.",
+                    file=sys.stderr,
+                )
     elif action.op == "update":
         args = ["issue", "edit", str(action.number), "--title", action.desired.title, "--body", action.desired.body]
         if action.add_labels:

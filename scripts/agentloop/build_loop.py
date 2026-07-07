@@ -27,11 +27,14 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
 import re
+import shlex
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +45,7 @@ STATE_PATH = ".agentloop/state.md"
 CONFIG_PATH = ".agentloop/config.yaml"
 TASKS_PATH = ".agentloop/tasks.yaml"
 LOG_PATH = ".agentloop/build-loop.log"
+LOCK_PATH = ".agentloop/build-loop.lock"
 LOG_MAX_BYTES = 256 * 1024  # rotate the append-only build-loop.log past this (context hygiene; see rotate_log_if_large)
 
 
@@ -102,6 +106,12 @@ def _parse_steps(qg: Any, retries: Any) -> tuple[GateStep, ...]:
     return tuple(steps)
 
 
+def _timeout_sec(value: Any, default: int) -> float | None:
+    """Normalize a timeouts knob: seconds as a positive float, or None (= no timeout) for 0/negative."""
+    sec = float(default if value is None else value)
+    return sec if sec > 0 else None
+
+
 @dataclass
 class Config:
     max_parallel: int
@@ -110,6 +120,8 @@ class Config:
     branch_pattern: str
     steps: tuple[GateStep, ...]
     agent_steps: bool
+    timeout_cmd: float | None = 1800.0
+    timeout_agent: float | None = 3600.0
 
     @property
     def gate_cmds(self) -> list[str]:
@@ -122,6 +134,7 @@ class Config:
         build = data.get("build") or {}
         wt = build.get("worktree") or {}
         qg = build.get("quality_gate") or {}
+        tm = build.get("timeouts") or {}
         return cls(
             max_parallel=max(1, int(build.get("max_parallel", 3))),
             worktree_enabled=bool(wt.get("enabled", True)),
@@ -129,6 +142,8 @@ class Config:
             branch_pattern=str(wt.get("branch_pattern", "{branch}/{task_id}")),
             steps=_parse_steps(qg, build.get("retries") or {}),
             agent_steps=bool(qg.get("agent_steps", True)),
+            timeout_cmd=_timeout_sec(tm.get("cmd_sec"), 1800),
+            timeout_agent=_timeout_sec(tm.get("agent_sec"), 3600),
         )
 
 
@@ -177,6 +192,63 @@ def set_task_status(task_id: str, status: str, tasks_path: str = TASKS_PATH) -> 
     )
 
 
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)  # signal 0 = existence probe only
+    except ProcessLookupError:
+        return False
+    except OSError:  # e.g. EPERM: exists but owned by someone else
+        return True
+    return True
+
+
+def acquire_lock(path: str = LOCK_PATH) -> bool:
+    """Take the single-run lock (a PID file). False = another live run holds it.
+
+    Two concurrent loops would race the whole-file tasks.yaml rewrites and collide on the same
+    worktree paths. A lock whose PID is no longer alive (a crashed run) is reclaimed automatically,
+    so no manual cleanup is needed after an interruption.
+    """
+    p = Path(path)
+    try:
+        pid = int(p.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        pid = 0
+    if pid > 0 and pid != os.getpid() and _pid_alive(pid):
+        return False
+    p.write_text(str(os.getpid()), encoding="utf-8")
+    return True
+
+
+def release_lock(path: str = LOCK_PATH) -> None:
+    Path(path).unlink(missing_ok=True)
+
+
+DAG_VIEW_BEGIN = "<!-- DAG-VIEW:BEGIN -->"
+DAG_VIEW_END = "<!-- DAG-VIEW:END -->"
+
+
+def update_state_view(graph: dag.Graph, path: str = STATE_PATH) -> bool:
+    """Refresh state.md's generated DAG view block (between the DAG-VIEW markers) and bump updated_at.
+
+    tasks.yaml stays the SSOT; this only re-renders the human-facing view so the board does not go
+    stale while the deterministic loop runs (a human pastes the same render output in mode B).
+    No markers (a hand-restructured state.md) or unreadable file = no-op, never an abort.
+    """
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return False
+    begin = text.find(DAG_VIEW_BEGIN)
+    end = text.find(DAG_VIEW_END)
+    if begin == -1 or end == -1 or end < begin:
+        return False
+    new = text[: begin + len(DAG_VIEW_BEGIN)] + "\n" + dag.render(graph) + "\n" + text[end:]
+    new = re.sub(r"^(\s*updated_at:\s*).*$", rf'\g<1>"{date.today().isoformat()}"', new, count=1, flags=re.MULTILINE)
+    Path(path).write_text(new, encoding="utf-8")
+    return True
+
+
 def log_escalation(message: str) -> None:
     with Path(LOG_PATH).open("a", encoding="utf-8") as fh:
         fh.write(message.rstrip() + "\n")
@@ -203,8 +275,21 @@ def rotate_log_if_large(path: str = LOG_PATH, max_bytes: int = LOG_MAX_BYTES) ->
 # --- subprocess -------------------------------------------------------------
 
 
-def _run(cmd: list[str], cwd: str) -> tuple[int, str]:
-    proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+def _run(cmd: list[str], cwd: str, timeout: float | None = None) -> tuple[int, str]:
+    """Run a command; a hang past `timeout` kills it and fails with rc 124 (the coreutils convention).
+
+    Without this, a stuck `claude -p` or test run would stall the autonomous loop forever with no
+    escalation. The expiry flows through the normal failure paths (retry budget / StopLoop).
+    """
+    try:
+        proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        partial = "".join(
+            part if isinstance(part, str) else part.decode(errors="replace")
+            for part in (exc.stdout, exc.stderr)
+            if part
+        )
+        return 124, f"{partial}\ntimed out after {int(exc.timeout)}s (process killed)"
     return proc.returncode, proc.stdout + proc.stderr
 
 
@@ -339,7 +424,11 @@ class Orchestrator:
         if self.dry_run:
             print(f"    [dry-run] launch implementer (cwd={cwd}) task={task.id}")
             return
-        rc, out = _run([self.claude_bin, "-p", self._implementer_prompt(task, failure_log)], cwd=cwd)
+        rc, out = _run(
+            [self.claude_bin, "-p", self._implementer_prompt(task, failure_log)],
+            cwd=cwd,
+            timeout=self.config.timeout_agent,
+        )
         if rc != 0:
             raise StopLoop(f"{task.id}: failed to launch implementer (rc={rc})\n{out[-1000:]}")
 
@@ -369,14 +458,18 @@ class Orchestrator:
     def _run_agent_step(self, task: dag.Task, cwd: str) -> bool:
         """Run the review+simplify agent step headless. Returns True if it changed the tree."""
         before = self._tree_state(cwd)
-        rc, out = _run([self.claude_bin, "-p", self._review_prompt(task)], cwd=cwd)
+        rc, out = _run([self.claude_bin, "-p", self._review_prompt(task)], cwd=cwd, timeout=self.config.timeout_agent)
         if rc != 0:
             raise StopLoop(f"{task.id}: failed to launch the review agent step (rc={rc})\n{out[-1000:]}")
         return self._tree_state(cwd) != before
 
     def _run_cmd_step(self, step: GateStep, cwd: str) -> str:
-        """Run one cmd step. Returns "" on pass, a compact failure summary otherwise."""
-        rc, out = _run(step.run.split(), cwd=cwd)
+        """Run one cmd step. Returns "" on pass, a compact failure summary otherwise.
+
+        shlex-split so quoted arguments work (e.g. `pytest -k 'a b'`). Still no shell: pipes and
+        redirections don't work in a step's `run` — wrap those in a make target or script.
+        """
+        rc, out = _run(shlex.split(step.run), cwd=cwd, timeout=self.config.timeout_cmd)
         return "" if rc == 0 else summarize_failure(step.run, rc, out)
 
     def _run_pipeline(self, task: dag.Task, cwd: str) -> tuple[str | None, str]:
@@ -471,6 +564,18 @@ class Orchestrator:
         except StopLoop as exc:
             return False, str(exc)
 
+    def _cleanup_worktree(self, task: dag.Task) -> None:
+        """Remove a leaf's worktree without merging (blocked / merge conflict).
+
+        Blocked tasks leave the frontier, so the startup cleanup in _add_worktree never reaches
+        their worktrees — without this they orphan under .worktrees/. The branch is kept: it holds
+        the diff a human needs to inspect or resolve.
+        """
+        if self.dry_run:
+            return
+        _run(["git", "worktree", "remove", "--force", self._worktree_path(task)], cwd=".")
+        _run(["git", "worktree", "prune"], cwd=".")
+
     def merge_leaf(self, task: dag.Task, branch: str) -> bool:
         """Merge a leaf branch into work and remove the worktree. On a conflict, abort and return False."""
         if self.dry_run:
@@ -513,12 +618,35 @@ class Orchestrator:
         if not (isinstance(gates, dict) and gates.get("tasks") == "approved"):
             print("gates.tasks is not approved. Approve /tasks first.", file=sys.stderr)
             return 2
+        if not self.dry_run and self.branch in ("", "HEAD"):
+            # work_branch falls back to "HEAD" when git is unavailable/detached; creating worktrees
+            # or committing against that would land the work on an arbitrary base.
+            print(
+                "cannot determine the work branch (git unavailable or detached HEAD) — "
+                "fill `branch:` in state.md or check out the work branch first.",
+                file=sys.stderr,
+            )
+            return 2
+        if not acquire_lock():
+            print(
+                f"another build-loop run appears to be active ({LOCK_PATH} holds a live PID). "
+                "Wait for it to finish, or remove the lock file if you are sure it is gone.",
+                file=sys.stderr,
+            )
+            return 2
+        try:
+            return self._run_loop()
+        finally:
+            release_lock()
 
+    def _run_loop(self) -> int:
         if not self.dry_run:
             rotate_log_if_large()  # keep the append-only escalation log lean before appending this run's entries
         self._recover_in_progress()
         while True:
             graph = dag.load(TASKS_PATH)
+            if not self.dry_run:
+                update_state_view(graph)  # keep state.md's human-facing board fresh each iteration
             counts = graph.counts()
             unfinished = len(graph.tasks) - counts["done"]
             if unfinished == 0:
@@ -539,6 +667,11 @@ class Orchestrator:
                 else:
                     self._consume_parallel(tasks)
             except StopLoop as exc:
+                if not self.dry_run:
+                    try:  # leave the board reflecting the batch's blocked/done statuses before stopping
+                        update_state_view(dag.load(TASKS_PATH))
+                    except (OSError, dag.DagError, yaml.YAMLError):
+                        pass
                 print(str(exc), file=sys.stderr)
                 return exc.code
             # Recompute at the top of the loop after each batch (reassemble the chain).
@@ -584,12 +717,14 @@ class Orchestrator:
             if not ok:
                 set_task_status(task.id, "blocked")
                 log_escalation(f"{task.id}: could not pass the quality gate within the limit; blocked.\n{log}")
+                self._cleanup_worktree(task)  # the branch keeps the diff for inspection
                 blocked_any = True
                 continue
             if self.merge_leaf(task, branches[task.id]):
                 set_task_status(task.id, "done")
             else:
                 set_task_status(task.id, "blocked")
+                self._cleanup_worktree(task)  # conflict: aborted merge, worktree no longer needed
                 blocked_any = True
         if blocked_any:
             raise StopLoop("A blocked task occurred. Human intervention needed.", code=1)
