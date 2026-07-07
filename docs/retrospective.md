@@ -23,7 +23,7 @@ For each item in `state.md` "speculative work log", finalize adopt / discard (fi
 
 ## 4. Lessons for upstream
 When building something similar next time, what should have been firmed up first at the requirements/design stage.
-Durable ones are promoted the same way as §5 — record where each landed.
+Durable ones are promoted the same way as §5 (`upstream` included) — record where each landed.
 
 | Lesson | Promote? | Promoted to (file) |
 |--------|----------|--------------------|
@@ -33,7 +33,9 @@ Durable ones are promoted the same way as §5 — record where each landed.
 Improvement ideas for how this loop is run, the gates, self-assessment, and deterministic orchestration
 (feedback to the template itself is welcome too). **Before `cycle-close` archives this file, promote any keeper
 into the always-loaded template (`CLAUDE.md` / `.claude/commands/*` / `.claude/agents/*`) and record where** —
-a durable lesson must not stay only here.
+a durable lesson must not stay only here. A proposal for the upstream template itself gets `Promote? = upstream`:
+/verify drafts it into `.agentloop/feedback.yaml`, the human files it with `make feedback`, and the issue URL
+goes in "Promoted to (file)".
 
 | Proposal | Promote? | Promoted to (file) |
 |----------|----------|--------------------|

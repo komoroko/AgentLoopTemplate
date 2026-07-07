@@ -80,7 +80,7 @@ COPY_FILES = ("agentloop.mk",)
 SPECIAL = {".agentloop/config.yaml", ".agentloop/state.md", "docs/00-product-brief.md"}
 _CACHE_DIR_NAMES = {"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache"}
 _EXCLUDE_DIR_NAMES = _CACHE_DIR_NAMES | {"archive", "scaffold"}
-_EXCLUDE_FILE_PREFIXES = ("build-loop.log", "build-loop.lock", "adopt-manifest.yaml")
+_EXCLUDE_FILE_PREFIXES = ("build-loop.log", "build-loop.lock", "adopt-manifest.yaml", "feedback.yaml")
 
 # Ownership of installed files, recorded per file in the manifest. `template` = the mechanism
 # itself, safe to refresh on --upgrade while pristine; `seeded` = adopt wrote it once but the
@@ -154,6 +154,40 @@ def default_owner(rel: str) -> str:
     return "seeded"
 
 
+def read_version(root: Path) -> str:
+    """The template's release version (`VERSION` at its root); "" when absent (pre-0.1.0)."""
+    try:
+        return (root / "VERSION").read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+_CHANGELOG_HEADING_RE = re.compile(r"^## \[?v?([0-9][^\]\s]*)\]?", re.MULTILINE)
+
+
+def changelog_between(text: str, installed: str, new: str) -> str:
+    """The CHANGELOG.md sections newer than `installed` (file order is newest-first; no semver math).
+
+    `installed` unknown/absent from the file -> just the latest section plus a note; equal
+    versions -> "". Purely presentational: upgrades never fail on a malformed changelog.
+    """
+    if installed and installed == new:
+        return ""
+    matches = list(_CHANGELOG_HEADING_RE.finditer(text))
+    if not matches:
+        return ""
+    end = None
+    for m in matches:
+        if m.group(1) == installed:
+            end = m.start()
+            break
+    if end is not None:
+        return text[matches[0].start() : end].rstrip()
+    latest_end = matches[1].start() if len(matches) > 1 else len(text)
+    note = "(installed version unknown — showing the latest entry only)\n"
+    return note + text[matches[0].start() : latest_end].rstrip()
+
+
 def _canon(obj: Any) -> str:
     """Canonical JSON for byte-stable equality of settings entries (key order must not matter)."""
     return json.dumps(obj, sort_keys=True, ensure_ascii=False)
@@ -168,13 +202,23 @@ def build_manifest(
     commit: str,
     adopted_at: str,
     upgraded_at: str | None,
+    *,
+    version: str = "",
+    mode: str = "adopt",
 ) -> dict[str, Any]:
-    """The adopt-manifest structure (see the module docstring's `record` step)."""
+    """The adopt-manifest structure (see the module docstring's `record` step).
+
+    `mode` is how AgentLoop got here: "adopt" (installed into an existing repo) or "init"
+    (greenfield copy of the whole template) — --upgrade uses it to pick the right file set.
+    """
     template: dict[str, str] = {"source": source, "commit": commit}
     if ref:
         template["ref"] = ref
+    if version:
+        template["version"] = version
     return {
         "version": 1,
+        "mode": mode,
         "template": template,
         "adopted_at": adopted_at,
         "upgraded_at": upgraded_at,
@@ -465,12 +509,14 @@ def _iter_template_files(template_root: Path) -> list[str]:
     return sorted(rels)
 
 
-def template_items(template_root: Path) -> dict[str, tuple[str, str, Path | str]]:
+def template_items(template_root: Path, mode: str = "adopt") -> dict[str, tuple[str, str, Path | str]]:
     """Everything a fresh adopt would install verbatim: rel -> (hash, owner, content source).
 
     Includes the scaffold-snapshot copies of the template docs (template-owned: cycle-close
     restores from them) and the CLAUDE rules body. The SPECIAL files are absent — their
     installed content is target-adapted (seeded), so no template hash compares against them.
+    In `mode="init"` (greenfield) the rules body is absent too: the repo's root CLAUDE.md IS
+    the rules and is owned by the product, so no `.agentloop/CLAUDE.agentloop.md` exists.
     """
     items: dict[str, tuple[str, str, Path | str]] = {}
     for rel in _iter_template_files(template_root):
@@ -479,8 +525,9 @@ def template_items(template_root: Path) -> dict[str, tuple[str, str, Path | str]
         items[rel] = (digest, default_owner(rel), src)
         if rel.startswith("docs/"):
             items[SCAFFOLD_PREFIX + rel[len("docs/") :]] = (digest, "template", src)
-    rules = (template_root / "CLAUDE.md").read_text(encoding="utf-8")
-    items[AGENTLOOP_RULES_PATH] = (norm_hash(rules.encode("utf-8")), "template", rules)
+    if mode != "init":
+        rules = (template_root / "CLAUDE.md").read_text(encoding="utf-8")
+        items[AGENTLOOP_RULES_PATH] = (norm_hash(rules.encode("utf-8")), "template", rules)
     return items
 
 
@@ -704,7 +751,15 @@ class Installer:
             path.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
             return
         manifest = build_manifest(
-            self.files, self.settings_record, self.claude_record, source, ref, commit, date.today().isoformat(), None
+            self.files,
+            self.settings_record,
+            self.claude_record,
+            source,
+            ref,
+            commit,
+            date.today().isoformat(),
+            None,
+            version=read_version(self.template_root),
         )
         self._write(MANIFEST_PATH, yaml.safe_dump(manifest, sort_keys=False, allow_unicode=True), "adapt", note)
 
@@ -717,6 +772,24 @@ class Upgrader:
         self.template_root = template_root
         self.dry_run = dry_run
         self.force = force
+
+    def _print_version_transition(self, manifest: dict[str, Any]) -> None:
+        """Show installed -> new template version (and the changelog in between) before the plan."""
+        installed = (manifest.get("template") or {}).get("version") or ""
+        new = read_version(self.template_root)
+        if not installed and not new:
+            old_commit = (manifest.get("template") or {}).get("commit") or "unknown"
+            print(f"template commit: {old_commit[:7]} → {git_head(self.template_root)[:7]}")
+            return
+        print(f"template version: {installed or 'unknown'} → {new or 'unknown'}")
+        if new and installed != new:
+            try:
+                log = (self.template_root / "CHANGELOG.md").read_text(encoding="utf-8")
+            except OSError:
+                return
+            section = changelog_between(log, installed, new)
+            if section:
+                print(section + "\n")
 
     def _apply(self, item: PlanItem, items: dict[str, tuple[str, str, Path | str]]) -> None:
         if self.dry_run or item.op not in ("update", "new", "restore", "remove"):
@@ -736,15 +809,18 @@ class Upgrader:
         manifest_path = self.target / MANIFEST_PATH
         if not manifest_path.is_file():
             print(
-                f"no {MANIFEST_PATH} — this repo was set up greenfield (`make init`) or never adopted;"
-                " --upgrade/--uninstall are adopt-only.",
+                f"no {MANIFEST_PATH} — this repo was set up before the manifest existed or never"
+                " adopted; backfill it with `make init NAME=<same-name> FROM=<template-url>`"
+                " (greenfield copy) or a `make adopt` re-run (adopted repo).",
                 file=sys.stderr,
             )
             return 1
         manifest = parse_manifest(manifest_path.read_text(encoding="utf-8"))
+        self._print_version_transition(manifest)
+        install_mode = manifest.get("mode") or "adopt"
         mf_files: dict[str, dict[str, str]] = manifest.get("files") or {}
         mf_template = {rel: e for rel, e in mf_files.items() if e.get("owner") == "template"}
-        items = template_items(self.template_root)
+        items = template_items(self.template_root, install_mode)
         template_hashes = {rel: h for rel, (h, owner, _src) in items.items() if owner == "template"}
         target_hashes: dict[str, str | None] = {
             rel: (norm_hash((self.target / rel).read_bytes()) if (self.target / rel).is_file() else None)
@@ -766,7 +842,8 @@ class Upgrader:
         new_settings_text = ""
         template_settings_path = self.template_root / SETTINGS_PATH
         dst_settings = self.target / SETTINGS_PATH
-        if template_settings_path.is_file() and dst_settings.is_file():
+        settings_owned = old_settings_record.get("mode") == "owned"  # greenfield: the repo owns settings.json
+        if not settings_owned and template_settings_path.is_file() and dst_settings.is_file():
             existing = json.loads(dst_settings.read_text(encoding="utf-8"))
             before = _canon(existing)
             merged, settings_notes, added = upgrade_settings(
@@ -833,6 +910,8 @@ class Upgrader:
                 git_head(self.template_root),
                 manifest.get("adopted_at") or today,
                 today,
+                version=read_version(self.template_root),
+                mode=install_mode,
             )
             manifest_path.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
 

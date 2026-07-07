@@ -117,6 +117,52 @@ def test_manifest_roundtrip_and_version_check() -> None:
         adopt.parse_manifest("version: 2\n")
 
 
+def test_build_manifest_records_version_and_mode() -> None:
+    m = adopt.build_manifest(
+        {}, {}, {"mode": "merged"}, "src", "", "abc", "2026-07-08", None, version="0.1.0", mode="init"
+    )
+    assert m["mode"] == "init"
+    assert m["template"]["version"] == "0.1.0"
+    default = adopt.build_manifest({}, {}, {"mode": "merged"}, "src", "", "abc", "2026-07-08", None)
+    assert default["mode"] == "adopt"
+    assert "version" not in default["template"]  # pre-VERSION template: field omitted, like ref
+
+
+_CHANGELOG = """# Changelog
+
+## [0.3.0] - 2026-07-08
+### Added
+- three
+
+## [0.2.0] - 2026-06-01
+### Fixed
+- two
+
+## [0.1.0] - 2026-05-01
+### Added
+- one
+"""
+
+
+def test_changelog_between_returns_sections_newer_than_installed() -> None:
+    out = adopt.changelog_between(_CHANGELOG, "0.1.0", "0.3.0")
+    assert "- three" in out and "- two" in out and "- one" not in out
+
+
+def test_changelog_between_unknown_installed_shows_latest_with_note() -> None:
+    out = adopt.changelog_between(_CHANGELOG, "", "0.3.0")
+    assert "installed version unknown" in out
+    assert "- three" in out and "- two" not in out
+
+
+def test_changelog_between_same_version_is_empty() -> None:
+    assert adopt.changelog_between(_CHANGELOG, "0.3.0", "0.3.0") == ""
+
+
+def test_changelog_between_without_headings_is_empty() -> None:
+    assert adopt.changelog_between("free-form notes, no release headings\n", "0.1.0", "0.2.0") == ""
+
+
 def test_plan_upgrade_decision_table() -> None:
     mf = {rel: {"hash": "sha256:old", "owner": "template"} for rel in "abcdefg"}
     tpl = {
@@ -375,6 +421,16 @@ def test_adopt_creates_minimal_claude_md_when_absent(template: Path, target: Pat
     assert data["claude_md"]["hash"] == adopt.norm_hash(text.encode("utf-8"))
 
 
+def test_adopt_records_template_version(template: Path, target: Path) -> None:
+    (template / "VERSION").write_text("0.1.0\n", encoding="utf-8")
+    adopt.main(["--target", str(target), "--name", "demo"])
+    data = _manifest(target)
+    assert data["mode"] == "adopt"
+    assert data["template"]["version"] == "0.1.0"
+    # VERSION itself is not copied — the manifest field is the identity record.
+    assert not (target / "VERSION").exists()
+
+
 # --- upgrade ----------------------------------------------------------------------
 
 
@@ -456,6 +512,66 @@ def test_upgrade_dry_run_writes_nothing(template: Path, target: Path) -> None:
     assert rc == 0
     assert (target / "scripts" / "agentloop" / "dag.py").read_text(encoding="utf-8") == "# tool\n"
     assert (target / adopt.MANIFEST_PATH).read_text(encoding="utf-8") == manifest_before
+
+
+def test_upgrade_prints_version_transition_and_changelog(
+    template: Path, target: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (template / "VERSION").write_text("0.1.0\n", encoding="utf-8")
+    adopt.main(["--target", str(target), "--name", "demo"])
+    (template / "VERSION").write_text("0.2.0\n", encoding="utf-8")
+    (template / "CHANGELOG.md").write_text(
+        "# Changelog\n\n## [0.2.0] - 2026-07-08\n### Added\n- shiny\n\n## [0.1.0] - 2026-06-01\n- old\n",
+        encoding="utf-8",
+    )
+    capsys.readouterr()
+    rc = adopt.main(["--target", str(target), "--upgrade"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "template version: 0.1.0 → 0.2.0" in out
+    assert "- shiny" in out and "- old" not in out
+    assert _manifest(target)["template"]["version"] == "0.2.0"  # carried forward by the rebuild
+
+
+def test_upgrade_without_version_files_degrades_gracefully(
+    template: Path, target: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    adopt.main(["--target", str(target), "--name", "demo"])
+    capsys.readouterr()
+    rc = adopt.main(["--target", str(target), "--upgrade"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "template commit:" in out  # no VERSION on either side -> commit fallback
+    assert "template version:" not in out
+
+
+def test_upgrade_greenfield_mode_leaves_rules_and_settings_alone(template: Path, tmp_path: Path) -> None:
+    # A greenfield repo (mode: init): the whole template copy IS the product, so its root
+    # CLAUDE.md and settings.json are product-owned and no rules body may be injected.
+    gf = tmp_path / "greenfield"
+    (gf / "scripts" / "agentloop").mkdir(parents=True)
+    (gf / "scripts" / "agentloop" / "dag.py").write_text("# tool\n", encoding="utf-8")
+    (gf / ".claude").mkdir(parents=True)
+    (gf / ".claude" / "settings.json").write_text(json.dumps({"permissions": {"allow": ["Mine"]}}), encoding="utf-8")
+    (gf / "CLAUDE.md").write_text("# Product rules (greenfield copy)\n", encoding="utf-8")
+    (gf / ".agentloop").mkdir()
+    files = {"scripts/agentloop/dag.py": {"hash": adopt.norm_hash(b"# tool\n"), "owner": "template"}}
+    manifest = adopt.build_manifest(
+        files, {"mode": "owned"}, {"mode": "owned"}, "src", "", "unknown", "2026-07-08", None, mode="init"
+    )
+    (gf / adopt.MANIFEST_PATH).write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
+    settings_before = (gf / ".claude" / "settings.json").read_text(encoding="utf-8")
+    claude_before = (gf / "CLAUDE.md").read_text(encoding="utf-8")
+    (template / "scripts" / "agentloop" / "dag.py").write_text("# tool v2\n", encoding="utf-8")
+    rc = adopt.main(["--target", str(gf), "--upgrade"])
+    assert rc == 0
+    assert (gf / "scripts" / "agentloop" / "dag.py").read_text(encoding="utf-8") == "# tool v2\n"
+    assert not (gf / adopt.AGENTLOOP_RULES_PATH).exists()
+    assert (gf / ".claude" / "settings.json").read_text(encoding="utf-8") == settings_before
+    assert (gf / "CLAUDE.md").read_text(encoding="utf-8") == claude_before
+    data = adopt.parse_manifest((gf / adopt.MANIFEST_PATH).read_text(encoding="utf-8"))
+    assert data["mode"] == "init"  # survives the rebuild
+    assert data["settings"] == {"mode": "owned"}
 
 
 # --- uninstall ---------------------------------------------------------------------

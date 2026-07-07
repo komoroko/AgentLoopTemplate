@@ -83,3 +83,12 @@ github:
   label: agentloop        # the label identifying mirror issues (only issues with this label are managed)
   close_on_done: true     # close the issue for tasks with status==done
   repo: ""                # empty: gh infers from origin. Specify owner/repo to fix it explicitly
+
+  # File retrospective rows marked `Promote? = upstream` as issues on the TEMPLATE repository
+  # (scripts/agentloop/feedback.py; the human runs `make feedback` after /verify drafts
+  # .agentloop/feedback.yaml). **Off by default**; even when true, auto-skips if gh or the
+  # upstream repo is absent. One-way and additive — never reads or edits upstream issues.
+  feedback:
+    enabled: false
+    repo: ""              # owner/repo of the template. empty: derived from adopt-manifest template.source
+    label: agentloop-feedback   # attached when permitted (best-effort for non-collaborators)
