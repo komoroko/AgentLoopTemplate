@@ -18,6 +18,12 @@
 ## Non-goals (if any)
 -
 
+## Principles (non-negotiables) (if any)
+<!-- Project-specific engineering principles every design choice must respect.
+     e.g. no mocks in integration tests / CLI-first / minimal dependencies.
+     /design weighs technical options against these; /tasks audits the plan for violations. -->
+-
+
 ## Constraints / assumptions (if any)
 <!-- Budget, target environments, technologies you want/cannot use, deadlines, etc. -->
 -
