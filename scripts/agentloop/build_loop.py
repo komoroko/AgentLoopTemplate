@@ -32,6 +32,7 @@ import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -186,6 +187,33 @@ def set_task_status(task_id: str, status: str, tasks_path: str = TASKS_PATH) -> 
     Path(tasks_path).write_text(
         TASKS_HEADER + yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8"
     )
+
+
+DAG_VIEW_BEGIN = "<!-- DAG-VIEW:BEGIN -->"
+DAG_VIEW_END = "<!-- DAG-VIEW:END -->"
+
+
+def update_state_view(graph: dag.Graph, path: str = STATE_PATH) -> bool:
+    """Refresh state.md's generated DAG view block (between the DAG-VIEW markers) and bump updated_at.
+
+    tasks.yaml stays the SSOT; this only re-renders the human-facing view so the board does not go
+    stale while the deterministic loop runs (a human pastes the same render output in mode B).
+    No markers (a hand-restructured state.md) or unreadable file = no-op, never an abort.
+    """
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return False
+    begin = text.find(DAG_VIEW_BEGIN)
+    end = text.find(DAG_VIEW_END)
+    if begin == -1 or end == -1 or end < begin:
+        return False
+    new = text[: begin + len(DAG_VIEW_BEGIN)] + "\n" + dag.render(graph) + "\n" + text[end:]
+    new = re.sub(
+        r"^(\s*updated_at:\s*).*$", rf'\g<1>"{date.today().isoformat()}"', new, count=1, flags=re.MULTILINE
+    )
+    Path(path).write_text(new, encoding="utf-8")
+    return True
 
 
 def log_escalation(message: str) -> None:
@@ -547,6 +575,8 @@ class Orchestrator:
         self._recover_in_progress()
         while True:
             graph = dag.load(TASKS_PATH)
+            if not self.dry_run:
+                update_state_view(graph)  # keep state.md's human-facing board fresh each iteration
             counts = graph.counts()
             unfinished = len(graph.tasks) - counts["done"]
             if unfinished == 0:
@@ -567,6 +597,11 @@ class Orchestrator:
                 else:
                     self._consume_parallel(tasks)
             except StopLoop as exc:
+                if not self.dry_run:
+                    try:  # leave the board reflecting the batch's blocked/done statuses before stopping
+                        update_state_view(dag.load(TASKS_PATH))
+                    except (OSError, dag.DagError, yaml.YAMLError):
+                        pass
                 print(str(exc), file=sys.stderr)
                 return exc.code
             # Recompute at the top of the loop after each batch (reassemble the chain).

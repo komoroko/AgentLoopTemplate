@@ -316,6 +316,31 @@ def test_run_task_to_done_blocks_when_one_step_budget_runs_out(project: Path, mo
     assert log == "still red"
 
 
+# --- state.md generated-view refresh (mode A keeps the human-facing board fresh) ----
+
+_STATE_WITH_VIEW = _STATE.replace(
+    "# board",
+    "# board\n\n<!-- DAG-VIEW:BEGIN -->\n_(stale view)_\n<!-- DAG-VIEW:END -->\n",
+)
+
+
+def test_update_state_view_replaces_block_and_bumps_date(project: Path) -> None:
+    (project / ".agentloop" / "state.md").write_text(_STATE_WITH_VIEW.format(tasks="approved"), encoding="utf-8")
+    assert build_loop.update_state_view(_graph(done=("T-001",))) is True
+    text = (project / ".agentloop" / "state.md").read_text(encoding="utf-8")
+    assert "_(stale view)_" not in text  # the old view was replaced
+    assert "| T-001 | base | foundation |" in text  # the rendered task table landed between the markers
+    assert build_loop.DAG_VIEW_BEGIN in text and build_loop.DAG_VIEW_END in text  # markers survive re-runs
+    assert '"2026-06-26"' not in text  # updated_at was bumped off the fixture date
+
+
+def test_update_state_view_noop_without_markers(project: Path) -> None:
+    (project / ".agentloop" / "state.md").write_text(_STATE.format(tasks="approved"), encoding="utf-8")
+    before = (project / ".agentloop" / "state.md").read_text(encoding="utf-8")
+    assert build_loop.update_state_view(_graph()) is False
+    assert (project / ".agentloop" / "state.md").read_text(encoding="utf-8") == before
+
+
 # --- subprocess timeouts (a hung process must not stall the loop forever) ----
 
 

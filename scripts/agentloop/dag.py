@@ -240,12 +240,28 @@ def load(path: str | Path = ".agentloop/tasks.yaml") -> Graph:
 
 
 def render(graph: Graph) -> str:
-    """Deterministic rendering for /status (execution layers, critical path, frontier, counts)."""
+    """Deterministic rendering of the human-facing DAG view (task table, layers, critical path, frontier).
+
+    /status prints it as-is; state.md embeds it between the DAG-VIEW markers (pasted by hand at
+    /tasks, refreshed automatically by build_loop.py in deterministic mode A).
+    """
     lines: list[str] = []
     counts = graph.counts()
-    lines.append("## Execution plan (deterministically derived from tasks.yaml)")
-    lines.append("")
     lines.append("Counts: " + " / ".join(f"{s}={counts[s]}" for s in STATUS_ORDER))
+    lines.append("")
+    lines.append("### Task table")
+    if graph.tasks:
+        fan = graph.fan_out()
+        lines.append("| ID | Title | Kind | blockedBy | req | fan-out | status | Test |")
+        lines.append("|----|-------|------|-----------|-----|---------|--------|------|")
+        for t in graph.tasks:
+            blocked = ", ".join(t.blocked_by) if t.blocked_by else "-"
+            lines.append(
+                f"| {t.id} | {t.title} | {t.kind} | {blocked} | {t.req or '-'} | {fan[t.id]} "
+                f"| {t.status} | {t.test or '-'} |"
+            )
+    else:
+        lines.append("- (no tasks)")
     lines.append("")
     lines.append("### Execution layers (within a layer, parallel is possible)")
     layers = graph.layers()

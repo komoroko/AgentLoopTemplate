@@ -31,6 +31,19 @@ def test_fan_out() -> None:
     assert _graph().fan_out() == {"T-001": 2, "T-002": 1, "T-003": 1, "T-004": 0}
 
 
+def test_render_includes_task_table_and_plan() -> None:
+    out = dag.render(_graph())
+    assert "### Task table" in out
+    assert "| T-001 | base | foundation | - | - | 2 | todo | - |" in out  # no blockers/req/test → "-"
+    assert "| T-004 | integration | integration | T-002, T-003 | - | 0 | todo | - |" in out
+    assert "### Execution layers" in out and "### Critical path" in out  # the plan sections follow
+
+
+def test_render_empty_graph_says_no_tasks() -> None:
+    out = dag.render(dag.Graph.from_tasks([]))
+    assert "- (no tasks)" in out
+
+
 def test_dependents_closure() -> None:
     g = _graph()  # T-001 →(T-002,T-003)→ T-004
     assert g.dependents_closure(["T-001"]) == {"T-002", "T-003", "T-004"}  # transitive; excludes self
