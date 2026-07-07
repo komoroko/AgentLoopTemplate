@@ -11,6 +11,7 @@ If unapproved, do not work — **invoking `/verify` is not itself the gate-④ a
 ## Steps
 1. Read `docs/test/test-plan.md` and `docs/10-requirements.md` (acceptance points, non-functional requirements).
 2. **Functional tests**: confirm each requirement's acceptance points are satisfied. Run the automated tests and add any missing verification. Record results in the test-plan table. Also fill the test-plan's **Manual verification checklist** (acceptance automated tests can't cover — real-player/device playback, visual/aesthetic review, supported-OS matrix, long-input/end-to-end performance); mark unrun items and surface them as remaining issues at gate ⑤.
+   - **Deliverable-inventory check (user-facing docs)**: explicitly confirm every existing user-facing deliverable still describes the *current* behaviour — `README*` (all languages/mirrors), CLI `--help`/`--version` text, and any usage docs. A cycle that changes flags/behaviour easily leaves a stale doc behind (e.g. a translated README that was never updated from a prior cycle, or a removed flag still documented). Treat a stale user-facing doc as a defect.
 3. **Non-functional requirement tests**: check the criteria checklist (performance, security, reliability/operations). Security is mandatory — run the following and record results in the test-plan's security column:
    - **`/security-review`** — a vulnerability review of the whole codebase.
    - **`make audit`** — a dependency vulnerability audit (Python/frontend).
