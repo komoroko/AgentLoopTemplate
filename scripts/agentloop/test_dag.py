@@ -101,6 +101,14 @@ def test_unknown_dependency_detected() -> None:
         dag.Graph.from_tasks([dag.Task(id="A", title="a", kind="parallel", blocked_by=("X",))])
 
 
+def test_invalid_phase_detected() -> None:
+    # A typo like "biuld" would otherwise silently drop the task from --trace's build coverage.
+    with pytest.raises(dag.DagError, match="phase"):
+        dag.Graph.from_tasks([dag.Task(id="A", title="a", kind="parallel", phase="biuld")])
+    for phase in sorted(dag.PHASE_VALUES):  # every documented value loads
+        dag.Graph.from_tasks([dag.Task(id="A", title="a", kind="parallel", phase=phase)])
+
+
 def test_duplicate_id_detected() -> None:
     with pytest.raises(dag.DagError):
         dag.Graph.from_tasks(

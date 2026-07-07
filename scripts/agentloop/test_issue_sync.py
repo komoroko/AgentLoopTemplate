@@ -172,3 +172,16 @@ def test_dry_run_is_offline_and_plans_creates(project: Path, capsys: pytest.Capt
     assert "kind:foundation" in out
     assert "phase:build" in out
     assert "req:R-1" in out
+
+
+def test_fetch_existing_stops_when_snapshot_may_be_truncated(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A saturated gh page means unseen mirror issues; planning against it would create duplicates.
+    import json
+
+    cfg = issue_sync.GithubConfig(enabled=True, label="agentloop", close_on_done=True, repo="")
+    page = json.dumps(
+        [{"number": i, "title": f"T-{i:03d}: t", "state": "OPEN", "labels": [], "body": ""} for i in range(issue_sync.FETCH_LIMIT)]
+    )
+    monkeypatch.setattr(issue_sync, "_run", lambda args: (0, page))
+    with pytest.raises(issue_sync.IssueSyncError, match="truncated"):
+        issue_sync.fetch_existing(cfg)

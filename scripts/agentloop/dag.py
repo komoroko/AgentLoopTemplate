@@ -22,6 +22,9 @@ STATUS_VALUES = frozenset({"todo", "in_progress", "blocked", "needs-revision", "
 # The display order of STATUS_VALUES (shared by count display and Mermaid color-coding).
 STATUS_ORDER = ("todo", "in_progress", "blocked", "needs-revision", "done")
 KIND_VALUES = frozenset({"foundation", "parallel", "integration"})
+# The lifecycle phase a task originates from (see .claude/commands/tasks.md). Validated because a
+# typo (e.g. "biuld") would otherwise silently drop the task from --trace's build-coverage check.
+PHASE_VALUES = frozenset({"requirements", "design", "build", "verify"})
 
 # Requirement IDs are `R-<number>` (R-1, R-2, …). Shared vocabulary across requirements/design documents and task `req`.
 # A task's req is validated at load time to ensure the whole token has this form (rejecting typos like R1 / Req-1).
@@ -74,6 +77,8 @@ class Graph:
                 raise DagError(f"{t.id}: invalid kind '{t.kind}' (one of {sorted(KIND_VALUES)})")
             if t.status not in STATUS_VALUES:
                 raise DagError(f"{t.id}: invalid status '{t.status}' (one of {sorted(STATUS_VALUES)})")
+            if t.phase not in PHASE_VALUES:
+                raise DagError(f"{t.id}: invalid phase '{t.phase}' (one of {sorted(PHASE_VALUES)})")
             for tok in _split_req(t.req):
                 if not _REQ_ID_EXACT_RE.match(tok):
                     raise DagError(f"{t.id}: invalid req token '{tok}' (must be in R-<number> form)")

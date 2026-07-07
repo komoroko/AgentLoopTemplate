@@ -167,6 +167,18 @@ def test_main_close_archives_restores_and_resets(project: Path, capsys: pytest.C
     assert "restore docs/10-requirements.md" in out
 
 
+def test_main_close_archives_build_loop_log(project: Path) -> None:
+    # The escalation log belongs to the closing cycle; the next cycle starts with a clean one.
+    cycle.snapshot_scaffold()
+    (project / ".agentloop" / "build-loop.log").write_text("T-001: blocked\n", encoding="utf-8")
+    (project / ".agentloop" / "build-loop.log.1").write_text("older\n", encoding="utf-8")
+    assert cycle.main(["--name", "first"]) == 0
+    archive = next((project / "docs" / "archive").iterdir())
+    assert (archive / "build-loop.log").read_text(encoding="utf-8") == "T-001: blocked\n"
+    assert (archive / "build-loop.log.1").read_text(encoding="utf-8") == "older\n"
+    assert not (project / ".agentloop" / "build-loop.log").exists()
+
+
 def test_main_close_is_idempotent(project: Path) -> None:
     cycle.snapshot_scaffold()
     assert cycle.main(["--name", "first"]) == 0
