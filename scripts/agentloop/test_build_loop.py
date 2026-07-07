@@ -324,7 +324,12 @@ def test_consume_parallel_cleans_up_blocked_worktree(project: Path, monkeypatch:
     # under .worktrees/ (blocked tasks leave the frontier and startup cleanup never sees them).
     _provision(project)
     calls: list[list[str]] = []
-    monkeypatch.setattr(build_loop, "_run", lambda cmd, cwd, timeout=None: (calls.append(cmd), (0, ""))[1])
+
+    def fake_run(cmd: list[str], cwd: str, timeout: float | None = None) -> tuple[int, str]:
+        calls.append(cmd)
+        return 0, ""
+
+    monkeypatch.setattr(build_loop, "_run", fake_run)
 
     def fake_run_task(task: dag.Task, cwd: str) -> tuple[bool, str]:
         return (task.id != "T-003"), ("" if task.id != "T-003" else "$ make test (rc=1)")
@@ -368,7 +373,12 @@ def test_run_refuses_undetermined_work_branch(project: Path) -> None:
 def test_cmd_step_shlex_splits_quoted_args(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _provision(project)
     seen: list[list[str]] = []
-    monkeypatch.setattr(build_loop, "_run", lambda cmd, cwd, timeout=None: (seen.append(cmd), (0, ""))[1])
+
+    def fake_run(cmd: list[str], cwd: str, timeout: float | None = None) -> tuple[int, str]:
+        seen.append(cmd)
+        return 0, ""
+
+    monkeypatch.setattr(build_loop, "_run", fake_run)
     orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
     orch._run_cmd_step(build_loop.GateStep("test", "cmd", "pytest -k 'a b'"), cwd=".")
     assert seen == [["pytest", "-k", "a b"]]
@@ -377,12 +387,15 @@ def test_cmd_step_shlex_splits_quoted_args(project: Path, monkeypatch: pytest.Mo
 # --- non-dry-run real paths (git monkeypatched) -------------------------------
 
 
-def test_consume_serial_commits_task_diff_excluding_agentloop(
-    project: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_consume_serial_commits_task_diff_excluding_agentloop(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _provision(project)
     calls: list[list[str]] = []
-    monkeypatch.setattr(build_loop, "_run", lambda cmd, cwd, timeout=None: (calls.append(cmd), (0, ""))[1])
+
+    def fake_run(cmd: list[str], cwd: str, timeout: float | None = None) -> tuple[int, str]:
+        calls.append(cmd)
+        return 0, ""
+
+    monkeypatch.setattr(build_loop, "_run", fake_run)
     orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
     monkeypatch.setattr(orch, "_run_task_to_done", lambda task, cwd: (True, ""))
     foundation = dag.Task(id="T-001", title="base", kind="foundation")
@@ -395,7 +408,12 @@ def test_consume_serial_commits_task_diff_excluding_agentloop(
 def test_merge_leaf_success_removes_worktree(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _provision(project)
     calls: list[list[str]] = []
-    monkeypatch.setattr(build_loop, "_run", lambda cmd, cwd, timeout=None: (calls.append(cmd), (0, ""))[1])
+
+    def fake_run(cmd: list[str], cwd: str, timeout: float | None = None) -> tuple[int, str]:
+        calls.append(cmd)
+        return 0, ""
+
+    monkeypatch.setattr(build_loop, "_run", fake_run)
     orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
     assert orch.merge_leaf(_leaf("T-002", "leaf A"), "build/demo/T-002") is True
     assert ["git", "merge", "--no-ff", "--no-edit", "build/demo/T-002"] in calls
