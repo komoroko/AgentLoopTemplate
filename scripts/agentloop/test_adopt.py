@@ -118,7 +118,9 @@ def test_manifest_roundtrip_and_version_check() -> None:
 
 
 def test_build_manifest_records_version_and_mode() -> None:
-    m = adopt.build_manifest({}, {}, {"mode": "merged"}, "src", "", "abc", "2026-07-08", None, version="0.1.0", mode="init")
+    m = adopt.build_manifest(
+        {}, {}, {"mode": "merged"}, "src", "", "abc", "2026-07-08", None, version="0.1.0", mode="init"
+    )
     assert m["mode"] == "init"
     assert m["template"]["version"] == "0.1.0"
     default = adopt.build_manifest({}, {}, {"mode": "merged"}, "src", "", "abc", "2026-07-08", None)

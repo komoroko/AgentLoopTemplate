@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import adopt
 import cycle
@@ -98,7 +99,7 @@ def test_main_requires_a_name(project: Path) -> None:
 # --- greenfield manifest ---------------------------------------------------------
 
 
-def _manifest(root: Path) -> dict:
+def _manifest(root: Path) -> dict[str, Any]:
     return adopt.parse_manifest((root / adopt.MANIFEST_PATH).read_text(encoding="utf-8"))
 
 

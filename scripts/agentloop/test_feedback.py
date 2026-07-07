@@ -112,7 +112,7 @@ def test_preflight_skips_without_upstream(monkeypatch: pytest.MonkeyPatch) -> No
 def project(tmp_path: Path) -> Iterator[Path]:
     (tmp_path / ".agentloop").mkdir()
     (tmp_path / ".agentloop" / "config.yaml").write_text(
-        "github:\n  feedback:\n    enabled: true\n    repo: \"\"\n    label: agentloop-feedback\n",
+        'github:\n  feedback:\n    enabled: true\n    repo: ""\n    label: agentloop-feedback\n',
         encoding="utf-8",
     )
     (tmp_path / ".agentloop" / "adopt-manifest.yaml").write_text(
@@ -174,9 +174,7 @@ def test_main_files_new_drafts_and_skips_filed_ones(
     assert drafts[1].title in creates[0]
 
 
-def test_main_retries_without_label_when_attaching_is_denied(
-    project: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_main_retries_without_label_when_attaching_is_denied(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     creates: list[list[str]] = []
 
     def fake_run(cmd: list[str]) -> tuple[int, str]:
