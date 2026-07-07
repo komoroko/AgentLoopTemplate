@@ -38,8 +38,10 @@ build:
         kind: agent
       - name: smoke          # minimal real-launch smoke test. **Required for runnable deliverables**
         kind: cmd            # (CLI/server: it actually launches and the main commands work).
-        run: ""              # empty = skipped; fill in e.g. "make smoke" once the product is runnable
-        retries: 1
+        run: ""              # empty = skipped. For a runnable product fill in a real launch check as
+        retries: 1           # soon as any entry point exists — e.g. "uv run python -m yourapp --help"
+                             # (add a make target if you prefer). Tests can be green while the launch
+                             # path is broken; an empty run is flagged at gate ④ (/build).
 
   # Hard timeouts for the external processes the loop runs, in seconds (0 = no timeout).
   # A hung `claude -p` or test run would otherwise stall the autonomous loop forever; on expiry the
