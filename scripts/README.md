@@ -4,7 +4,7 @@ Where scripts live. Split by purpose so the **two kinds are not mixed**.
 
 | Path | Purpose | Owner |
 |------|------|------|
-| `scripts/agentloop/` | The AgentLoop template's foundational tools (the deterministic orchestrator `build_loop.py` / DAG derivation `dag.py` / the gate hook `gate_guard.py` / the one-way Issues mirror `issue_sync.py` and their unit tests). Shipped with the template and referenced by `make build-loop`/`make test-tools`/`make issue-sync` and the hook in `.claude/settings.json`. | template |
+| `scripts/agentloop/` | The AgentLoop template's foundational tools (the deterministic orchestrator `build_loop.py` / DAG derivation `dag.py` / the gate hook `gate_guard.py` / the one-way Issues mirror `issue_sync.py` / the roll-back helper `revise.py` / lifecycle setup `init.py`, `adopt.py`, `cycle.py`, and their unit tests). Shipped with the template and referenced by `make build-loop`/`make test-tools`/`make issue-sync` and the hook in `.claude/settings.json`. | template |
 | `scripts/` (directly under / other subfolders) | **Product-specific** scripts (data prep, operational helpers, etc.). Add freely per product. | product |
 
 The contents under `scripts/agentloop/` are part of the template, so do not rewrite them for product reasons (tune behavior you want to change via `.agentloop/config.yaml`).

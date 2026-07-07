@@ -65,7 +65,7 @@ Only the human opens each gate. Rewinding approval (`/revise`) is also at the hu
 |---|---|
 | Building a new product from scratch | "Setup (new repository / greenfield)" → "Usage" |
 | Installing into an ongoing repository | "Adopting into an existing repository (brownfield)" → `/onboard` (the full per-starting-state table lives in `/onboard`) |
-| Already set up — starting the next change | Write the change into `docs/00-product-brief.md` and run `/req` (if the previous cycle is still open, run `make cycle-close` first) |
+| Already set up — starting the next change | Write the change into `docs/00-product-brief.md` and run `/req` (if the previous cycle is still open, run `make cycle-close NAME=<slug>` first) |
 | The release decision (gate ⑤) is made | `make cycle-close NAME=<slug>` — archive this cycle's docs and reset for the next |
 | Refreshing / retracting the template tooling (adopted repos) | `make -f agentloop.mk agentloop-upgrade` / `agentloop-uninstall` |
 | Lost, or resuming after an interruption | `/status` — it also tells you the next command to run |
@@ -80,7 +80,7 @@ This template is itself a multi-agent orchestration, and its own machinery follo
 
 ## Setup (new repository / greenfield)
 
-Prerequisites: WSL / Linux / macOS and `make` (not Windows-native).
+Prerequisites: WSL / Linux / macOS and `make` (not Windows-native). The deterministic build loop (`make build-loop`) additionally needs the `claude` CLI installed and authenticated — its implementer and review steps run headless `claude -p`.
 
 1. **Copy this template** into a new product repository and `git init`.
 2. Install tools and sync dependencies:
@@ -88,7 +88,8 @@ Prerequisites: WSL / Linux / macOS and `make` (not Windows-native).
    make install   # install the uv / pnpm binaries (runs the official curl|sh installers;
                   # in a locked-down/offline environment, install uv and pnpm manually instead)
    make setup     # uv sync (sync dev dependencies, generate uv.lock)
-   # if using the frontend: cd frontend && pnpm install
+   # if using the frontend: scaffold your app into frontend/ first (e.g. `pnpm create vite frontend`),
+   # then `cd frontend && pnpm install`. pnpm itself is only needed in that case.
    ```
 3. **Initialize the product** (idempotent):
    ```bash
@@ -175,7 +176,7 @@ Then, inside the adopted repo:
    | implementation | `/build`  | autonomous implementation in a loop (test-green condition) | ④ review and approve implementation completion |
    | verification | `/verify` | run functional + non-functional tests | ⑤ decide on release |
 
-3. If an upstream (requirements/design) defect comes to light during implementation, you can roll back with **`/revise <phase>`** (resets the gates from the target onward to `pending` in a chain, and reconciles task impact with `dag.py --impacted`). Rewinding approval is also at the human's discretion.
+3. If an upstream (requirements/design) defect comes to light during implementation, you can roll back with **`/revise <phase>`** (resets the gates from the target onward to `pending` in a chain, and reconciles task impact with `dag.py --impacted`) — or directly via `make revise ARGS="--to <phase> --reason '...'"`. Rewinding approval is also at the human's discretion.
 4. Check the current phase, gate approval status, and task progress anytime with `/status`. Generate the **big picture (dependency diagram)** of tasks with `uv run --no-project --with pyyaml python scripts/agentloop/dag.py --mermaid`, which renders directly in GitHub/VS Code/Markdown (status color-coding, critical-path emphasis).
 5. After the release decision (gate ⑤), close the cycle with `make cycle-close NAME=<slug>`: it archives this cycle's docs to `docs/archive/<date>-<slug>/`, restores fresh scaffolds, and resets gates/phase for the next cycle. This applies to greenfield and brownfield repos alike (`docs/00-product-brief.md` and the `docs/05-current-state.md` baseline persist). Closing a cycle is a human operation, like opening a gate.
 
@@ -238,7 +239,7 @@ If you want to make tasks visible to the team/stakeholders, you can **one-way-mi
 | `.agentloop/state.md` | SSOT for phase, gates, logs |
 | `.agentloop/tasks.yaml` | machine-readable SSOT of the task graph (DAG) |
 | `.agentloop/config.yaml` | source of knobs for deterministic execution (parallelism, worktree, gate enforcement) and the single definition of the DoD (`quality_gate.steps`) |
-| `scripts/agentloop/` | deterministic orchestration (`dag.py` / `build_loop.py` / `gate_guard.py` / `init.py` / `adopt.py` / `cycle.py`). Product scripts go directly under `scripts/` |
+| `scripts/agentloop/` | deterministic orchestration (`dag.py` / `build_loop.py` / `gate_guard.py` / `revise.py` / `issue_sync.py` / `init.py` / `adopt.py` / `cycle.py`). Product scripts go directly under `scripts/` |
 | `agentloop.mk` | the AgentLoop make targets, self-contained (uv only) — an existing repo takes just this file |
 | `CLAUDE.md` | agent operating rules and gate rules |
 | `.claude/commands/` | entry points for each phase (`/req`–`/verify`, plus `/onboard`, `/revise`, `/status`) |
