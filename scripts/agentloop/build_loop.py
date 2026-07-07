@@ -27,7 +27,9 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
 import re
+import shlex
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -43,6 +45,7 @@ STATE_PATH = ".agentloop/state.md"
 CONFIG_PATH = ".agentloop/config.yaml"
 TASKS_PATH = ".agentloop/tasks.yaml"
 LOG_PATH = ".agentloop/build-loop.log"
+LOCK_PATH = ".agentloop/build-loop.lock"
 LOG_MAX_BYTES = 256 * 1024  # rotate the append-only build-loop.log past this (context hygiene; see rotate_log_if_large)
 
 
@@ -187,6 +190,38 @@ def set_task_status(task_id: str, status: str, tasks_path: str = TASKS_PATH) -> 
     Path(tasks_path).write_text(
         TASKS_HEADER + yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8"
     )
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)  # signal 0 = existence probe only
+    except ProcessLookupError:
+        return False
+    except OSError:  # e.g. EPERM: exists but owned by someone else
+        return True
+    return True
+
+
+def acquire_lock(path: str = LOCK_PATH) -> bool:
+    """Take the single-run lock (a PID file). False = another live run holds it.
+
+    Two concurrent loops would race the whole-file tasks.yaml rewrites and collide on the same
+    worktree paths. A lock whose PID is no longer alive (a crashed run) is reclaimed automatically,
+    so no manual cleanup is needed after an interruption.
+    """
+    p = Path(path)
+    try:
+        pid = int(p.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        pid = 0
+    if pid > 0 and pid != os.getpid() and _pid_alive(pid):
+        return False
+    p.write_text(str(os.getpid()), encoding="utf-8")
+    return True
+
+
+def release_lock(path: str = LOCK_PATH) -> None:
+    Path(path).unlink(missing_ok=True)
 
 
 DAG_VIEW_BEGIN = "<!-- DAG-VIEW:BEGIN -->"
@@ -431,8 +466,12 @@ class Orchestrator:
         return self._tree_state(cwd) != before
 
     def _run_cmd_step(self, step: GateStep, cwd: str) -> str:
-        """Run one cmd step. Returns "" on pass, a compact failure summary otherwise."""
-        rc, out = _run(step.run.split(), cwd=cwd, timeout=self.config.timeout_cmd)
+        """Run one cmd step. Returns "" on pass, a compact failure summary otherwise.
+
+        shlex-split so quoted arguments work (e.g. `pytest -k 'a b'`). Still no shell: pipes and
+        redirections don't work in a step's `run` — wrap those in a make target or script.
+        """
+        rc, out = _run(shlex.split(step.run), cwd=cwd, timeout=self.config.timeout_cmd)
         return "" if rc == 0 else summarize_failure(step.run, rc, out)
 
     def _run_pipeline(self, task: dag.Task, cwd: str) -> tuple[str | None, str]:
@@ -527,6 +566,18 @@ class Orchestrator:
         except StopLoop as exc:
             return False, str(exc)
 
+    def _cleanup_worktree(self, task: dag.Task) -> None:
+        """Remove a leaf's worktree without merging (blocked / merge conflict).
+
+        Blocked tasks leave the frontier, so the startup cleanup in _add_worktree never reaches
+        their worktrees — without this they orphan under .worktrees/. The branch is kept: it holds
+        the diff a human needs to inspect or resolve.
+        """
+        if self.dry_run:
+            return
+        _run(["git", "worktree", "remove", "--force", self._worktree_path(task)], cwd=".")
+        _run(["git", "worktree", "prune"], cwd=".")
+
     def merge_leaf(self, task: dag.Task, branch: str) -> bool:
         """Merge a leaf branch into work and remove the worktree. On a conflict, abort and return False."""
         if self.dry_run:
@@ -569,7 +620,28 @@ class Orchestrator:
         if not (isinstance(gates, dict) and gates.get("tasks") == "approved"):
             print("gates.tasks is not approved. Approve /tasks first.", file=sys.stderr)
             return 2
+        if not self.dry_run and self.branch in ("", "HEAD"):
+            # work_branch falls back to "HEAD" when git is unavailable/detached; creating worktrees
+            # or committing against that would land the work on an arbitrary base.
+            print(
+                "cannot determine the work branch (git unavailable or detached HEAD) — "
+                "fill `branch:` in state.md or check out the work branch first.",
+                file=sys.stderr,
+            )
+            return 2
+        if not acquire_lock():
+            print(
+                f"another build-loop run appears to be active ({LOCK_PATH} holds a live PID). "
+                "Wait for it to finish, or remove the lock file if you are sure it is gone.",
+                file=sys.stderr,
+            )
+            return 2
+        try:
+            return self._run_loop()
+        finally:
+            release_lock()
 
+    def _run_loop(self) -> int:
         if not self.dry_run:
             rotate_log_if_large()  # keep the append-only escalation log lean before appending this run's entries
         self._recover_in_progress()
@@ -647,12 +719,14 @@ class Orchestrator:
             if not ok:
                 set_task_status(task.id, "blocked")
                 log_escalation(f"{task.id}: could not pass the quality gate within the limit; blocked.\n{log}")
+                self._cleanup_worktree(task)  # the branch keeps the diff for inspection
                 blocked_any = True
                 continue
             if self.merge_leaf(task, branches[task.id]):
                 set_task_status(task.id, "done")
             else:
                 set_task_status(task.id, "blocked")
+                self._cleanup_worktree(task)  # conflict: aborted merge, worktree no longer needed
                 blocked_any = True
         if blocked_any:
             raise StopLoop("A blocked task occurred. Human intervention needed.", code=1)

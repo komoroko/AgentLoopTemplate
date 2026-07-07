@@ -316,6 +316,64 @@ def test_run_task_to_done_blocks_when_one_step_budget_runs_out(project: Path, mo
     assert log == "still red"
 
 
+# --- robustness: orphan cleanup / single-run lock / quoting / branch guard ----
+
+
+def test_consume_parallel_cleans_up_blocked_worktree(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A blocked leaf never reaches merge_leaf, so without explicit cleanup its worktree orphans
+    # under .worktrees/ (blocked tasks leave the frontier and startup cleanup never sees them).
+    _provision(project)
+    calls: list[list[str]] = []
+    monkeypatch.setattr(build_loop, "_run", lambda cmd, cwd, timeout=None: (calls.append(cmd), (0, ""))[1])
+
+    def fake_run_task(task: dag.Task, cwd: str) -> tuple[bool, str]:
+        return (task.id != "T-003"), ("" if task.id != "T-003" else "$ make test (rc=1)")
+
+    orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
+    monkeypatch.setattr(orch, "_run_task_to_done", fake_run_task)
+    with pytest.raises(build_loop.StopLoop):
+        orch._consume_parallel([_leaf("T-002", "leaf A"), _leaf("T-003", "leaf B")])
+    assert ["git", "worktree", "remove", "--force", str(Path(".worktrees") / "T-003")] in calls
+    assert ["git", "worktree", "remove", "--force", str(Path(".worktrees") / "T-002")] in calls  # via merge_leaf
+
+
+def test_acquire_lock_blocks_live_pid_and_reclaims_stale(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    lock = tmp_path / "build-loop.lock"
+    lock.write_text("12345", encoding="utf-8")
+    monkeypatch.setattr(build_loop, "_pid_alive", lambda pid: True)
+    assert build_loop.acquire_lock(str(lock)) is False  # another live run holds it
+    monkeypatch.setattr(build_loop, "_pid_alive", lambda pid: False)
+    assert build_loop.acquire_lock(str(lock)) is True  # a crashed run's lock is reclaimed
+    assert lock.read_text(encoding="utf-8") == str(os.getpid())
+    build_loop.release_lock(str(lock))
+    assert not lock.exists()
+
+
+def test_run_refuses_concurrent_loop(project: Path) -> None:
+    _provision(project)
+    (project / ".agentloop" / "build-loop.lock").write_text("1", encoding="utf-8")  # PID 1 is always alive
+    assert build_loop.main(["--dry-run"]) == 2
+
+
+def test_run_refuses_undetermined_work_branch(project: Path) -> None:
+    # Placeholder branch + no git repo → work_branch falls back to "HEAD"; a non-dry run must stop
+    # instead of creating worktrees/commits against an arbitrary base.
+    _provision(project)
+    state = _STATE.format(tasks="approved").replace('branch: "build/demo"', 'branch: "<enter the work branch>"')
+    (project / ".agentloop" / "state.md").write_text(state, encoding="utf-8")
+    orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
+    assert orch.run() == 2
+
+
+def test_cmd_step_shlex_splits_quoted_args(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _provision(project)
+    seen: list[list[str]] = []
+    monkeypatch.setattr(build_loop, "_run", lambda cmd, cwd, timeout=None: (seen.append(cmd), (0, ""))[1])
+    orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
+    orch._run_cmd_step(build_loop.GateStep("test", "cmd", "pytest -k 'a b'"), cwd=".")
+    assert seen == [["pytest", "-k", "a b"]]
+
+
 # --- state.md generated-view refresh (mode A keeps the human-facing board fresh) ----
 
 _STATE_WITH_VIEW = _STATE.replace(

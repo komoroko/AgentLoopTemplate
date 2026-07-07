@@ -19,7 +19,8 @@ build:
   #   kind: cmd   — run the command; pass/fail is decided deterministically by exit code.
   #                 `retries` is that step's own budget for sending a failure back to the
   #                 implementer; when it runs out the task becomes blocked (escalated to the human).
-  #                 An empty `run` skips the step.
+  #                 An empty `run` skips the step. `run` is shlex-split (quoted arguments work);
+  #                 there is no shell, so wrap pipes/redirects in a make target or script.
   #   kind: agent — a headless `claude -p` review+simplify pass that fixes findings in place.
   #                 If it changes code, the cmd steps that already passed are re-run (re-verified).
   # If copied into a project without make, substitute the commands with that project's own.
