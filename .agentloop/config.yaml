@@ -41,6 +41,13 @@ build:
         run: ""              # empty = skipped; fill in e.g. "make smoke" once the product is runnable
         retries: 1
 
+  # Hard timeouts for the external processes the loop runs, in seconds (0 = no timeout).
+  # A hung `claude -p` or test run would otherwise stall the autonomous loop forever; on expiry the
+  # process is killed and the step fails like a normal red step (retry budget / escalation).
+  timeouts:
+    cmd_sec: 1800            # quality-gate cmd steps (make test / make check / smoke)
+    agent_sec: 3600          # headless claude -p launches (implementer, review agent step)
+
   merge:
     strategy: sequential     # merge leaf branches into work sequentially in the order they became done
 

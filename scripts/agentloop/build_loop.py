@@ -102,6 +102,12 @@ def _parse_steps(qg: Any, retries: Any) -> tuple[GateStep, ...]:
     return tuple(steps)
 
 
+def _timeout_sec(value: Any, default: int) -> float | None:
+    """Normalize a timeouts knob: seconds as a positive float, or None (= no timeout) for 0/negative."""
+    sec = float(default if value is None else value)
+    return sec if sec > 0 else None
+
+
 @dataclass
 class Config:
     max_parallel: int
@@ -110,6 +116,8 @@ class Config:
     branch_pattern: str
     steps: tuple[GateStep, ...]
     agent_steps: bool
+    timeout_cmd: float | None = 1800.0
+    timeout_agent: float | None = 3600.0
 
     @property
     def gate_cmds(self) -> list[str]:
@@ -122,6 +130,7 @@ class Config:
         build = data.get("build") or {}
         wt = build.get("worktree") or {}
         qg = build.get("quality_gate") or {}
+        tm = build.get("timeouts") or {}
         return cls(
             max_parallel=max(1, int(build.get("max_parallel", 3))),
             worktree_enabled=bool(wt.get("enabled", True)),
@@ -129,6 +138,8 @@ class Config:
             branch_pattern=str(wt.get("branch_pattern", "{branch}/{task_id}")),
             steps=_parse_steps(qg, build.get("retries") or {}),
             agent_steps=bool(qg.get("agent_steps", True)),
+            timeout_cmd=_timeout_sec(tm.get("cmd_sec"), 1800),
+            timeout_agent=_timeout_sec(tm.get("agent_sec"), 3600),
         )
 
 
@@ -203,8 +214,21 @@ def rotate_log_if_large(path: str = LOG_PATH, max_bytes: int = LOG_MAX_BYTES) ->
 # --- subprocess -------------------------------------------------------------
 
 
-def _run(cmd: list[str], cwd: str) -> tuple[int, str]:
-    proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+def _run(cmd: list[str], cwd: str, timeout: float | None = None) -> tuple[int, str]:
+    """Run a command; a hang past `timeout` kills it and fails with rc 124 (the coreutils convention).
+
+    Without this, a stuck `claude -p` or test run would stall the autonomous loop forever with no
+    escalation. The expiry flows through the normal failure paths (retry budget / StopLoop).
+    """
+    try:
+        proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        partial = "".join(
+            part if isinstance(part, str) else part.decode(errors="replace")
+            for part in (exc.stdout, exc.stderr)
+            if part
+        )
+        return 124, f"{partial}\ntimed out after {int(exc.timeout)}s (process killed)"
     return proc.returncode, proc.stdout + proc.stderr
 
 
@@ -339,7 +363,11 @@ class Orchestrator:
         if self.dry_run:
             print(f"    [dry-run] launch implementer (cwd={cwd}) task={task.id}")
             return
-        rc, out = _run([self.claude_bin, "-p", self._implementer_prompt(task, failure_log)], cwd=cwd)
+        rc, out = _run(
+            [self.claude_bin, "-p", self._implementer_prompt(task, failure_log)],
+            cwd=cwd,
+            timeout=self.config.timeout_agent,
+        )
         if rc != 0:
             raise StopLoop(f"{task.id}: failed to launch implementer (rc={rc})\n{out[-1000:]}")
 
@@ -369,14 +397,14 @@ class Orchestrator:
     def _run_agent_step(self, task: dag.Task, cwd: str) -> bool:
         """Run the review+simplify agent step headless. Returns True if it changed the tree."""
         before = self._tree_state(cwd)
-        rc, out = _run([self.claude_bin, "-p", self._review_prompt(task)], cwd=cwd)
+        rc, out = _run([self.claude_bin, "-p", self._review_prompt(task)], cwd=cwd, timeout=self.config.timeout_agent)
         if rc != 0:
             raise StopLoop(f"{task.id}: failed to launch the review agent step (rc={rc})\n{out[-1000:]}")
         return self._tree_state(cwd) != before
 
     def _run_cmd_step(self, step: GateStep, cwd: str) -> str:
         """Run one cmd step. Returns "" on pass, a compact failure summary otherwise."""
-        rc, out = _run(step.run.split(), cwd=cwd)
+        rc, out = _run(step.run.split(), cwd=cwd, timeout=self.config.timeout_cmd)
         return "" if rc == 0 else summarize_failure(step.run, rc, out)
 
     def _run_pipeline(self, task: dag.Task, cwd: str) -> tuple[str | None, str]:

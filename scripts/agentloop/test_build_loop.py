@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -314,6 +315,47 @@ def test_run_task_to_done_blocks_when_one_step_budget_runs_out(project: Path, mo
     ok, log = orch._run_task_to_done(_leaf("T-002", "leaf A"), cwd=".")
     assert ok is False  # retries: 1 → initial attempt + 1 send-back, then blocked
     assert log == "still red"
+
+
+# --- subprocess timeouts (a hung process must not stall the loop forever) ----
+
+
+def test_run_kills_hung_process_with_rc_124() -> None:
+    rc, out = build_loop._run([sys.executable, "-c", "import time; time.sleep(30)"], cwd=".", timeout=0.2)
+    assert rc == 124  # the coreutils timeout convention
+    assert "timed out after 0s (process killed)" in out
+
+
+def test_run_no_timeout_by_default() -> None:
+    rc, out = build_loop._run([sys.executable, "-c", "print('ok')"], cwd=".")
+    assert rc == 0
+    assert "ok" in out
+
+
+def test_config_parses_timeouts_and_zero_disables(project: Path) -> None:
+    config = build_loop.Config.load()
+    assert config.timeout_cmd == 1800.0  # defaults apply when the knob is absent
+    assert config.timeout_agent == 3600.0
+    (project / ".agentloop" / "config.yaml").write_text(
+        _CONFIG.replace("build:\n", "build:\n  timeouts: {cmd_sec: 60, agent_sec: 0}\n"), encoding="utf-8"
+    )
+    config = build_loop.Config.load()
+    assert config.timeout_cmd == 60.0
+    assert config.timeout_agent is None  # 0 = no timeout
+
+
+def test_cmd_step_passes_cmd_timeout(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _provision(project)
+    seen: list[float | None] = []
+
+    def fake_run(cmd: list[str], cwd: str, timeout: float | None = None) -> tuple[int, str]:
+        seen.append(timeout)
+        return 0, ""
+
+    monkeypatch.setattr(build_loop, "_run", fake_run)
+    orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
+    assert orch._run_cmd_step(build_loop.GateStep("test", "cmd", "make test"), cwd=".") == ""
+    assert seen == [orch.config.timeout_cmd]
 
 
 # --- failure summarization (retry-friendly, token-lean) ---------------------
