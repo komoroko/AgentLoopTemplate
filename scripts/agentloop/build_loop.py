@@ -244,9 +244,7 @@ def update_state_view(graph: dag.Graph, path: str = STATE_PATH) -> bool:
     if begin == -1 or end == -1 or end < begin:
         return False
     new = text[: begin + len(DAG_VIEW_BEGIN)] + "\n" + dag.render(graph) + "\n" + text[end:]
-    new = re.sub(
-        r"^(\s*updated_at:\s*).*$", rf'\g<1>"{date.today().isoformat()}"', new, count=1, flags=re.MULTILINE
-    )
+    new = re.sub(r"^(\s*updated_at:\s*).*$", rf'\g<1>"{date.today().isoformat()}"', new, count=1, flags=re.MULTILINE)
     Path(path).write_text(new, encoding="utf-8")
     return True
 

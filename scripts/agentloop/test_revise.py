@@ -78,6 +78,7 @@ def test_apply_revision_without_marker_is_safe() -> None:
     assert re.search(r"release: pending\s+# c5", out)
     assert re.search(r"requirements: approved\s+# c1", out)  # what is not in the chain is unchanged
 
+
 # --- main(): the CLI entry (dry-run plans only; the real run rewrites state.md) ---
 
 
