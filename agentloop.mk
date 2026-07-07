@@ -10,7 +10,7 @@
 
 AGENTLOOP_PY := uv run --no-project --with pyyaml python
 
-.PHONY: init adopt agentloop-upgrade agentloop-uninstall cycle-close build-loop issue-sync revise test-tools
+.PHONY: init adopt agentloop-upgrade agentloop-uninstall cycle-close build-loop issue-sync feedback revise test-tools
 
 # Turn the copied template into a product (idempotent): fills the pyproject / state.md placeholders,
 # snapshots the pristine docs scaffolds, records the adopt-manifest (FROM = the template's git URL,
@@ -63,6 +63,13 @@ build-loop:
 #   make issue-sync ARGS=--dry-run
 issue-sync:
 	$(AGENTLOOP_PY) scripts/agentloop/issue_sync.py $(ARGS)
+
+# File cycle feedback (retrospective rows marked `Promote? = upstream`, drafted by /verify into
+# .agentloop/feedback.yaml) as issues on the UPSTREAM template repository. Opt-in
+# (github.feedback.enabled) and outward-facing: human-run only — never add it to permissions.allow.
+#   make feedback ARGS=--dry-run [FILE=.agentloop/feedback.yaml]
+feedback:
+	$(AGENTLOOP_PY) scripts/agentloop/feedback.py $(if $(FILE),--file "$(FILE)") $(ARGS)
 
 # Roll back (returning upstream). Resets every gate from the target phase onward to pending in a
 # chain and updates current_phase and the roll-back log (the first-class operation for a human
