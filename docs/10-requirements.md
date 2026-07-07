@@ -10,6 +10,8 @@
 ## List of things to achieve
 
 Each item expresses "what the user can do". Priority: Must / Should / Could.
+Write acceptance criteria as **measurable, technology-agnostic** checks (a number, a state, an observable behaviour — not "fast" or "easy").
+While drafting, mark anything undecided inline as `[NEEDS CLARIFICATION: <what>]` — resolve every marker (or demote it to Open questions) before gate ①.
 
 ### R-1: <title>
 - **Overview**:
@@ -37,6 +39,10 @@ Each item expresses "what the user can do". Priority: Must / Should / Could.
 
 ## Out of scope (non-goals)
 -
+
+## Clarifications
+<!-- Audit trail of how ambiguities were closed: one bullet per resolved [NEEDS CLARIFICATION] marker / question. -->
+- Q: <question> → A: <the human's answer> (YYYY-MM-DD)
 
 ## Open questions
 <!-- Points to confirm with the human. Resolve before gate ①. -->
