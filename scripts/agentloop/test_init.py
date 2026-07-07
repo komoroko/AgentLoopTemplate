@@ -118,6 +118,9 @@ def test_init_records_greenfield_manifest(project: Path) -> None:
     assert files["docs/10-requirements.md"]["owner"] == "seeded"
     assert files[".agentloop/scaffold/docs/10-requirements.md"]["owner"] == "template"
     assert files[cycle.SCAFFOLD_STATE]["owner"] == "seeded"
+    # Snapshot of a SPECIAL (target-adapted) doc is seeded like in adopt — upgrade must not
+    # plan a remove for it just because template_items has no entry for SPECIAL files.
+    assert files[".agentloop/scaffold/docs/00-product-brief.md"]["owner"] == "seeded"
     # The product owns its root CLAUDE.md and settings.json: marker records only, no rules body.
     assert adopt.AGENTLOOP_RULES_PATH not in files
     assert "CLAUDE.md" not in files

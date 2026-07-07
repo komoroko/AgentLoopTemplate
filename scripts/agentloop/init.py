@@ -96,8 +96,10 @@ def record_manifest(root: Path, source: str, today: str) -> str:
             if not path.is_file():
                 continue
             rel = path.relative_to(root).as_posix()
-            # The state.md snapshot is target-adapted like state.md itself -> seeded (as in adopt).
-            owner = "seeded" if rel == cycle.SCAFFOLD_STATE else "template"
+            inner = rel[len(adopt.SCAFFOLD_PREFIX) :] if rel.startswith(adopt.SCAFFOLD_PREFIX) else ""
+            # Snapshots of target-adapted files (state.md, the SPECIAL docs) are seeded, as in
+            # adopt — they have no pristine template counterpart for upgrade to compare against.
+            owner = "seeded" if rel == cycle.SCAFFOLD_STATE or f"docs/{inner}" in adopt.SPECIAL else "template"
             files[rel] = {"hash": adopt.norm_hash(path.read_bytes()), "owner": owner}
     for rel in sorted(adopt.SPECIAL):
         path = root / rel
