@@ -39,14 +39,13 @@ from pathlib import Path
 from typing import Any
 
 import dag
+import events
 import yaml
 
 STATE_PATH = ".agentloop/state.md"
 CONFIG_PATH = ".agentloop/config.yaml"
 TASKS_PATH = ".agentloop/tasks.yaml"
-LOG_PATH = ".agentloop/build-loop.log"
 LOCK_PATH = ".agentloop/build-loop.lock"
-LOG_MAX_BYTES = 256 * 1024  # rotate the append-only build-loop.log past this (context hygiene; see rotate_log_if_large)
 
 
 class StopLoop(Exception):
@@ -249,27 +248,12 @@ def update_state_view(graph: dag.Graph, path: str = STATE_PATH) -> bool:
     return True
 
 
-def log_escalation(message: str) -> None:
-    with Path(LOG_PATH).open("a", encoding="utf-8") as fh:
-        fh.write(message.rstrip() + "\n")
+def log_escalation(event: str, message: str, *, task: str = "") -> None:
+    """Record an escalation as a structured event (the machine-readable truth, see events.py),
+    refresh state.md's generated view, and echo it to stderr for the console."""
+    events.append_event(event, task=task, detail=message)
+    events.refresh_state_view()
     print(f"[escalation] {message}", file=sys.stderr)
-
-
-def rotate_log_if_large(path: str = LOG_PATH, max_bytes: int = LOG_MAX_BYTES) -> bool:
-    """Rotate an oversized append-only log to `<path>.1`, keeping a single generation.
-
-    The escalation log is append-only across runs; left unbounded it bloats the context that both
-    humans and agents re-read (Context Rot). Rotating one generation keeps the live log lean while
-    preserving the immediately prior history. Returns True if a rotation happened.
-    """
-    p = Path(path)
-    try:
-        if p.stat().st_size <= max_bytes:
-            return False
-        p.replace(Path(f"{path}.1"))
-    except OSError:
-        return False  # no log yet / not statable / rename failed: best-effort, never abort the run
-    return True
 
 
 # --- subprocess -------------------------------------------------------------
@@ -517,6 +501,7 @@ class Orchestrator:
                 return True, ""
             left = budgets.get(failed, 0)
             print(f"    quality gate fail at step '{failed}' (retries left: {left}): {task.id}")
+            events.append_event("step_fail", task=task.id, step=failed, detail=f"retries left: {left}")
             if left <= 0:
                 return False, failure_log
             budgets[failed] = left - 1
@@ -584,10 +569,25 @@ class Orchestrator:
         rc, out = _run(["git", "merge", "--no-ff", "--no-edit", branch], cwd=".")
         if rc != 0:
             _run(["git", "merge", "--abort"], cwd=".")
-            log_escalation(f"{task.id}: conflict merging into work. Manual resolution needed.\n{out[-500:]}")
+            log_escalation(
+                "merge_conflict",
+                f"{task.id}: conflict merging into work. Manual resolution needed.\n{out[-500:]}",
+                task=task.id,
+            )
             return False
         self._git(["worktree", "remove", "--force", self._worktree_path(task)])
         return True
+
+    def _log_task_done(self, task: dag.Task) -> None:
+        """Record a task_done event carrying the work-branch commit that finalized the task.
+
+        The commit hash is what lets the log answer "which commit closed T-NNN" later (and, for a
+        resolved escalation, "which commit fixed it") without digging through git history by hand.
+        """
+        if self.dry_run:
+            return
+        _, head = _run(["git", "rev-parse", "HEAD"], cwd=".")
+        events.append_event("task_done", task=task.id, commit=head.strip())
 
     # -- main loop --
 
@@ -641,12 +641,13 @@ class Orchestrator:
 
     def _run_loop(self) -> int:
         if not self.dry_run:
-            rotate_log_if_large()  # keep the append-only escalation log lean before appending this run's entries
+            events.rotate_if_large()  # keep the append-only event log lean before appending this run's entries
         self._recover_in_progress()
         while True:
             graph = dag.load(TASKS_PATH)
             if not self.dry_run:
                 update_state_view(graph)  # keep state.md's human-facing board fresh each iteration
+                events.refresh_state_view()
             counts = graph.counts()
             unfinished = len(graph.tasks) - counts["done"]
             if unfinished == 0:
@@ -656,7 +657,10 @@ class Orchestrator:
             if batch is None:
                 # frontier empty & there are unfinished ones = all blocked/needs-revision. To the human.
                 blocked = [t.id for t in graph.tasks if t.status in ("blocked", "needs-revision")]
-                log_escalation(f"No runnable tasks and {unfinished} unfinished ({', '.join(blocked)}). Help needed.")
+                log_escalation(
+                    "no_runnable",
+                    f"No runnable tasks and {unfinished} unfinished ({', '.join(blocked)}). Help needed.",
+                )
                 return 1
 
             mode, tasks = batch
@@ -684,7 +688,11 @@ class Orchestrator:
             ok, log = self._run_task_to_done(task, cwd=".")
             if not ok:
                 set_task_status(task.id, "blocked")
-                log_escalation(f"{task.id}: could not pass the quality gate within the limit; blocked.\n{log}")
+                log_escalation(
+                    "blocked",
+                    f"{task.id}: could not pass the quality gate within the limit; blocked.\n{log}",
+                    task=task.id,
+                )
                 raise StopLoop(f"{task.id} is blocked. Human intervention needed.", code=1)
             if not self.dry_run:
                 # Finalize the task diff only. The .agentloop/ orchestration state (tasks.yaml status, etc.)
@@ -692,6 +700,7 @@ class Orchestrator:
                 _run(["git", "add", "-A", "--", ".", ":(exclude).agentloop"], cwd=".")
                 # If the implementer has not committed, finalize here (if there is a diff; no-op otherwise).
                 _run(["git", "commit", "-m", f"{task.id}: {task.title}"], cwd=".")
+                self._log_task_done(task)
             set_task_status(task.id, "done")
 
     def _consume_parallel(self, tasks: list[dag.Task]) -> None:
@@ -716,12 +725,17 @@ class Orchestrator:
             ok, log = results[task.id]
             if not ok:
                 set_task_status(task.id, "blocked")
-                log_escalation(f"{task.id}: could not pass the quality gate within the limit; blocked.\n{log}")
+                log_escalation(
+                    "blocked",
+                    f"{task.id}: could not pass the quality gate within the limit; blocked.\n{log}",
+                    task=task.id,
+                )
                 self._cleanup_worktree(task)  # the branch keeps the diff for inspection
                 blocked_any = True
                 continue
             if self.merge_leaf(task, branches[task.id]):
                 set_task_status(task.id, "done")
+                self._log_task_done(task)
             else:
                 set_task_status(task.id, "blocked")
                 self._cleanup_worktree(task)  # conflict: aborted merge, worktree no longer needed

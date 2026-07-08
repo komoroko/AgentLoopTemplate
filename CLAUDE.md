@@ -40,7 +40,7 @@ Check progress anytime with `/status`. At `done`, `/verify` records a retrospect
 
 The truth is split across three files. Their roles differ, so do not conflate them:
 
-- **`.agentloop/state.md`** — the truth for the phase, each gate's approval status, and the logs (speculative / escalation / roll-back). **Always read it when starting work**; update it after work (phase progress, `updated_at`). `gates.<name>` is `pending` | `approved`. **Never set it to `approved` without human approval.**
+- **`.agentloop/state.md`** — the truth for the phase, each gate's approval status, and the logs (speculative / escalation / roll-back). **Always read it when starting work**; update it after work (phase progress, `updated_at`). `gates.<name>` is `pending` | `approved`. **Never set it to `approved` without human approval.** The escalation log's machine-readable truth is **`.agentloop/events.ndjson`** (structured events; `build_loop.py` appends automatically, `make events ARGS='--add …'` by hand) — state.md embeds only the generated view between its `ESCALATION-VIEW` markers, and items are closed with `make events ARGS='--resolve <id> --note "…"'`.
 - **`.agentloop/tasks.yaml`** — the **machine-readable truth** of the task graph (DAG). `/tasks` generates it (schema: see `.claude/commands/tasks.md`); `build_loop.py` and `dag.py` read it. `req` is the traceability thread requirements → design → tasks, mechanically cross-checked by `dag.py --trace`. Derived values (fan-out, frontier, layers, critical path) are **not stored** (preventing drift); the task table in state.md is the human-facing view from `dag.py --render`. Even with GitHub Issues integration enabled, tasks.yaml remains the SSOT and Issues are a one-way mirror (never read back).
 - **`.agentloop/config.yaml`** — the source of knobs for deterministic execution (parallelism, worktree, gate enforcement) **and the single definition of the DoD (`quality_gate.steps`)**. Read by `build_loop.py`/`gate_guard.py`.
 
@@ -112,7 +112,7 @@ More context is not better — long inputs suffer *Context Rot* and *Lost in the
 Rules:
 
 - **Keep deliverables lean; push detail out to linked files** (e.g. an `ADR-*.md`) rather than inlining it.
-- **Compress and rotate the append-only logs.** Summarize or archive **resolved** rows of the state.md logs (keep the decision, drop the transcript); `build_loop.py` rotates `build-loop.log` past a size threshold — do the equivalent by hand for state.md tables. The defined moment for this hand-pruning is the short-tier checkpoint below (flush and GC are a pair).
+- **Compress and rotate the append-only logs.** Summarize or archive **resolved** rows of the state.md logs (keep the decision, drop the transcript); `build_loop.py` rotates `.agentloop/events.ndjson` past a size threshold (carrying open escalations forward, so pending items never rotate away) — do the equivalent by hand for the hand-maintained state.md tables. The defined moment for this hand-pruning is the short-tier checkpoint below (flush and GC are a pair).
 - **Failures are summarized, not dumped** (`summarize_failure()` keeps only the salient lines). Follow the same discipline when you surface a failure yourself.
 - **Prefer fetch-on-demand over holding everything.** Read the slice of a file you need; consult a doc when the task needs it.
 - **Compact the session at clean checkpoints, not mid-flight.** `/compact` is a human-run command (the agent cannot execute it); the agent's part is to suggest it at the right moment. That moment is a phase boundary — right after a gate approval is recorded in `state.md` and the deliverables are committed — or a build-layer boundary in interactive mode: the next command rehydrates from the SSOT, so nothing is lost. Before suggesting it, pass every item of the **pre-compact check**:
@@ -145,8 +145,8 @@ Three layers: **gitleaks** at commit stage (in `make check`; false positives →
 
 ## Directories
 
-- `.agentloop/` — SSOT (`state.md`, `tasks.yaml`, `config.yaml`)
-- `scripts/agentloop/` — deterministic orchestration (`dag.py`, `build_loop.py`, `gate_guard.py`, `issue_sync.py`, `revise.py`, `init.py`, `adopt.py`, `cycle.py`, `feedback.py`, `template_lint.py`). **Product scripts go directly under `scripts/`, not mixed in here.**
+- `.agentloop/` — SSOT (`state.md`, `tasks.yaml`, `config.yaml`) + the structured event log (`events.ndjson`)
+- `scripts/agentloop/` — deterministic orchestration (`dag.py`, `build_loop.py`, `events.py`, `gate_guard.py`, `issue_sync.py`, `revise.py`, `init.py`, `adopt.py`, `cycle.py`, `feedback.py`, `template_lint.py`). **Product scripts go directly under `scripts/`, not mixed in here.**
 - `docs/` — phase deliverables; `docs/retrospective.md` holds the retrospective at `done`
 - `.claude/commands/` — per-phase entry points (the procedure detail lives here)
 - `.claude/agents/` — specialized subagents

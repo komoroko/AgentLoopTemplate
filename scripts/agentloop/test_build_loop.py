@@ -9,6 +9,7 @@ from pathlib import Path
 
 import build_loop
 import dag
+import events
 import pytest
 
 
@@ -425,8 +426,9 @@ def test_run_escalates_when_all_unfinished_are_blocked(project: Path) -> None:
     (project / ".agentloop" / "state.md").write_text(_STATE.format(tasks="approved"), encoding="utf-8")
     (project / ".agentloop" / "tasks.yaml").write_text(blocked, encoding="utf-8")
     assert build_loop.main(["--dry-run"]) == 1  # frontier empty + unfinished → escalate, stop
-    log = (project / ".agentloop" / "build-loop.log").read_text(encoding="utf-8")
-    assert "Help needed" in log
+    recorded = events.load_events()  # the escalation lands as a structured event, not free text
+    assert [e.event for e in recorded] == ["no_runnable"]
+    assert "Help needed" in recorded[0].detail
 
 
 # --- state.md generated-view refresh (mode A keeps the human-facing board fresh) ----
@@ -598,35 +600,52 @@ def test_summarize_failure_long_single_line_keeps_head_with_location() -> None:
     assert "backend/foo.py:20:5: error:" in s
 
 
-# --- log rotation (context hygiene) -----------------------------------------
+# --- structured events emitted by the loop (the escalation log's truth) -----
 
 
-def test_rotate_log_if_large_rotates_when_over_budget(tmp_path: Path) -> None:
-    log = tmp_path / "build-loop.log"
-    log.write_text("x" * 2048, encoding="utf-8")
-    assert build_loop.rotate_log_if_large(str(log), max_bytes=1024) is True
-    assert not log.exists()  # the live log was moved aside
-    assert (tmp_path / "build-loop.log.1").read_text(encoding="utf-8") == "x" * 2048
+def test_blocked_leaf_emits_event_and_refreshes_state_view(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A blocked leaf must land in events.ndjson (typed, aggregatable) and re-render the state.md view.
+    state = _STATE.format(tasks="approved").replace(
+        "# board", f"# board\n\n{events.VIEW_BEGIN}\n_(no events yet)_\n{events.VIEW_END}\n"
+    )
+    (project / ".agentloop" / "state.md").write_text(state, encoding="utf-8")
+    (project / ".agentloop" / "tasks.yaml").write_text(_TASKS, encoding="utf-8")
+    monkeypatch.setattr(build_loop, "_run", lambda cmd, cwd, timeout=None: (0, ""))
+    orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
+    monkeypatch.setattr(orch, "_run_task_to_done", lambda task, cwd: (False, "$ make test (rc=1)"))
+    with pytest.raises(build_loop.StopLoop):
+        orch._consume_parallel([_leaf("T-002", "leaf A")])
+    recorded = events.load_events()
+    assert [(e.event, e.task) for e in recorded] == [("blocked", "T-002")]
+    assert "$ make test (rc=1)" in recorded[0].detail
+    assert "T-002" in (project / ".agentloop" / "state.md").read_text(encoding="utf-8").split(events.VIEW_BEGIN)[1]
 
 
-def test_rotate_log_if_large_noop_when_small_or_absent(tmp_path: Path) -> None:
-    log = tmp_path / "build-loop.log"
-    assert build_loop.rotate_log_if_large(str(log), max_bytes=1024) is False  # absent: nothing to do
-    log.write_text("small", encoding="utf-8")
-    assert build_loop.rotate_log_if_large(str(log), max_bytes=1024) is False  # under budget: kept
-    assert log.exists()
+def test_done_tasks_emit_task_done_with_commit(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _provision(project)
+
+    def fake_run(cmd: list[str], cwd: str, timeout: float | None = None) -> tuple[int, str]:
+        if cmd[:2] == ["git", "rev-parse"] and "HEAD" in cmd:
+            return 0, "abc123\n"
+        return 0, ""
+
+    monkeypatch.setattr(build_loop, "_run", fake_run)
+    orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
+    monkeypatch.setattr(orch, "_run_task_to_done", lambda task, cwd: (True, ""))
+    orch._consume_serial([dag.Task(id="T-001", title="base", kind="foundation")])
+    recorded = events.load_events()
+    assert [(e.event, e.task, e.commit) for e in recorded] == [("task_done", "T-001", "abc123")]
 
 
-def test_rotate_log_if_large_best_effort_on_replace_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    # A failed rename (e.g. read-only .1 / permission) must be swallowed, never abort the build run.
-    log = tmp_path / "build-loop.log"
-    log.write_text("x" * 2048, encoding="utf-8")
-
-    def boom(self: Path, target: object) -> None:
-        raise OSError("rename failed")
-
-    monkeypatch.setattr(Path, "replace", boom)  # build_loop uses pathlib.Path; patch the class method
-    assert build_loop.rotate_log_if_large(str(log), max_bytes=1024) is False
+def test_step_fail_is_recorded_per_retry(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    orch = _steps_orch(project, monkeypatch)
+    outcomes = iter([("test", "t red"), (None, "")])
+    monkeypatch.setattr(orch, "_invoke_implementer", lambda task, cwd, log: None)
+    monkeypatch.setattr(orch, "_run_pipeline", lambda task, cwd: next(outcomes))
+    ok, _ = orch._run_task_to_done(_leaf("T-002", "leaf A"), cwd=".")
+    assert ok is True
+    recorded = events.load_events()
+    assert [(e.event, e.task, e.step) for e in recorded] == [("step_fail", "T-002", "test")]
 
 
 # --- implementer prompt scoping (Context: read only the relevant design section) --------

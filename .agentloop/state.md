@@ -47,12 +47,18 @@ Do not use it as grounds to set a gate to `approved`.
 |------|------------------|------|-------------|----------|
 | _(append as needed)_ |
 
-## Escalation log
-When a `blocked` / `needs-revision` occurs, append one line here and ask for the human's decision.
+## Escalation log (generated view)
+The truth of escalations is `.agentloop/events.ndjson` (structured events; see `scripts/agentloop/events.py`).
+`build_loop.py` appends `blocked` / `merge_conflict` / `integration_red` / `no_runnable` events automatically;
+record one by hand (interactive mode, or a `needs-revision`) with
+`make events ARGS='--add blocked --task T-00N --detail "..."'`. Everything between the markers below is a
+**generated view** — refresh it with `make events ARGS=--refresh-state` (deterministic mode A refreshes it
+automatically). Close an item with `make events ARGS='--resolve <ID> --note "how it was resolved"'` —
+/verify closes all open items before gate ⑤.
 
-| Date | Task ID | Kind | Content | Resolution |
-|------|----------|------|------|------|
-| _(append as needed)_ |
+<!-- ESCALATION-VIEW:BEGIN -->
+_(no events yet)_
+<!-- ESCALATION-VIEW:END -->
 
 ## Roll-back (revision) log
 The record of `/revise` (`make revise`) resetting upstream gates to `pending` in a chain. The history of **the human rewinding approval**.

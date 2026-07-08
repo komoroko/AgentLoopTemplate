@@ -12,7 +12,8 @@ Classify needs-revision / blocked by origin. Upstream defects are material for i
 | | | | | |
 
 ## 2. Recovering the escalation log
-Conclude the unresolved items (blank resolution column) of `state.md` "escalation log".
+Conclude every open escalation in the event log: `make events ARGS=--render` lists them,
+`make events ARGS='--resolve <ID> --note "…"'` closes each (summarize the conclusions here).
 
 -
 

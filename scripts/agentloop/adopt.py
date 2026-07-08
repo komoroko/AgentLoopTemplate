@@ -80,7 +80,7 @@ COPY_FILES = ("agentloop.mk",)
 SPECIAL = {".agentloop/config.yaml", ".agentloop/state.md", "docs/00-product-brief.md"}
 _CACHE_DIR_NAMES = {"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache"}
 _EXCLUDE_DIR_NAMES = _CACHE_DIR_NAMES | {"archive", "scaffold"}
-_EXCLUDE_FILE_PREFIXES = ("build-loop.log", "build-loop.lock", "adopt-manifest.yaml", "feedback.yaml")
+_EXCLUDE_FILE_PREFIXES = ("build-loop.log", "build-loop.lock", "events.ndjson", "adopt-manifest.yaml", "feedback.yaml")
 
 # Ownership of installed files, recorded per file in the manifest. `template` = the mechanism
 # itself, safe to refresh on --upgrade while pristine; `seeded` = adopt wrote it once but the

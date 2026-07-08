@@ -167,15 +167,19 @@ def test_main_close_archives_restores_and_resets(project: Path, capsys: pytest.C
     assert "restore docs/10-requirements.md" in out
 
 
-def test_main_close_archives_build_loop_log(project: Path) -> None:
-    # The escalation log belongs to the closing cycle; the next cycle starts with a clean one.
+def test_main_close_archives_event_log(project: Path) -> None:
+    # The event log belongs to the closing cycle; the next cycle starts with a clean one.
+    # The legacy pre-events build-loop.log is swept the same way so older repos close cleanly.
     cycle.snapshot_scaffold()
+    (project / ".agentloop" / "events.ndjson").write_text('{"id": 1, "ts": "", "event": "blocked"}\n', encoding="utf-8")
+    (project / ".agentloop" / "events.ndjson.1").write_text("older\n", encoding="utf-8")
     (project / ".agentloop" / "build-loop.log").write_text("T-001: blocked\n", encoding="utf-8")
-    (project / ".agentloop" / "build-loop.log.1").write_text("older\n", encoding="utf-8")
     assert cycle.main(["--name", "first"]) == 0
     archive = next((project / "docs" / "archive").iterdir())
+    assert (archive / "events.ndjson").read_text(encoding="utf-8") == '{"id": 1, "ts": "", "event": "blocked"}\n'
+    assert (archive / "events.ndjson.1").read_text(encoding="utf-8") == "older\n"
     assert (archive / "build-loop.log").read_text(encoding="utf-8") == "T-001: blocked\n"
-    assert (archive / "build-loop.log.1").read_text(encoding="utf-8") == "older\n"
+    assert not (project / ".agentloop" / "events.ndjson").exists()
     assert not (project / ".agentloop" / "build-loop.log").exists()
 
 

@@ -10,7 +10,7 @@
 
 AGENTLOOP_PY := uv run --no-project --with pyyaml python
 
-.PHONY: init adopt agentloop-upgrade agentloop-uninstall cycle-close build-loop issue-sync feedback revise test-tools
+.PHONY: init adopt agentloop-upgrade agentloop-uninstall cycle-close build-loop issue-sync feedback revise events test-tools
 
 # Turn the copied template into a product (idempotent): fills the pyproject / state.md placeholders,
 # snapshots the pristine docs scaffolds, records the adopt-manifest (FROM = the template's git URL,
@@ -70,6 +70,15 @@ issue-sync:
 #   make feedback ARGS=--dry-run [FILE=.agentloop/feedback.yaml]
 feedback:
 	$(AGENTLOOP_PY) scripts/agentloop/feedback.py $(if $(FILE),--file "$(FILE)") $(ARGS)
+
+# Structured orchestration events (.agentloop/events.ndjson — the escalation log's machine-readable
+# truth; state.md embeds only the generated view between its ESCALATION-VIEW markers).
+#   make events ARGS=--render                                        # view + open escalations
+#   make events ARGS='--add blocked --task T-003 --detail "..."'     # record one by hand (mode B)
+#   make events ARGS='--resolve 3 --note "fixed by abc123"'          # close an open escalation
+#   make events ARGS=--summary                                       # aggregates (per task / per step)
+events:
+	$(AGENTLOOP_PY) scripts/agentloop/events.py $(ARGS)
 
 # Roll back (returning upstream). Resets every gate from the target phase onward to pending in a
 # chain and updates current_phase and the roll-back log (the first-class operation for a human
