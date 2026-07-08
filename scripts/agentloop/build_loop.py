@@ -46,6 +46,9 @@ STATE_PATH = ".agentloop/state.md"
 CONFIG_PATH = ".agentloop/config.yaml"
 TASKS_PATH = ".agentloop/tasks.yaml"
 LOCK_PATH = ".agentloop/build-loop.lock"
+# The post-build security-review report. Under .agentloop/ (not docs/test/) deliberately: the
+# review runs BEFORE gate ④ is approved, and gate_guard denies docs/test/** writes until then.
+SECURITY_REVIEW_PATH = ".agentloop/security-review.md"
 
 
 class StopLoop(Exception):
@@ -120,6 +123,7 @@ class Config:
     steps: tuple[GateStep, ...]
     agent_steps: bool
     integration_gate: bool = True
+    security_review: bool = True
     timeout_cmd: float | None = 1800.0
     timeout_agent: float | None = 3600.0
 
@@ -135,6 +139,7 @@ class Config:
         wt = build.get("worktree") or {}
         qg = build.get("quality_gate") or {}
         tm = build.get("timeouts") or {}
+        pb = build.get("post_build") or {}
         return cls(
             max_parallel=max(1, int(build.get("max_parallel", 3))),
             worktree_enabled=bool(wt.get("enabled", True)),
@@ -143,6 +148,7 @@ class Config:
             steps=_parse_steps(qg, build.get("retries") or {}),
             agent_steps=bool(qg.get("agent_steps", True)),
             integration_gate=bool(qg.get("integration_gate", True)),
+            security_review=bool(pb.get("security_review", True)),
             timeout_cmd=_timeout_sec(tm.get("cmd_sec"), 1800),
             timeout_agent=_timeout_sec(tm.get("agent_sec"), 3600),
         )
@@ -730,7 +736,7 @@ class Orchestrator:
             counts = graph.counts()
             unfinished = len(graph.tasks) - counts["done"]
             if unfinished == 0:
-                return self._present_gate4(graph)
+                return self._present_gate4(graph, self._post_build_security_review())
 
             batch = plan_batch(graph, self.config.max_parallel)
             if batch is None:
@@ -844,12 +850,78 @@ class Orchestrator:
         if blocked_any:
             raise StopLoop("A blocked task occurred. Human intervention needed.", code=1)
 
-    def _present_gate4(self, graph: dag.Graph) -> int:
+    # -- post-build security review (binds the review to this build's deliverable) --
+
+    def _reviewed_head(self) -> str:
+        """The `Reviewed-HEAD:` hash recorded in the last security-review report ("" if none).
+
+        This is the freshness/idempotence key: a re-invoked loop at the same HEAD must not pay
+        for a second headless review, and a stale report (HEAD moved on) must not pass for a
+        current one at gate ④.
+        """
+        try:
+            text = Path(SECURITY_REVIEW_PATH).read_text(encoding="utf-8")
+        except OSError:
+            return ""
+        m = re.search(r"^Reviewed-HEAD:\s*([0-9a-fA-F]+)", text, re.MULTILINE)
+        return m.group(1) if m else ""
+
+    def _security_review_prompt(self, head: str) -> str:
+        return (
+            "You are the security reviewer (the post-build security gate before gate ④).\n"
+            "Apply the /security-review discipline to this work branch's changes: find the diff base "
+            "(e.g. `git merge-base HEAD <default branch>`; if unclear, review this branch's commits) and "
+            "review the full diff plus the code it interacts with for vulnerabilities (injection, authn/z "
+            "flaws, secret exposure, unsafe deserialization, path traversal, SSRF, ...).\n"
+            f"Write your report to {SECURITY_REVIEW_PATH} (overwrite it), starting with exactly this line:\n"
+            f"Reviewed-HEAD: {head}\n"
+            "Then a one-paragraph verdict, then each finding with severity (must-fix / should-fix / note), "
+            "location, and a concrete remediation. If there are no findings, say so explicitly.\n"
+            "Do NOT modify any code — report only: fixes go back through the implementer after human/lead "
+            "triage (gate rule 3), and this report is the gate-④ evidence."
+        )
+
+    def _post_build_security_review(self) -> str:
+        """Run the headless security review once per work-branch HEAD; return a gate-④ status line.
+
+        Report-only by design (the reviewer must not fix code), written to SECURITY_REVIEW_PATH with
+        the reviewed HEAD embedded, and recorded as a security_review event carrying that hash —
+        binding "which state was reviewed" to the build's deliverable instead of leaving the review
+        as an unrecorded conversational step. /verify still runs its own full review later.
+        """
+        if self.dry_run:
+            return "[dry-run] security review not launched"
+        if not self.config.security_review:
+            return (
+                "post-build security review is OFF (build.post_build.security_review: false) — "
+                "run /security-review by hand before approving gate ④."
+            )
+        _, out = _run(["git", "rev-parse", "HEAD"], cwd=".")
+        head = out.strip()
+        if head and self._reviewed_head() == head:
+            return f"already reviewed at current HEAD — report: {SECURITY_REVIEW_PATH} (Reviewed-HEAD {head[:12]})"
+        rc, out = _run(
+            [self.claude_bin, "-p", self._security_review_prompt(head)], cwd=".", timeout=self.config.timeout_agent
+        )
+        if rc != 0:
+            return (
+                f"security-review launch FAILED (rc={rc}) — run /security-review by hand before gate ④.\n{out[-500:]}"
+            )
+        if self._reviewed_head() != head:
+            return (
+                f"security review ran but {SECURITY_REVIEW_PATH} does not record Reviewed-HEAD {head[:12]} — "
+                "treat it as not done; run /security-review by hand before gate ④."
+            )
+        events.append_event("security_review", commit=head, detail=SECURITY_REVIEW_PATH)
+        return f"report written: {SECURITY_REVIEW_PATH} (Reviewed-HEAD {head[:12]})"
+
+    def _present_gate4(self, graph: dag.Graph, security_note: str) -> int:
         print("\n========== all tasks done (gate ④) ==========")
         print(dag.render(graph))
         print(
             "\nNext steps (human approval needed):\n"
-            "  1. Run /security-review and resolve vulnerabilities in the work-branch diff.\n"
+            f"  1. Security review: {security_note}\n"
+            "     Triage the report's findings; must-fix items go back to the implementer before gate ④.\n"
             "  2. Review the implementation summary and, if fine, approve at /build's gate ④.\n"
             "  * This script does not set gates.build to approved (only the human opens a gate)."
         )

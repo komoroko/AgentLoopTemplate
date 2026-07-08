@@ -174,13 +174,16 @@ def test_main_close_archives_event_log(project: Path) -> None:
     (project / ".agentloop" / "events.ndjson").write_text('{"id": 1, "ts": "", "event": "blocked"}\n', encoding="utf-8")
     (project / ".agentloop" / "events.ndjson.1").write_text("older\n", encoding="utf-8")
     (project / ".agentloop" / "build-loop.log").write_text("T-001: blocked\n", encoding="utf-8")
+    (project / ".agentloop" / "security-review.md").write_text("Reviewed-HEAD: abc123\n", encoding="utf-8")
     assert cycle.main(["--name", "first"]) == 0
     archive = next((project / "docs" / "archive").iterdir())
     assert (archive / "events.ndjson").read_text(encoding="utf-8") == '{"id": 1, "ts": "", "event": "blocked"}\n'
     assert (archive / "events.ndjson.1").read_text(encoding="utf-8") == "older\n"
     assert (archive / "build-loop.log").read_text(encoding="utf-8") == "T-001: blocked\n"
+    assert (archive / "security-review.md").read_text(encoding="utf-8") == "Reviewed-HEAD: abc123\n"
     assert not (project / ".agentloop" / "events.ndjson").exists()
     assert not (project / ".agentloop" / "build-loop.log").exists()
+    assert not (project / ".agentloop" / "security-review.md").exists()
 
 
 def test_main_close_is_idempotent(project: Path) -> None:

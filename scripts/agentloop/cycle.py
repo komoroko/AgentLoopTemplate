@@ -227,18 +227,21 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     _archive(rows)
-    # The orchestration event log (and its rotated generation) belongs to the closing cycle:
-    # archive it alongside the deliverables so the next cycle starts with a clean log (CLAUDE.md
-    # "Context budget" — logs are rotated/archived, never left to grow without bound). The legacy
-    # pre-events build-loop.log is swept the same way so older repos close cleanly too.
-    for base in (events.EVENTS_PATH, ".agentloop/build-loop.log"):
-        for suffix in ("", ".1"):
-            log_src = Path(f"{base}{suffix}")
-            if log_src.is_file():
-                log_dst = Path(archive_base) / log_src.name
-                log_dst.parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(str(log_src), log_dst)
-                print(f"  archive {log_src} → {log_dst}")
+    # The orchestration event log (and its rotated generation) and the post-build security-review
+    # report belong to the closing cycle: archive them alongside the deliverables so the next cycle
+    # starts clean (CLAUDE.md "Context budget" — logs are rotated/archived, never left to grow
+    # without bound). The legacy pre-events build-loop.log is swept the same way.
+    runtime_artifacts = [
+        f"{base}{suffix}" for base in (events.EVENTS_PATH, ".agentloop/build-loop.log") for suffix in ("", ".1")
+    ]
+    runtime_artifacts.append(build_loop.SECURITY_REVIEW_PATH)
+    for name in runtime_artifacts:
+        log_src = Path(name)
+        if log_src.is_file():
+            log_dst = Path(archive_base) / log_src.name
+            log_dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(log_src), log_dst)
+            print(f"  archive {log_src} → {log_dst}")
     for path in _restore_scaffold():
         print(f"  restore {path} (fresh scaffold)")
     Path(build_loop.TASKS_PATH).write_text(build_loop.TASKS_HEADER + "tasks: []\n", encoding="utf-8")

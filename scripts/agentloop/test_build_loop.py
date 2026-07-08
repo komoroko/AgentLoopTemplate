@@ -702,6 +702,85 @@ def test_integration_gate_skips_agent_and_empty_steps(project: Path, monkeypatch
     assert ran == ["test", "check"]
 
 
+# --- post-build security review (bound to the reviewed HEAD) -----------------
+
+
+def _sec_orch(
+    project: Path, monkeypatch: pytest.MonkeyPatch, head: str = "abc123", claude_rc: int = 0, writes_report: bool = True
+) -> tuple[build_loop.Orchestrator, list[list[str]]]:
+    _provision(project)
+    (project / ".agentloop").mkdir(exist_ok=True)
+    claude_calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], cwd: str, timeout: float | None = None) -> tuple[int, str]:
+        if cmd[:2] == ["git", "rev-parse"] and "HEAD" in cmd:
+            return 0, head + "\n"
+        if cmd[0] == "claude" and cmd[1] == "-p":
+            claude_calls.append(cmd)
+            if writes_report:
+                Path(build_loop.SECURITY_REVIEW_PATH).write_text(
+                    f"Reviewed-HEAD: {head}\n\nNo findings.\n", encoding="utf-8"
+                )
+            return claude_rc, "boom" if claude_rc else ""
+        return 0, ""
+
+    monkeypatch.setattr(build_loop, "_run", fake_run)
+    return build_loop.Orchestrator(build_loop.Config.load(), dry_run=False), claude_calls
+
+
+def test_security_review_writes_report_and_event(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    orch, claude_calls = _sec_orch(project, monkeypatch)
+    note = orch._post_build_security_review()
+    assert "report written" in note and "abc123" in note
+    assert len(claude_calls) == 1
+    recorded = [e for e in events.load_events() if e.event == "security_review"]
+    assert len(recorded) == 1 and recorded[0].commit == "abc123"
+    assert recorded[0].detail == build_loop.SECURITY_REVIEW_PATH
+
+
+def test_security_review_skips_when_head_already_reviewed(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Idempotence: a loop re-invoked at the same HEAD (e.g. after gate presentation) must not pay
+    # for a second headless review; a moved HEAD must re-review.
+    orch, claude_calls = _sec_orch(project, monkeypatch)
+    orch._post_build_security_review()
+    note = orch._post_build_security_review()
+    assert "already reviewed" in note
+    assert len(claude_calls) == 1  # no second launch
+
+
+def test_security_review_off_points_at_manual_run(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    orch, claude_calls = _sec_orch(project, monkeypatch)
+    orch.config.security_review = False
+    note = orch._post_build_security_review()
+    assert "OFF" in note and "/security-review" in note
+    assert claude_calls == []
+    assert events.load_events() == []
+
+
+def test_security_review_launch_failure_degrades_to_manual(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    orch, claude_calls = _sec_orch(project, monkeypatch, claude_rc=1, writes_report=False)
+    note = orch._post_build_security_review()
+    assert "FAILED" in note and "boom" in note
+    assert events.load_events() == []  # a failed review is never recorded as done
+
+
+def test_security_review_missing_head_line_is_not_done(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The agent exiting 0 is not evidence: the report must record the reviewed HEAD, or gate ④
+    # would present a stale/absent report as current.
+    orch, claude_calls = _sec_orch(project, monkeypatch, writes_report=False)
+    note = orch._post_build_security_review()
+    assert "does not record Reviewed-HEAD" in note
+    assert events.load_events() == []
+
+
+def test_config_parses_post_build_security_review(project: Path) -> None:
+    assert build_loop.Config.load().security_review is True  # default on
+    (project / ".agentloop" / "config.yaml").write_text(
+        _CONFIG.replace("gates:\n", "  post_build: {security_review: false}\ngates:\n"), encoding="utf-8"
+    )
+    assert build_loop.Config.load().security_review is False
+
+
 # --- uncommitted-work protection (nothing may be lost with the worktree) -----
 
 

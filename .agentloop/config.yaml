@@ -50,6 +50,16 @@ build:
                              # (add a make target if you prefer). Tests can be green while the launch
                              # path is broken; an empty run is flagged at gate ④ (/build).
 
+  # Steps run once when every task is done, before presenting gate ④.
+  post_build:
+    # Launch a headless security review of the work branch's changes and write the report to
+    # .agentloop/security-review.md with the reviewed HEAD hash embedded (re-runs at the same
+    # HEAD skip, so a re-invoked loop never pays twice; the run is recorded as a security_review
+    # event). Report-only: findings are triaged by the human/lead and fixed via the implementer,
+    # and /verify still runs its own full /security-review + make audit later.
+    # Cost: one claude -p per completed build. false = run /security-review by hand before gate ④.
+    security_review: true
+
   # Hard timeouts for the external processes the loop runs, in seconds (0 = no timeout).
   # A hung `claude -p` or test run would otherwise stall the autonomous loop forever; on expiry the
   # process is killed and the step fails like a normal red step (retry budget / escalation).

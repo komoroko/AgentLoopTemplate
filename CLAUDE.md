@@ -130,7 +130,7 @@ The bundled `makefile` provides: `make test` (pytest), `make check` (= `make pre
 
 ## Security gate
 
-Three layers: **gitleaks** at commit stage (in `make check`; false positives → `.gitleaksignore`) / **`/security-review`** mandatory at implementation completion (before gate ④) / **`/security-review` + `make audit`** mandatory in `/verify`, recorded in `docs/test/test-plan.md`.
+Three layers: **gitleaks** at commit stage (in `make check`; false positives → `.gitleaksignore`) / **`/security-review`** mandatory at implementation completion (before gate ④ — deterministic mode A auto-runs it headless when all tasks are done and binds the report to the reviewed HEAD in `.agentloop/security-review.md`; config `build.post_build.security_review`) / **`/security-review` + `make audit`** mandatory in `/verify`, recorded in `docs/test/test-plan.md`.
 
 ## Branch / commit conventions
 
