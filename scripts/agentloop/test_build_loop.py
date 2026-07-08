@@ -600,6 +600,108 @@ def test_summarize_failure_long_single_line_keeps_head_with_location() -> None:
     assert "backend/foo.py:20:5: error:" in s
 
 
+# --- post-merge integration gate (the merged state is re-verified in code) ---
+
+
+def test_config_parses_integration_gate_default_and_off(project: Path) -> None:
+    assert build_loop.Config.load().integration_gate is True  # default on
+    (project / ".agentloop" / "config.yaml").write_text(
+        _CONFIG_STEPS.replace("    agent_steps: true\n", "    agent_steps: true\n    integration_gate: false\n"),
+        encoding="utf-8",
+    )
+    assert build_loop.Config.load().integration_gate is False
+
+
+def _parallel_orch(project: Path, monkeypatch: pytest.MonkeyPatch) -> build_loop.Orchestrator:
+    _provision(project)
+    monkeypatch.setattr(build_loop, "_run", lambda cmd, cwd, timeout=None: (0, ""))
+    orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
+    monkeypatch.setattr(orch, "_run_task_to_done", lambda task, cwd: (True, ""))
+    return orch
+
+
+def test_multi_leaf_batch_runs_integration_gate_then_done(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    orch = _parallel_orch(project, monkeypatch)
+    gated: list[list[str]] = []
+
+    def fake_gate(tasks: list[dag.Task]) -> tuple[bool, str]:
+        gated.append([t.id for t in tasks])
+        return True, ""
+
+    monkeypatch.setattr(orch, "_integration_gate", fake_gate)
+    orch._consume_parallel([_leaf("T-002", "leaf A"), _leaf("T-003", "leaf B")])
+    assert gated == [["T-002", "T-003"]]
+    by_id = {t.id: t.status for t in dag.load(".agentloop/tasks.yaml").tasks}
+    assert by_id["T-002"] == "done" and by_id["T-003"] == "done"
+
+
+def test_single_leaf_merge_skips_integration_gate(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # One merged leaf leaves work byte-identical to the already-gated worktree tree: re-running
+    # the gate would prove nothing new, so the cost is skipped.
+    orch = _parallel_orch(project, monkeypatch)
+    monkeypatch.setattr(orch, "_integration_gate", lambda tasks: pytest.fail("gate must not run for 1 leaf"))
+    orch._consume_parallel([_leaf("T-002", "leaf A")])
+    assert {t.id: t.status for t in dag.load(".agentloop/tasks.yaml").tasks}["T-002"] == "done"
+
+
+def test_integration_gate_off_skips_reverification(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    orch = _parallel_orch(project, monkeypatch)
+    orch.config.integration_gate = False
+    monkeypatch.setattr(orch, "_integration_gate", lambda tasks: pytest.fail("gate is configured off"))
+    orch._consume_parallel([_leaf("T-002", "leaf A"), _leaf("T-003", "leaf B")])
+
+
+def test_integration_red_blocks_whole_batch_with_event(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    orch = _parallel_orch(project, monkeypatch)
+    monkeypatch.setattr(orch, "_integration_gate", lambda tasks: (False, "$ make check (rc=1)"))
+    with pytest.raises(build_loop.StopLoop):
+        orch._consume_parallel([_leaf("T-002", "leaf A"), _leaf("T-003", "leaf B")])
+    by_id = {t.id: t.status for t in dag.load(".agentloop/tasks.yaml").tasks}
+    assert by_id["T-002"] == "blocked" and by_id["T-003"] == "blocked"  # merged code stays on work
+    recorded = [e for e in events.load_events() if e.event == "integration_red"]
+    assert len(recorded) == 1 and recorded[0].task == "T-002,T-003"
+    assert "$ make check (rc=1)" in recorded[0].detail
+
+
+def test_integration_gate_retries_fixer_until_green(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    orch = _steps_orch(project, monkeypatch)  # steps config: test/check retries 1 each
+    outcomes = iter(["boom", "", ""])  # test red once, then all green
+    monkeypatch.setattr(orch, "_run_cmd_step", lambda step, cwd: next(outcomes) if step.name == "test" else "")
+    fixer_calls: list[str] = []
+    monkeypatch.setattr(orch, "_invoke_integration_fixer", lambda ids, log: fixer_calls.append(log))
+    ok, log = orch._integration_gate([_leaf("T-002", "leaf A"), _leaf("T-003", "leaf B")])
+    assert ok is True and log == ""
+    assert fixer_calls == ["boom"]  # the failure summary went to the fixer once
+    fails = [e for e in events.load_events() if e.event == "step_fail"]
+    assert [(e.task, e.step) for e in fails] == [("T-002,T-003", "test")]
+
+
+def test_integration_gate_blocks_when_budget_runs_out(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    orch = _steps_orch(project, monkeypatch)
+    monkeypatch.setattr(orch, "_run_cmd_step", lambda step, cwd: "still red" if step.name == "check" else "")
+    monkeypatch.setattr(orch, "_invoke_integration_fixer", lambda ids, log: None)
+    ok, log = orch._integration_gate([_leaf("T-002", "leaf A"), _leaf("T-003", "leaf B")])
+    assert ok is False and log == "still red"  # retries: 1 → initial + 1 fix attempt, then give up
+
+
+def test_integration_gate_skips_agent_and_empty_steps(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The review agent step already ran per task; the integration gate re-runs only the
+    # deterministic cmd steps (and skips smoke's empty run).
+    orch = _steps_orch(project, monkeypatch)
+    ran: list[str] = []
+
+    def record(step: build_loop.GateStep, cwd: str) -> str:
+        ran.append(step.name)
+        assert cwd == "."  # on the merged work branch, not a worktree
+        return ""
+
+    monkeypatch.setattr(orch, "_run_cmd_step", record)
+    monkeypatch.setattr(orch, "_run_agent_step", lambda task, cwd: pytest.fail("agent step must not run"))
+    ok, _ = orch._integration_gate([_leaf("T-002", "leaf A"), _leaf("T-003", "leaf B")])
+    assert ok is True
+    assert ran == ["test", "check"]
+
+
 # --- uncommitted-work protection (nothing may be lost with the worktree) -----
 
 

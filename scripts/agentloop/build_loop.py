@@ -119,6 +119,7 @@ class Config:
     branch_pattern: str
     steps: tuple[GateStep, ...]
     agent_steps: bool
+    integration_gate: bool = True
     timeout_cmd: float | None = 1800.0
     timeout_agent: float | None = 3600.0
 
@@ -141,6 +142,7 @@ class Config:
             branch_pattern=str(wt.get("branch_pattern", "{branch}/{task_id}")),
             steps=_parse_steps(qg, build.get("retries") or {}),
             agent_steps=bool(qg.get("agent_steps", True)),
+            integration_gate=bool(qg.get("integration_gate", True)),
             timeout_cmd=_timeout_sec(tm.get("cmd_sec"), 1800),
             timeout_agent=_timeout_sec(tm.get("agent_sec"), 3600),
         )
@@ -506,6 +508,69 @@ class Orchestrator:
                 return False, failure_log
             budgets[failed] = left - 1
 
+    # -- post-merge integration gate --
+
+    def _integration_fix_prompt(self, ids: str, failure_log: str) -> str:
+        gate_list = " and ".join(f"`{c}`" for c in self.config.gate_cmds) or "the quality-gate commands"
+        return (
+            f"You are the integration fixer. The independent leaf tasks {ids} each passed the quality gate "
+            "in their own isolated worktrees, but after merging them into this work branch the combined "
+            "state fails the deterministic gate. Fix the integration failure below (typically a cross-file "
+            "lint/format/type error, or the tasks' changes interfering) with the minimal change — do not "
+            "widen scope or redo the tasks themselves.\n"
+            "Commit your fix to this branch (excluding the orchestration state .agentloop/):\n"
+            f"  git add -A -- . ':(exclude).agentloop' && git commit -m \"{ids}: integration fix\"\n"
+            f"Keep {gate_list} green.\n\n"
+            f"Resolve this integration failure:\n{failure_log}"
+        )
+
+    def _invoke_integration_fixer(self, ids: str, failure_log: str) -> None:
+        rc, out = _run(
+            [self.claude_bin, "-p", self._integration_fix_prompt(ids, failure_log)],
+            cwd=".",
+            timeout=self.config.timeout_agent,
+        )
+        if rc != 0:
+            raise StopLoop(f"{ids}: failed to launch the integration fixer (rc={rc})\n{out[-1000:]}")
+
+    def _integration_gate(self, tasks: list[dag.Task]) -> tuple[bool, str]:
+        """Re-verify the merged/integrated state of the work branch after a multi-leaf join.
+
+        Each leaf passed the gate only in its own isolated worktree; the *combined* file set can
+        still be red (a lint/type error only the whole tree surfaces, a format reflow another
+        task's change triggers). One batch-level re-run of the deterministic cmd steps catches
+        that before the merged tasks are marked done. Cost control: the caller runs this only
+        when 2+ leaves merged — a single-leaf join leaves the work tree identical to the one
+        already verified in that leaf's worktree (leaves branch from the batch's common base and
+        work advances only by this batch's merges), so re-running would prove nothing new.
+
+        On red, a headless fixer runs on the work branch within each step's own retries budget
+        (the same deterministic pattern as _run_task_to_done). Returns (ok, last_failure).
+        """
+        ids = ",".join(t.id for t in tasks)
+        if self.dry_run:
+            print(f"    [dry-run] integration gate on work after merging {ids}")
+            return True, ""
+        budgets = {s.name: s.retries for s in self.config.steps if s.kind == "cmd"}
+        while True:
+            failed, failure_log = None, ""
+            for step in self._steps_effective:
+                if step.kind != "cmd" or not step.run:
+                    continue
+                failure = self._run_cmd_step(step, cwd=".")
+                if failure:
+                    failed, failure_log = step.name, failure
+                    break
+            if failed is None:
+                return True, ""
+            left = budgets.get(failed, 0)
+            print(f"    integration gate fail at step '{failed}' (retries left: {left}): {ids}")
+            events.append_event("step_fail", task=ids, step=failed, detail=f"integration; retries left: {left}")
+            if left <= 0:
+                return False, failure_log
+            budgets[failed] = left - 1
+            self._invoke_integration_fixer(ids, failure_log)
+
     # -- worktree / merge --
 
     def _git(self, args: list[str], cwd: str = ".") -> None:
@@ -732,6 +797,7 @@ class Orchestrator:
                 results[task.id] = future.result()
 
         blocked_any = False
+        merged: list[dag.Task] = []
         # Merge deterministically in ascending id order (sequential join).
         for task in sorted(tasks, key=lambda t: t.id):
             ok, log = results[task.id]
@@ -749,12 +815,32 @@ class Orchestrator:
             # forgot to commit would otherwise lose that work when the worktree is removed.
             self._finalize_commit(self._worktree_path(task), f"{task.id}: {task.title}")
             if self.merge_leaf(task, branches[task.id]):
-                set_task_status(task.id, "done")
-                self._log_task_done(task)
+                merged.append(task)  # done is decided after the integration gate below
             else:
                 set_task_status(task.id, "blocked")
                 self._cleanup_worktree(task)  # conflict: aborted merge, worktree no longer needed
                 blocked_any = True
+        # Integration gate: only a join of 2+ leaves creates a combined tree nobody has verified
+        # (a single-leaf join is byte-identical to that leaf's already-gated worktree state).
+        if len(merged) >= 2 and self.config.integration_gate:
+            ok, log = self._integration_gate(merged)
+        else:
+            ok, log = True, ""
+        ids = ",".join(t.id for t in merged)
+        if ok:
+            for task in merged:
+                set_task_status(task.id, "done")
+                self._log_task_done(task)
+        else:
+            for task in merged:
+                set_task_status(task.id, "blocked")
+            log_escalation(
+                "integration_red",
+                f"{ids}: merged into work, but the integrated state fails the quality gate within the "
+                f"limit. Fix the work branch, then set these tasks back to done.\n{log}",
+                task=ids,
+            )
+            blocked_any = True
         if blocked_any:
             raise StopLoop("A blocked task occurred. Human intervention needed.", code=1)
 

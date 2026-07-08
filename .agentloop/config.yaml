@@ -26,6 +26,12 @@ build:
   # If copied into a project without make, substitute the commands with that project's own.
   quality_gate:
     agent_steps: true        # false = skip agent steps (cmd-only gate; cheaper but below the documented DoD)
+    # After a parallel batch merges 2+ leaves into work, re-run the cmd steps once on the MERGED
+    # state: each leaf was verified only in its isolated worktree, and the combined file set can
+    # still be red (a lint/format/type error only the whole tree surfaces). A red is sent to a
+    # headless fixer within each step's retries budget; over budget the batch's tasks block.
+    # A single-leaf join is skipped — its merged tree is identical to the already-verified worktree.
+    integration_gate: true
     steps:
       - name: test
         kind: cmd
