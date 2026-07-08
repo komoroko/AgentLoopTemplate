@@ -549,15 +549,29 @@ class Orchestrator:
         except StopLoop as exc:
             return False, str(exc)
 
+    def _finalize_commit(self, cwd: str, message: str) -> None:
+        """Commit any outstanding diff in `cwd` (excluding .agentloop/) — a no-op on a clean tree.
+
+        The implementer is instructed to commit, but an uncommitted tree must never be the only
+        copy: a leaf's worktree is removed with --force after the merge (or when blocked), and only
+        what is on the branch survives. Finalizing here makes the branch the complete record.
+        """
+        if self.dry_run:
+            return
+        _run(["git", "add", "-A", "--", ".", ":(exclude).agentloop"], cwd=cwd)
+        _run(["git", "commit", "-m", message], cwd=cwd)
+
     def _cleanup_worktree(self, task: dag.Task) -> None:
         """Remove a leaf's worktree without merging (blocked / merge conflict).
 
         Blocked tasks leave the frontier, so the startup cleanup in _add_worktree never reaches
         their worktrees — without this they orphan under .worktrees/. The branch is kept: it holds
-        the diff a human needs to inspect or resolve.
+        the diff a human needs to inspect or resolve, so any uncommitted leftovers are finalized
+        onto it first (otherwise the forced removal would silently drop them).
         """
         if self.dry_run:
             return
+        self._finalize_commit(self._worktree_path(task), f"{task.id}: WIP (blocked)")
         _run(["git", "worktree", "remove", "--force", self._worktree_path(task)], cwd=".")
         _run(["git", "worktree", "prune"], cwd=".")
 
@@ -694,13 +708,11 @@ class Orchestrator:
                     task=task.id,
                 )
                 raise StopLoop(f"{task.id} is blocked. Human intervention needed.", code=1)
-            if not self.dry_run:
-                # Finalize the task diff only. The .agentloop/ orchestration state (tasks.yaml status, etc.)
-                # is not included in the per-task commit (keeping one commit = one task).
-                _run(["git", "add", "-A", "--", ".", ":(exclude).agentloop"], cwd=".")
-                # If the implementer has not committed, finalize here (if there is a diff; no-op otherwise).
-                _run(["git", "commit", "-m", f"{task.id}: {task.title}"], cwd=".")
-                self._log_task_done(task)
+            # Finalize the task diff only. The .agentloop/ orchestration state (tasks.yaml status, etc.)
+            # is not included in the per-task commit (keeping one commit = one task). If the
+            # implementer has not committed, this finalizes the diff (no-op otherwise).
+            self._finalize_commit(".", f"{task.id}: {task.title}")
+            self._log_task_done(task)
             set_task_status(task.id, "done")
 
     def _consume_parallel(self, tasks: list[dag.Task]) -> None:
@@ -733,6 +745,9 @@ class Orchestrator:
                 self._cleanup_worktree(task)  # the branch keeps the diff for inspection
                 blocked_any = True
                 continue
+            # The leaf's full diff must be on its branch before the merge — an implementer that
+            # forgot to commit would otherwise lose that work when the worktree is removed.
+            self._finalize_commit(self._worktree_path(task), f"{task.id}: {task.title}")
             if self.merge_leaf(task, branches[task.id]):
                 set_task_status(task.id, "done")
                 self._log_task_done(task)

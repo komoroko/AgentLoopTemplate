@@ -600,6 +600,51 @@ def test_summarize_failure_long_single_line_keeps_head_with_location() -> None:
     assert "backend/foo.py:20:5: error:" in s
 
 
+# --- uncommitted-work protection (nothing may be lost with the worktree) -----
+
+
+def test_parallel_finalizes_worktree_before_merge_and_before_blocked_cleanup(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An implementer that forgot to commit must not lose work: the successful leaf's diff is
+    # finalized on its branch BEFORE the merge, and a blocked leaf's diff BEFORE the forced
+    # worktree removal (the branch is the only copy that survives `worktree remove --force`).
+    _provision(project)
+    calls: list[tuple[list[str], str]] = []
+
+    def fake_run(cmd: list[str], cwd: str, timeout: float | None = None) -> tuple[int, str]:
+        calls.append((cmd, cwd))
+        return 0, ""
+
+    monkeypatch.setattr(build_loop, "_run", fake_run)
+    orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
+    monkeypatch.setattr(
+        orch, "_run_task_to_done", lambda task, cwd: ((task.id != "T-003"), "" if task.id != "T-003" else "red")
+    )
+    with pytest.raises(build_loop.StopLoop):
+        orch._consume_parallel([_leaf("T-002", "leaf A"), _leaf("T-003", "leaf B")])
+
+    wt2, wt3 = str(Path(".worktrees") / "T-002"), str(Path(".worktrees") / "T-003")
+    add = ["git", "add", "-A", "--", ".", ":(exclude).agentloop"]
+    assert (add, wt2) in calls  # success path: finalize inside the worktree...
+    commit_ok = calls.index((["git", "commit", "-m", "T-002: leaf A"], wt2))
+    merge = calls.index((["git", "merge", "--no-ff", "--no-edit", "build/demo/T-002"], "."))
+    assert commit_ok < merge  # ...before the merge picks the branch up
+    assert (add, wt3) in calls  # blocked path: finalize as WIP...
+    commit_wip = calls.index((["git", "commit", "-m", "T-003: WIP (blocked)"], wt3))
+    # _add_worktree also pre-cleans worktrees at batch start; the removal that matters is the LAST one.
+    removal = len(calls) - 1 - calls[::-1].index((["git", "worktree", "remove", "--force", wt3], "."))
+    assert commit_wip < removal  # ...before the forced removal drops the tree
+
+
+def test_consume_serial_finalize_is_noop_in_dry_run(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _provision(project)
+    monkeypatch.setattr(build_loop, "_run", lambda cmd, cwd, timeout=None: pytest.fail("dry-run must not call git"))
+    orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=True)
+    orch._consume_serial([dag.Task(id="T-001", title="base", kind="foundation")])
+    assert {t.id: t.status for t in dag.load(".agentloop/tasks.yaml").tasks}["T-001"] == "done"
+
+
 # --- structured events emitted by the loop (the escalation log's truth) -----
 
 
