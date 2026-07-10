@@ -134,7 +134,7 @@ Three layers: **gitleaks** at commit stage (in `make check`; false positives →
 
 ## Branch / commit conventions
 
-- Implement **on a work branch** (recorded in `branch` of `state.md`; created by `make init`), never directly on main. Parallel leaf tasks use worktree-derived branches (`<branch>/T-NNN`) merged back on completion.
+- Implement **on a work branch** (recorded in `branch` of `state.md`; created by `make init`), never directly on main. Parallel leaf tasks use worktree-derived branches (`<branch>-T-NNN`; joined with `-`, since git cannot create `<branch>/T-NNN` while `<branch>` itself exists) merged back on completion.
 - Per-task commits: **`T-NNN: <summary>`**, one commit = one task. Approving `/build` covers that loop's local commits (no per-commit confirmation).
 - **Commit each phase's deliverables at its gate approval** (ADRs, task tickets, `state.md`/`tasks.yaml` updates) with a `docs: gate ③ tasks`-style message — not left uncommitted across the whole build.
 - **Push / PR creation / merging to main are outward-facing** — only after separate human approval. **Writing to GitHub Issues is also outward-facing**: only with the `github.enabled: true` opt-in; `make issue-sync` mirrors one-way and never reads Issues back. Likewise `make feedback` (filing retrospective rows marked `upstream` as issues on the template repository): `github.feedback.enabled` opt-in and human-run.

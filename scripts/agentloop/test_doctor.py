@@ -30,7 +30,7 @@ updated_at: "2026-07-09"
 _CONFIG = (
     "build:\n"
     "  max_parallel: 3\n"
-    "  worktree: {enabled: true, dir: .worktrees, branch_pattern: '{branch}/{task_id}'}\n"
+    "  worktree: {enabled: true, dir: .worktrees, branch_pattern: '{branch}-{task_id}'}\n"
     "  quality_gate: {test_cmd: 'make test', check_cmd: 'make check'}\n"
     "gates:\n  enforce_hook: true\n  template_mode: false\n"
 )

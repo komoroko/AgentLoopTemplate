@@ -34,6 +34,13 @@ copied by `make adopt` — the manifest's `template.version` is the identity rec
   and the new `--trace --test-plan <path>` fails any R/NFR absent from the test plan
   (run by `/verify`).
 
+### Fixed
+- **Default `worktree.branch_pattern` could never create a leaf branch**: git forbids a
+  branch that is a path-prefix of another ref, so the old `{branch}/{task_id}` (e.g.
+  `build/demo` + `build/demo/T-003`) always failed with "cannot lock ref". The default is
+  now `{branch}-{task_id}`. Repos that copied the old config should change the pattern in
+  `.agentloop/config.yaml` before their first parallel batch.
+
 ### Changed / migration notes (for repos upgrading the machinery)
 - `.agentloop/state.md` is not overwritten by upgrades: to adopt the generated
   escalation view, replace your "Escalation log" table with the new scaffold's marker

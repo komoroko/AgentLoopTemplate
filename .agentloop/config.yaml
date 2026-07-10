@@ -12,7 +12,10 @@ build:
   worktree:
     enabled: true            # set false to run serially on the work branch without isolation
     dir: .worktrees          # the directory to create worktrees in (already .gitignore'd)
-    branch_pattern: "{branch}/{task_id}"  # e.g. build/myproduct/T-003
+    # Leaf branch name, e.g. build/myproduct-T-003. Joined with `-`, NOT `/`: git forbids a branch
+    # that is a path-prefix of another ref, so "{branch}/{task_id}" would always fail to create
+    # (refs/heads/build/myproduct already exists as a file and cannot become a directory).
+    branch_pattern: "{branch}-{task_id}"
 
   # The quality gate = **the single definition of the DoD** (CLAUDE.md and /build refer to this list).
   # build_loop.py runs the steps in order per task:

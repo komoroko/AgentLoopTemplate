@@ -67,7 +67,7 @@ updated_at: "2026-06-26"
 _CONFIG = (
     "build:\n"
     "  max_parallel: 3\n"
-    "  worktree: {enabled: true, dir: .worktrees, branch_pattern: '{branch}/{task_id}'}\n"
+    "  worktree: {enabled: true, dir: .worktrees, branch_pattern: '{branch}-{task_id}'}\n"
     "  retries: {test_fix: 2, check_fix: 2}\n"
     "  quality_gate: {test_cmd: 'make test', check_cmd: 'make check'}\n"
     "gates:\n  enforce_hook: true\n"
@@ -155,7 +155,7 @@ def test_merge_leaf_conflict_aborts_and_returns_false(project: Path, monkeypatch
 
     monkeypatch.setattr(build_loop, "_run", fake_run)
     orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
-    assert orch.merge_leaf(_leaf("T-002", "leaf A"), "build/demo/T-002") is False
+    assert orch.merge_leaf(_leaf("T-002", "leaf A"), "build/demo-T-002") is False
     assert ["git", "merge", "--abort"] in calls  # a conflict is rolled back with abort
 
 
@@ -198,7 +198,7 @@ def test_consume_parallel_partial_failure_blocks_only_failed(project: Path, monk
 _CONFIG_STEPS = (
     "build:\n"
     "  max_parallel: 3\n"
-    "  worktree: {enabled: true, dir: .worktrees, branch_pattern: '{branch}/{task_id}'}\n"
+    "  worktree: {enabled: true, dir: .worktrees, branch_pattern: '{branch}-{task_id}'}\n"
     "  quality_gate:\n"
     "    agent_steps: true\n"
     "    steps:\n"
@@ -416,8 +416,8 @@ def test_merge_leaf_success_removes_worktree(project: Path, monkeypatch: pytest.
 
     monkeypatch.setattr(build_loop, "_run", fake_run)
     orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
-    assert orch.merge_leaf(_leaf("T-002", "leaf A"), "build/demo/T-002") is True
-    assert ["git", "merge", "--no-ff", "--no-edit", "build/demo/T-002"] in calls
+    assert orch.merge_leaf(_leaf("T-002", "leaf A"), "build/demo-T-002") is True
+    assert ["git", "merge", "--no-ff", "--no-edit", "build/demo-T-002"] in calls
     assert ["git", "worktree", "remove", "--force", str(Path(".worktrees") / "T-002")] in calls
 
 
@@ -809,7 +809,7 @@ def test_parallel_finalizes_worktree_before_merge_and_before_blocked_cleanup(
     add = ["git", "add", "-A", "--", ".", ":(exclude).agentloop"]
     assert (add, wt2) in calls  # success path: finalize inside the worktree...
     commit_ok = calls.index((["git", "commit", "-m", "T-002: leaf A"], wt2))
-    merge = calls.index((["git", "merge", "--no-ff", "--no-edit", "build/demo/T-002"], "."))
+    merge = calls.index((["git", "merge", "--no-ff", "--no-edit", "build/demo-T-002"], "."))
     assert commit_ok < merge  # ...before the merge picks the branch up
     assert (add, wt3) in calls  # blocked path: finalize as WIP...
     commit_wip = calls.index((["git", "commit", "-m", "T-003: WIP (blocked)"], wt3))

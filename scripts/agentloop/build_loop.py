@@ -144,7 +144,9 @@ class Config:
             max_parallel=max(1, int(build.get("max_parallel", 3))),
             worktree_enabled=bool(wt.get("enabled", True)),
             worktree_dir=str(wt.get("dir", ".worktrees")),
-            branch_pattern=str(wt.get("branch_pattern", "{branch}/{task_id}")),
+            # `-` (not `/`) between branch and task: git forbids a branch that is a path-prefix of
+            # another ref ("work" + "work/T-001" cannot coexist), so a slash pattern always fails.
+            branch_pattern=str(wt.get("branch_pattern", "{branch}-{task_id}")),
             steps=_parse_steps(qg, build.get("retries") or {}),
             agent_steps=bool(qg.get("agent_steps", True)),
             integration_gate=bool(qg.get("integration_gate", True)),
@@ -913,6 +915,7 @@ class Orchestrator:
                 "treat it as not done; run /security-review by hand before gate ④."
             )
         events.append_event("security_review", commit=head, detail=SECURITY_REVIEW_PATH)
+        events.refresh_state_view()  # this event lands after the loop-top refresh; keep the view current
         return f"report written: {SECURITY_REVIEW_PATH} (Reviewed-HEAD {head[:12]})"
 
     def _present_gate4(self, graph: dag.Graph, security_note: str) -> int:
