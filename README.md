@@ -217,7 +217,7 @@ make build-loop ARGS=--dry-run   # check just the control flow without calling c
 An alternative that runs the loop in conversation without the orchestrator.
 
 - A task is complete only after **passing the quality-gate pipeline** — `quality_gate.steps` in `.agentloop/config.yaml` is the **single definition of the DoD** (default: `make test` green → `make check` clean → a review step applying the `/code-review`+`/simplify` disciplines → a real-launch smoke test for runnable deliverables). Each cmd step has its own retry budget; a failure is sent back to the implementer until the budget runs out (→ `blocked`).
-- **Parallel tasks run in isolation**: independent leaf tasks are implemented in their own branch/working directory with `git worktree`, **up to 3 in parallel** (`max_parallel` in `config.yaml`), and merged into the work branch sequentially in ascending id order when done. Foundation tasks are finalized first on the work branch.
+- **Parallel tasks run in isolation**: independent leaf tasks are implemented in their own branch/working directory with `git worktree`, **up to 3 in parallel** (`max_parallel` in `config.yaml`), and merged into the work branch sequentially in ascending id order when done. Foundation tasks are finalized first on the work branch. After a batch merges **2 or more** leaves, the cmd steps run once more on the **merged** work branch (the integration gate — each leaf was green only in isolation); a red goes to a headless fixer within the retry budget, else the batch blocks. Uncommitted worktree changes are finalized onto the leaf branch before merge/cleanup, so nothing is lost with the worktree.
 - An unsolvable task becomes `blocked`; an upstream defect becomes `needs-revision`, **escalated to the human**, and the loop stops.
 - **The determinism boundary**: control flow, parallelism, merge, cmd-step gate decisions, and stopping are deterministic in code. Each task's implementation code and the review step's fixes are LLM-derived and non-deterministic, absorbed by "re-verify the already-passed steps after a review change; retry until green, else blocked". **The orchestrator does not touch `gates.build`** (only the human opens a gate).
 
@@ -225,7 +225,7 @@ An alternative that runs the loop in conversation without the orchestrator.
 
 ### Security review
 
-Ensured in three layers: **gitleaks** (mechanically prevents committing secrets at pre-commit; exclude false positives with `.gitleaksignore`) / **`/security-review`** mandatory at implementation completion / **`/security-review` + `make audit`** (dependency vulnerability audit) mandatory in `/verify`.
+Ensured in three layers: **gitleaks** (mechanically prevents committing secrets at pre-commit; exclude false positives with `.gitleaksignore`) / **`/security-review`** mandatory at implementation completion — in deterministic mode A, `build_loop.py` auto-runs it headless when all tasks are done and binds the report to the reviewed HEAD in `.agentloop/security-review.md` (config `build.post_build.security_review`; re-runs at the same HEAD skip) / **`/security-review` + `make audit`** (dependency vulnerability audit) mandatory in `/verify`.
 
 ### GitHub Issues integration (optional)
 
@@ -255,6 +255,7 @@ A cycle's retrospective (§4/§5) collects template-improvement proposals; rows 
 
 ## Troubleshooting
 
+- **First, run `make doctor`** — a read-only diagnosis of the whole setup: binaries on PATH, config/state/tasks consistency (including the gate-chain invariant), gate-guard hook registration, branch/worktree/lock leftovers, and open escalations. Most of the situations below show up there as a FAIL/WARN line.
 - **A task went `blocked`** — the quality gate could not be passed within the step's retry budget. Read the open escalation with `make events ARGS=--render` (the failure summary is in the event's detail; state.md's escalation view mirrors it), fix the cause (or fix the task ticket), set the task's `status` back to `todo` in `.agentloop/tasks.yaml`, close the event with `make events ARGS='--resolve <ID> --note "…"'`, and re-run `make build-loop`. If the cause is an upstream (requirements/design) defect, roll back with `/revise <phase>` instead.
 - **The loop was interrupted** (Ctrl-C, crash, network) — just re-run `make build-loop`. On startup it resets tasks left `in_progress` back to `todo` and cleans up leftover worktrees/branches before recreating them, so resuming is safe.
 - **An edit was denied by the gate guard** ("Blocked: gate not approved…") — you are editing a next-phase deliverable while its prerequisite gate is `pending`. That is the mechanism working; get the gate approved first. If the state is genuinely wrong, fix `gates.*` in `.agentloop/state.md` (approval is the human's call). Emergency escape hatch: `gates.enforce_hook: false` in `.agentloop/config.yaml`.
@@ -270,8 +271,9 @@ A cycle's retrospective (§4/§5) collects template-improvement proposals; rows 
 |------|------|
 | `.agentloop/state.md` | SSOT for phase, gates, logs |
 | `.agentloop/tasks.yaml` | machine-readable SSOT of the task graph (DAG) |
+| `.agentloop/events.ndjson` | structured orchestration events — the escalation log's machine-readable truth (`make events`); state.md embeds the generated view |
 | `.agentloop/config.yaml` | source of knobs for deterministic execution (parallelism, worktree, gate enforcement) and the single definition of the DoD (`quality_gate.steps`) |
-| `scripts/agentloop/` | deterministic orchestration (`dag.py` / `build_loop.py` / `gate_guard.py` / `revise.py` / `issue_sync.py` / `feedback.py` / `init.py` / `adopt.py` / `cycle.py`). Product scripts go directly under `scripts/` |
+| `scripts/agentloop/` | deterministic orchestration (`dag.py` / `build_loop.py` / `events.py` / `doctor.py` / `gate_guard.py` / `revise.py` / `issue_sync.py` / `feedback.py` / `init.py` / `adopt.py` / `cycle.py`). Product scripts go directly under `scripts/` |
 | `VERSION` / `CHANGELOG.md` | the template's release identity; `agentloop-upgrade` shows the changelog between the installed and new versions |
 | `agentloop.mk` | the AgentLoop make targets, self-contained (uv only) — an existing repo takes just this file |
 | `CLAUDE.md` | agent operating rules and gate rules |

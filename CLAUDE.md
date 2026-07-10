@@ -126,7 +126,7 @@ Rules:
 
 ## Quality-check commands
 
-The bundled `makefile` provides: `make test` (pytest), `make check` (= `make pre-commit` + `make pre-push`: lint / format / type-check, all of it — the gate uses this, since `pre-commit run --all-files` alone skips the pre-push-stage format/mypy/tsc hooks), `make test-tools` (self-tests of `scripts/agentloop/`), `make audit` (dependency vulnerabilities). If copied into a project without `make`, substitute that project's commands in `quality_gate.steps`.
+The bundled `makefile` provides: `make test` (pytest), `make check` (= `make pre-commit` + `make pre-push`: lint / format / type-check, all of it — the gate uses this, since `pre-commit run --all-files` alone skips the pre-push-stage format/mypy/tsc hooks), `make test-tools` (self-tests of `scripts/agentloop/`), `make audit` (dependency vulnerabilities), `make doctor` (read-only diagnosis of the environment + SSOT consistency — run it first when anything behaves oddly). If copied into a project without `make`, substitute that project's commands in `quality_gate.steps`.
 
 ## Security gate
 
@@ -146,7 +146,7 @@ Three layers: **gitleaks** at commit stage (in `make check`; false positives →
 ## Directories
 
 - `.agentloop/` — SSOT (`state.md`, `tasks.yaml`, `config.yaml`) + the structured event log (`events.ndjson`)
-- `scripts/agentloop/` — deterministic orchestration (`dag.py`, `build_loop.py`, `events.py`, `gate_guard.py`, `issue_sync.py`, `revise.py`, `init.py`, `adopt.py`, `cycle.py`, `feedback.py`, `template_lint.py`). **Product scripts go directly under `scripts/`, not mixed in here.**
+- `scripts/agentloop/` — deterministic orchestration (`dag.py`, `build_loop.py`, `events.py`, `doctor.py`, `gate_guard.py`, `issue_sync.py`, `revise.py`, `init.py`, `adopt.py`, `cycle.py`, `feedback.py`, `template_lint.py`). **Product scripts go directly under `scripts/`, not mixed in here.**
 - `docs/` — phase deliverables; `docs/retrospective.md` holds the retrospective at `done`
 - `.claude/commands/` — per-phase entry points (the procedure detail lives here)
 - `.claude/agents/` — specialized subagents
