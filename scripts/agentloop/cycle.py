@@ -6,7 +6,7 @@ reaches `done` (release approved at gate ⑤ and the retrospective is written), 
 
   1. The filled deliverables (10-requirements.md, 20-design.md, decisions/, tasks/, test/,
      retrospective.md) move to `docs/archive/<YYYY-MM-DD>-<slug>/` (via `git mv`), and the
-     build-loop escalation log (`.agentloop/build-loop.log` + its `.1` rotation) moves with them.
+     orchestration event log (`.agentloop/events.ndjson` + its `.1` rotation) moves with them.
      `00-product-brief.md` and `05-current-state.md` (the persistent baseline) stay.
   2. Fresh scaffolds are restored from the snapshot in `.agentloop/scaffold/docs/`
      (taken by `make init` / `adopt.py` while the docs were still pristine).
@@ -37,6 +37,7 @@ from datetime import date
 from pathlib import Path
 
 import build_loop
+import events
 import revise
 
 DOCS_DIR = "docs"
@@ -226,11 +227,16 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     _archive(rows)
-    # The build-loop escalation log (and its rotated generation) belongs to the closing cycle:
-    # archive it alongside the deliverables so the next cycle starts with a clean log (CLAUDE.md
-    # "Context budget" — logs are rotated/archived, never left to grow without bound).
-    for suffix in ("", ".1"):
-        log_src = Path(f"{build_loop.LOG_PATH}{suffix}")
+    # The orchestration event log (and its rotated generation) and the post-build security-review
+    # report belong to the closing cycle: archive them alongside the deliverables so the next cycle
+    # starts clean (CLAUDE.md "Context budget" — logs are rotated/archived, never left to grow
+    # without bound). The legacy pre-events build-loop.log is swept the same way.
+    runtime_artifacts = [
+        f"{base}{suffix}" for base in (events.EVENTS_PATH, ".agentloop/build-loop.log") for suffix in ("", ".1")
+    ]
+    runtime_artifacts.append(build_loop.SECURITY_REVIEW_PATH)
+    for name in runtime_artifacts:
+        log_src = Path(name)
         if log_src.is_file():
             log_dst = Path(archive_base) / log_src.name
             log_dst.parent.mkdir(parents=True, exist_ok=True)

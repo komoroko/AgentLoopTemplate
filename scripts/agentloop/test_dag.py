@@ -411,3 +411,102 @@ def test_trace_cli_exit2_when_tasks_yaml_missing(tmp_path: Path) -> None:
     reqs.write_text("### R-1: a\n", encoding="utf-8")
     rc = dag.main([str(tmp_path / "none.yaml"), "--trace", "--requirements", str(reqs)])
     assert rc == 2
+
+
+# ---- NFR dimension (non-functional requirements trace with softer rules) ----
+
+
+def test_parse_requirement_ids_extracts_nfr_alongside_r() -> None:
+    text = "### R-1: a\n### NFR-1: perf\n#### NFR-2: security\n"
+    assert dag.parse_requirement_ids(text) == ["R-1", "NFR-1", "NFR-2"]
+
+
+def test_nfr_heading_does_not_double_match_as_r() -> None:
+    # "NFR-1" must not also be picked up as "R-1" (the lookbehind rejects the mid-word match).
+    assert dag.parse_requirement_ids("### NFR-1: perf\n") == ["NFR-1"]
+
+
+def test_task_req_accepts_nfr_and_rejects_lowercase() -> None:
+    task = dag.Task("T-001", "x", "foundation", req="R-1,NFR-2")
+    assert dag.task_req_ids(task) == ["R-1", "NFR-2"]
+    dag.Graph.from_tasks([task])  # NFR-form req passes load-time validation
+    with pytest.raises(dag.DagError, match="req"):
+        dag.Graph.from_tasks([dag.Task("T-002", "y", "parallel", req="nfr-1")])
+
+
+def test_trace_nfr_gaps_are_warn_not_error() -> None:
+    # An NFR with no design section and no covering task keeps ok=True (cross-cutting NFRs are
+    # verified at /verify); the same gaps for an R would be ERRORs.
+    report = dag.trace(_trace_graph(), ["R-1", "R-2", "NFR-1"], ["R-1", "R-2"])
+    assert report.ok
+    assert report.nfrs_missing_design == ("NFR-1",)
+    assert report.uncovered_nfrs == ("NFR-1",)
+    assert report.nfr_to_tasks == {"NFR-1": []}
+    rendered = dag.render_trace(report)
+    assert "WARN  NFR-1: no design section" in rendered
+    assert "WARN  NFR-1: no build task" in rendered
+
+
+def test_trace_nfr_covered_by_task_and_design() -> None:
+    g = dag.Graph.from_tasks([dag.Task("T-001", "x", "foundation", req="R-1,NFR-1")])
+    report = dag.trace(g, ["R-1", "NFR-1"], ["R-1", "NFR-1"])
+    assert report.ok
+    assert report.nfr_to_tasks == {"NFR-1": ["T-001"]}
+    assert report.nfrs_missing_design == ()
+    assert "### Non-functional requirement coverage" in dag.render_trace(report)
+
+
+def test_trace_dangling_nfr_reference_is_error() -> None:
+    # Unknown-ID references stay ERRORs for NFRs too (same as R): a typo must not pass as a WARN.
+    g = dag.Graph.from_tasks([dag.Task("T-001", "x", "foundation", req="NFR-9")])
+    report = dag.trace(g, ["R-1"], ["R-1", "NFR-7"])
+    assert not report.ok
+    assert report.unknown_in_tasks == (("T-001", "NFR-9"),)
+    assert report.unknown_in_design == ("NFR-7",)
+
+
+def test_trace_test_plan_requires_every_r_and_nfr() -> None:
+    # With a test plan given, an R or NFR that never appears in it is an ERROR (/verify's check).
+    report = dag.trace(_trace_graph(), ["R-1", "R-2", "NFR-1"], None, "| R-1 | ok |\n| NFR-1 | perf |\n")
+    assert not report.ok
+    assert report.test_plan_checked is True
+    assert report.missing_in_test_plan == ("R-2",)
+    rendered = dag.render_trace(report)
+    assert "ERROR requirement R-2: not covered in the test plan" in rendered
+    assert "test-plan✓" in rendered and "test-plan✗" in rendered
+
+
+def test_trace_test_plan_ignores_code_fences() -> None:
+    plan = "| R-1 | ok |\n```\nR-2 only as an example\n```\n"
+    report = dag.trace(_trace_graph(), ["R-1", "R-2"], None, plan)
+    assert report.missing_in_test_plan == ("R-2",)  # the fenced mention does not count
+
+
+def test_trace_without_test_plan_skips_that_dimension() -> None:
+    report = dag.trace(_trace_graph(), ["R-1", "R-2"], ["R-1", "R-2"])
+    assert report.test_plan_checked is False
+    assert report.missing_in_test_plan == ()
+    assert "test-plan" not in dag.render_trace(report)
+
+
+def test_trace_cli_test_plan_gap_exits_1(tmp_path: Path) -> None:
+    tasks = _trace_tasks_file(tmp_path)
+    reqs = tmp_path / "req.md"
+    reqs.write_text("### R-1: a\n### NFR-1: perf\n", encoding="utf-8")
+    no_design = ["--design", str(tmp_path / "none.md")]  # isolate from the repo's real docs/20-design.md
+    plan = tmp_path / "plan.md"
+    plan.write_text("| R-1 | ok |\n", encoding="utf-8")  # NFR-1 missing from the plan
+    rc = dag.main([str(tasks), "--trace", "--requirements", str(reqs), *no_design, "--test-plan", str(plan)])
+    assert rc == 1
+    plan.write_text("| R-1 | ok |\n| NFR-1 | timed run |\n", encoding="utf-8")
+    rc = dag.main([str(tasks), "--trace", "--requirements", str(reqs), *no_design, "--test-plan", str(plan)])
+    assert rc == 0
+
+
+def test_trace_cli_test_plan_unreadable_exits_2(tmp_path: Path) -> None:
+    # --test-plan explicitly given but unreadable = cannot check = exit 2 (not a silent skip).
+    tasks = _trace_tasks_file(tmp_path)
+    reqs = tmp_path / "req.md"
+    reqs.write_text("### R-1: a\n", encoding="utf-8")
+    rc = dag.main([str(tasks), "--trace", "--requirements", str(reqs), "--test-plan", str(tmp_path / "none.md")])
+    assert rc == 2

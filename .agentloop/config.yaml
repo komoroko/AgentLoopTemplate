@@ -12,7 +12,10 @@ build:
   worktree:
     enabled: true            # set false to run serially on the work branch without isolation
     dir: .worktrees          # the directory to create worktrees in (already .gitignore'd)
-    branch_pattern: "{branch}/{task_id}"  # e.g. build/myproduct/T-003
+    # Leaf branch name, e.g. build/myproduct-T-003. Joined with `-`, NOT `/`: git forbids a branch
+    # that is a path-prefix of another ref, so "{branch}/{task_id}" would always fail to create
+    # (refs/heads/build/myproduct already exists as a file and cannot become a directory).
+    branch_pattern: "{branch}-{task_id}"
 
   # The quality gate = **the single definition of the DoD** (CLAUDE.md and /build refer to this list).
   # build_loop.py runs the steps in order per task:
@@ -26,6 +29,12 @@ build:
   # If copied into a project without make, substitute the commands with that project's own.
   quality_gate:
     agent_steps: true        # false = skip agent steps (cmd-only gate; cheaper but below the documented DoD)
+    # After a parallel batch merges 2+ leaves into work, re-run the cmd steps once on the MERGED
+    # state: each leaf was verified only in its isolated worktree, and the combined file set can
+    # still be red (a lint/format/type error only the whole tree surfaces). A red is sent to a
+    # headless fixer within each step's retries budget; over budget the batch's tasks block.
+    # A single-leaf join is skipped — its merged tree is identical to the already-verified worktree.
+    integration_gate: true
     steps:
       - name: test
         kind: cmd
@@ -43,6 +52,16 @@ build:
         retries: 1           # soon as any entry point exists — e.g. "uv run python -m yourapp --help"
                              # (add a make target if you prefer). Tests can be green while the launch
                              # path is broken; an empty run is flagged at gate ④ (/build).
+
+  # Steps run once when every task is done, before presenting gate ④.
+  post_build:
+    # Launch a headless security review of the work branch's changes and write the report to
+    # .agentloop/security-review.md with the reviewed HEAD hash embedded (re-runs at the same
+    # HEAD skip, so a re-invoked loop never pays twice; the run is recorded as a security_review
+    # event). Report-only: findings are triaged by the human/lead and fixed via the implementer,
+    # and /verify still runs its own full /security-review + make audit later.
+    # Cost: one claude -p per completed build. false = run /security-review by hand before gate ④.
+    security_review: true
 
   # Hard timeouts for the external processes the loop runs, in seconds (0 = no timeout).
   # A hung `claude -p` or test run would otherwise stall the autonomous loop forever; on expiry the

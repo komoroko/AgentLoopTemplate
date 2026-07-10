@@ -29,7 +29,7 @@ brief → requirements → design → tasks → build → verify → done
 
 Check progress anytime with `/status`. At `done`, `/verify` records a retrospective in `docs/retrospective.md` and closes any open logs. An upstream defect rolls back via `/revise` (see "Roll back").
 
-**Cycles**: an ongoing repo runs this lifecycle repeatedly as **delta cycles** — each cycle's docs describe one change, not the whole product. After `done`, the human runs `make cycle-close NAME=<slug>` to archive the filled deliverables to `docs/archive/` and reset gates/phase for the next cycle (`docs/00-product-brief.md` and the baseline `docs/05-current-state.md` persist). In an adopted (brownfield) repo, `docs/05-current-state.md` is the persistent baseline of the existing codebase — `/req`/`/design` read it first, and traceability (R-N) applies to each cycle's delta only, never reverse-generated from existing behavior. Both entry paths (`make init` greenfield copy and `make adopt` brownfield) record `.agentloop/adopt-manifest.yaml`; `make -f agentloop.mk agentloop-upgrade` / `agentloop-uninstall` are manifest-driven and only ever touch pristine template-owned files.
+**Cycles**: an ongoing repo runs this lifecycle repeatedly as **delta cycles** — each cycle's docs describe one change, not the whole product. After `done`, the human runs `make cycle-close NAME=<slug>` to archive the filled deliverables to `docs/archive/` and reset gates/phase for the next cycle (`docs/00-product-brief.md` and the baseline `docs/05-current-state.md` persist). In an adopted (brownfield) repo, `docs/05-current-state.md` is the persistent baseline of the existing codebase — `/req`/`/design` read it first, and traceability (R-N / NFR-N) applies to each cycle's delta only, never reverse-generated from existing behavior. Both entry paths (`make init` greenfield copy and `make adopt` brownfield) record `.agentloop/adopt-manifest.yaml`; `make -f agentloop.mk agentloop-upgrade` / `agentloop-uninstall` are manifest-driven and only ever touch pristine template-owned files.
 
 **Mid-cycle scope change / hotfix / abandonment** (each a human decision):
 - **A scope addition that is not a defect** never widens approved requirements silently. Default: defer it to the next delta cycle. If it must land now, reopen gate ① (`/revise` to requirements) and re-approve the enlarged scope — traceability stays intact.
@@ -40,8 +40,8 @@ Check progress anytime with `/status`. At `done`, `/verify` records a retrospect
 
 The truth is split across three files. Their roles differ, so do not conflate them:
 
-- **`.agentloop/state.md`** — the truth for the phase, each gate's approval status, and the logs (speculative / escalation / roll-back). **Always read it when starting work**; update it after work (phase progress, `updated_at`). `gates.<name>` is `pending` | `approved`. **Never set it to `approved` without human approval.**
-- **`.agentloop/tasks.yaml`** — the **machine-readable truth** of the task graph (DAG). `/tasks` generates it (schema: see `.claude/commands/tasks.md`); `build_loop.py` and `dag.py` read it. `req` is the traceability thread requirements → design → tasks, mechanically cross-checked by `dag.py --trace`. Derived values (fan-out, frontier, layers, critical path) are **not stored** (preventing drift); the task table in state.md is the human-facing view from `dag.py --render`. Even with GitHub Issues integration enabled, tasks.yaml remains the SSOT and Issues are a one-way mirror (never read back).
+- **`.agentloop/state.md`** — the truth for the phase, each gate's approval status, and the logs (speculative / escalation / roll-back). **Always read it when starting work**; update it after work (phase progress, `updated_at`). `gates.<name>` is `pending` | `approved`. **Never set it to `approved` without human approval.** The escalation log's machine-readable truth is **`.agentloop/events.ndjson`** (structured events; `build_loop.py` appends automatically, `make events ARGS='--add …'` by hand) — state.md embeds only the generated view between its `ESCALATION-VIEW` markers, and items are closed with `make events ARGS='--resolve <id> --note "…"'`.
+- **`.agentloop/tasks.yaml`** — the **machine-readable truth** of the task graph (DAG). `/tasks` generates it (schema: see `.claude/commands/tasks.md`); `build_loop.py` and `dag.py` read it. `req` is the traceability thread requirements → design → tasks (IDs `R-N` for functional, `NFR-N` for non-functional requirements), mechanically cross-checked by `dag.py --trace`; `/verify` extends the same check into the test plan with `--test-plan`. Derived values (fan-out, frontier, layers, critical path) are **not stored** (preventing drift); the task table in state.md is the human-facing view from `dag.py --render`. Even with GitHub Issues integration enabled, tasks.yaml remains the SSOT and Issues are a one-way mirror (never read back).
 - **`.agentloop/config.yaml`** — the source of knobs for deterministic execution (parallelism, worktree, gate enforcement) **and the single definition of the DoD (`quality_gate.steps`)**. Read by `build_loop.py`/`gate_guard.py`.
 
 ## Gate rules (strict)
@@ -112,7 +112,7 @@ More context is not better — long inputs suffer *Context Rot* and *Lost in the
 Rules:
 
 - **Keep deliverables lean; push detail out to linked files** (e.g. an `ADR-*.md`) rather than inlining it.
-- **Compress and rotate the append-only logs.** Summarize or archive **resolved** rows of the state.md logs (keep the decision, drop the transcript); `build_loop.py` rotates `build-loop.log` past a size threshold — do the equivalent by hand for state.md tables. The defined moment for this hand-pruning is the short-tier checkpoint below (flush and GC are a pair).
+- **Compress and rotate the append-only logs.** Summarize or archive **resolved** rows of the state.md logs (keep the decision, drop the transcript); `build_loop.py` rotates `.agentloop/events.ndjson` past a size threshold (carrying open escalations forward, so pending items never rotate away) — do the equivalent by hand for the hand-maintained state.md tables. The defined moment for this hand-pruning is the short-tier checkpoint below (flush and GC are a pair).
 - **Failures are summarized, not dumped** (`summarize_failure()` keeps only the salient lines). Follow the same discipline when you surface a failure yourself.
 - **Prefer fetch-on-demand over holding everything.** Read the slice of a file you need; consult a doc when the task needs it.
 - **Compact the session at clean checkpoints, not mid-flight.** `/compact` is a human-run command (the agent cannot execute it); the agent's part is to suggest it at the right moment. That moment is a phase boundary — right after a gate approval is recorded in `state.md` and the deliverables are committed — or a build-layer boundary in interactive mode: the next command rehydrates from the SSOT, so nothing is lost. Before suggesting it, pass every item of the **pre-compact check**:
@@ -126,15 +126,15 @@ Rules:
 
 ## Quality-check commands
 
-The bundled `makefile` provides: `make test` (pytest), `make check` (= `make pre-commit` + `make pre-push`: lint / format / type-check, all of it — the gate uses this, since `pre-commit run --all-files` alone skips the pre-push-stage format/mypy/tsc hooks), `make test-tools` (self-tests of `scripts/agentloop/`), `make audit` (dependency vulnerabilities). If copied into a project without `make`, substitute that project's commands in `quality_gate.steps`.
+The bundled `makefile` provides: `make test` (pytest), `make check` (= `make pre-commit` + `make pre-push`: lint / format / type-check, all of it — the gate uses this, since `pre-commit run --all-files` alone skips the pre-push-stage format/mypy/tsc hooks), `make test-tools` (self-tests of `scripts/agentloop/`), `make audit` (dependency vulnerabilities), `make doctor` (read-only diagnosis of the environment + SSOT consistency — run it first when anything behaves oddly). If copied into a project without `make`, substitute that project's commands in `quality_gate.steps`.
 
 ## Security gate
 
-Three layers: **gitleaks** at commit stage (in `make check`; false positives → `.gitleaksignore`) / **`/security-review`** mandatory at implementation completion (before gate ④) / **`/security-review` + `make audit`** mandatory in `/verify`, recorded in `docs/test/test-plan.md`.
+Three layers: **gitleaks** at commit stage (in `make check`; false positives → `.gitleaksignore`) / **`/security-review`** mandatory at implementation completion (before gate ④ — deterministic mode A auto-runs it headless when all tasks are done and binds the report to the reviewed HEAD in `.agentloop/security-review.md`; config `build.post_build.security_review`) / **`/security-review` + `make audit`** mandatory in `/verify`, recorded in `docs/test/test-plan.md`.
 
 ## Branch / commit conventions
 
-- Implement **on a work branch** (recorded in `branch` of `state.md`; created by `make init`), never directly on main. Parallel leaf tasks use worktree-derived branches (`<branch>/T-NNN`) merged back on completion.
+- Implement **on a work branch** (recorded in `branch` of `state.md`; created by `make init`), never directly on main. Parallel leaf tasks use worktree-derived branches (`<branch>-T-NNN`; joined with `-`, since git cannot create `<branch>/T-NNN` while `<branch>` itself exists) merged back on completion.
 - Per-task commits: **`T-NNN: <summary>`**, one commit = one task. Approving `/build` covers that loop's local commits (no per-commit confirmation).
 - **Commit each phase's deliverables at its gate approval** (ADRs, task tickets, `state.md`/`tasks.yaml` updates) with a `docs: gate ③ tasks`-style message — not left uncommitted across the whole build.
 - **Push / PR creation / merging to main are outward-facing** — only after separate human approval. **Writing to GitHub Issues is also outward-facing**: only with the `github.enabled: true` opt-in; `make issue-sync` mirrors one-way and never reads Issues back. Likewise `make feedback` (filing retrospective rows marked `upstream` as issues on the template repository): `github.feedback.enabled` opt-in and human-run.
@@ -145,8 +145,8 @@ Three layers: **gitleaks** at commit stage (in `make check`; false positives →
 
 ## Directories
 
-- `.agentloop/` — SSOT (`state.md`, `tasks.yaml`, `config.yaml`)
-- `scripts/agentloop/` — deterministic orchestration (`dag.py`, `build_loop.py`, `gate_guard.py`, `issue_sync.py`, `revise.py`, `init.py`, `adopt.py`, `cycle.py`, `feedback.py`, `template_lint.py`). **Product scripts go directly under `scripts/`, not mixed in here.**
+- `.agentloop/` — SSOT (`state.md`, `tasks.yaml`, `config.yaml`) + the structured event log (`events.ndjson`)
+- `scripts/agentloop/` — deterministic orchestration (`dag.py`, `build_loop.py`, `events.py`, `doctor.py`, `gate_guard.py`, `issue_sync.py`, `revise.py`, `init.py`, `adopt.py`, `cycle.py`, `feedback.py`, `template_lint.py`). **Product scripts go directly under `scripts/`, not mixed in here.**
 - `docs/` — phase deliverables; `docs/retrospective.md` holds the retrospective at `done`
 - `.claude/commands/` — per-phase entry points (the procedure detail lives here)
 - `.claude/agents/` — specialized subagents

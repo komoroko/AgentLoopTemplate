@@ -39,14 +39,16 @@ from pathlib import Path
 from typing import Any
 
 import dag
+import events
 import yaml
 
 STATE_PATH = ".agentloop/state.md"
 CONFIG_PATH = ".agentloop/config.yaml"
 TASKS_PATH = ".agentloop/tasks.yaml"
-LOG_PATH = ".agentloop/build-loop.log"
 LOCK_PATH = ".agentloop/build-loop.lock"
-LOG_MAX_BYTES = 256 * 1024  # rotate the append-only build-loop.log past this (context hygiene; see rotate_log_if_large)
+# The post-build security-review report. Under .agentloop/ (not docs/test/) deliberately: the
+# review runs BEFORE gate ④ is approved, and gate_guard denies docs/test/** writes until then.
+SECURITY_REVIEW_PATH = ".agentloop/security-review.md"
 
 
 class StopLoop(Exception):
@@ -120,6 +122,8 @@ class Config:
     branch_pattern: str
     steps: tuple[GateStep, ...]
     agent_steps: bool
+    integration_gate: bool = True
+    security_review: bool = True
     timeout_cmd: float | None = 1800.0
     timeout_agent: float | None = 3600.0
 
@@ -135,13 +139,18 @@ class Config:
         wt = build.get("worktree") or {}
         qg = build.get("quality_gate") or {}
         tm = build.get("timeouts") or {}
+        pb = build.get("post_build") or {}
         return cls(
             max_parallel=max(1, int(build.get("max_parallel", 3))),
             worktree_enabled=bool(wt.get("enabled", True)),
             worktree_dir=str(wt.get("dir", ".worktrees")),
-            branch_pattern=str(wt.get("branch_pattern", "{branch}/{task_id}")),
+            # `-` (not `/`) between branch and task: git forbids a branch that is a path-prefix of
+            # another ref ("work" + "work/T-001" cannot coexist), so a slash pattern always fails.
+            branch_pattern=str(wt.get("branch_pattern", "{branch}-{task_id}")),
             steps=_parse_steps(qg, build.get("retries") or {}),
             agent_steps=bool(qg.get("agent_steps", True)),
+            integration_gate=bool(qg.get("integration_gate", True)),
+            security_review=bool(pb.get("security_review", True)),
             timeout_cmd=_timeout_sec(tm.get("cmd_sec"), 1800),
             timeout_agent=_timeout_sec(tm.get("agent_sec"), 3600),
         )
@@ -249,27 +258,12 @@ def update_state_view(graph: dag.Graph, path: str = STATE_PATH) -> bool:
     return True
 
 
-def log_escalation(message: str) -> None:
-    with Path(LOG_PATH).open("a", encoding="utf-8") as fh:
-        fh.write(message.rstrip() + "\n")
+def log_escalation(event: str, message: str, *, task: str = "") -> None:
+    """Record an escalation as a structured event (the machine-readable truth, see events.py),
+    refresh state.md's generated view, and echo it to stderr for the console."""
+    events.append_event(event, task=task, detail=message)
+    events.refresh_state_view()
     print(f"[escalation] {message}", file=sys.stderr)
-
-
-def rotate_log_if_large(path: str = LOG_PATH, max_bytes: int = LOG_MAX_BYTES) -> bool:
-    """Rotate an oversized append-only log to `<path>.1`, keeping a single generation.
-
-    The escalation log is append-only across runs; left unbounded it bloats the context that both
-    humans and agents re-read (Context Rot). Rotating one generation keeps the live log lean while
-    preserving the immediately prior history. Returns True if a rotation happened.
-    """
-    p = Path(path)
-    try:
-        if p.stat().st_size <= max_bytes:
-            return False
-        p.replace(Path(f"{path}.1"))
-    except OSError:
-        return False  # no log yet / not statable / rename failed: best-effort, never abort the run
-    return True
 
 
 # --- subprocess -------------------------------------------------------------
@@ -517,9 +511,73 @@ class Orchestrator:
                 return True, ""
             left = budgets.get(failed, 0)
             print(f"    quality gate fail at step '{failed}' (retries left: {left}): {task.id}")
+            events.append_event("step_fail", task=task.id, step=failed, detail=f"retries left: {left}")
             if left <= 0:
                 return False, failure_log
             budgets[failed] = left - 1
+
+    # -- post-merge integration gate --
+
+    def _integration_fix_prompt(self, ids: str, failure_log: str) -> str:
+        gate_list = " and ".join(f"`{c}`" for c in self.config.gate_cmds) or "the quality-gate commands"
+        return (
+            f"You are the integration fixer. The independent leaf tasks {ids} each passed the quality gate "
+            "in their own isolated worktrees, but after merging them into this work branch the combined "
+            "state fails the deterministic gate. Fix the integration failure below (typically a cross-file "
+            "lint/format/type error, or the tasks' changes interfering) with the minimal change — do not "
+            "widen scope or redo the tasks themselves.\n"
+            "Commit your fix to this branch (excluding the orchestration state .agentloop/):\n"
+            f"  git add -A -- . ':(exclude).agentloop' && git commit -m \"{ids}: integration fix\"\n"
+            f"Keep {gate_list} green.\n\n"
+            f"Resolve this integration failure:\n{failure_log}"
+        )
+
+    def _invoke_integration_fixer(self, ids: str, failure_log: str) -> None:
+        rc, out = _run(
+            [self.claude_bin, "-p", self._integration_fix_prompt(ids, failure_log)],
+            cwd=".",
+            timeout=self.config.timeout_agent,
+        )
+        if rc != 0:
+            raise StopLoop(f"{ids}: failed to launch the integration fixer (rc={rc})\n{out[-1000:]}")
+
+    def _integration_gate(self, tasks: list[dag.Task]) -> tuple[bool, str]:
+        """Re-verify the merged/integrated state of the work branch after a multi-leaf join.
+
+        Each leaf passed the gate only in its own isolated worktree; the *combined* file set can
+        still be red (a lint/type error only the whole tree surfaces, a format reflow another
+        task's change triggers). One batch-level re-run of the deterministic cmd steps catches
+        that before the merged tasks are marked done. Cost control: the caller runs this only
+        when 2+ leaves merged — a single-leaf join leaves the work tree identical to the one
+        already verified in that leaf's worktree (leaves branch from the batch's common base and
+        work advances only by this batch's merges), so re-running would prove nothing new.
+
+        On red, a headless fixer runs on the work branch within each step's own retries budget
+        (the same deterministic pattern as _run_task_to_done). Returns (ok, last_failure).
+        """
+        ids = ",".join(t.id for t in tasks)
+        if self.dry_run:
+            print(f"    [dry-run] integration gate on work after merging {ids}")
+            return True, ""
+        budgets = {s.name: s.retries for s in self.config.steps if s.kind == "cmd"}
+        while True:
+            failed, failure_log = None, ""
+            for step in self._steps_effective:
+                if step.kind != "cmd" or not step.run:
+                    continue
+                failure = self._run_cmd_step(step, cwd=".")
+                if failure:
+                    failed, failure_log = step.name, failure
+                    break
+            if failed is None:
+                return True, ""
+            left = budgets.get(failed, 0)
+            print(f"    integration gate fail at step '{failed}' (retries left: {left}): {ids}")
+            events.append_event("step_fail", task=ids, step=failed, detail=f"integration; retries left: {left}")
+            if left <= 0:
+                return False, failure_log
+            budgets[failed] = left - 1
+            self._invoke_integration_fixer(ids, failure_log)
 
     # -- worktree / merge --
 
@@ -564,15 +622,29 @@ class Orchestrator:
         except StopLoop as exc:
             return False, str(exc)
 
+    def _finalize_commit(self, cwd: str, message: str) -> None:
+        """Commit any outstanding diff in `cwd` (excluding .agentloop/) — a no-op on a clean tree.
+
+        The implementer is instructed to commit, but an uncommitted tree must never be the only
+        copy: a leaf's worktree is removed with --force after the merge (or when blocked), and only
+        what is on the branch survives. Finalizing here makes the branch the complete record.
+        """
+        if self.dry_run:
+            return
+        _run(["git", "add", "-A", "--", ".", ":(exclude).agentloop"], cwd=cwd)
+        _run(["git", "commit", "-m", message], cwd=cwd)
+
     def _cleanup_worktree(self, task: dag.Task) -> None:
         """Remove a leaf's worktree without merging (blocked / merge conflict).
 
         Blocked tasks leave the frontier, so the startup cleanup in _add_worktree never reaches
         their worktrees — without this they orphan under .worktrees/. The branch is kept: it holds
-        the diff a human needs to inspect or resolve.
+        the diff a human needs to inspect or resolve, so any uncommitted leftovers are finalized
+        onto it first (otherwise the forced removal would silently drop them).
         """
         if self.dry_run:
             return
+        self._finalize_commit(self._worktree_path(task), f"{task.id}: WIP (blocked)")
         _run(["git", "worktree", "remove", "--force", self._worktree_path(task)], cwd=".")
         _run(["git", "worktree", "prune"], cwd=".")
 
@@ -584,10 +656,25 @@ class Orchestrator:
         rc, out = _run(["git", "merge", "--no-ff", "--no-edit", branch], cwd=".")
         if rc != 0:
             _run(["git", "merge", "--abort"], cwd=".")
-            log_escalation(f"{task.id}: conflict merging into work. Manual resolution needed.\n{out[-500:]}")
+            log_escalation(
+                "merge_conflict",
+                f"{task.id}: conflict merging into work. Manual resolution needed.\n{out[-500:]}",
+                task=task.id,
+            )
             return False
         self._git(["worktree", "remove", "--force", self._worktree_path(task)])
         return True
+
+    def _log_task_done(self, task: dag.Task) -> None:
+        """Record a task_done event carrying the work-branch commit that finalized the task.
+
+        The commit hash is what lets the log answer "which commit closed T-NNN" later (and, for a
+        resolved escalation, "which commit fixed it") without digging through git history by hand.
+        """
+        if self.dry_run:
+            return
+        _, head = _run(["git", "rev-parse", "HEAD"], cwd=".")
+        events.append_event("task_done", task=task.id, commit=head.strip())
 
     # -- main loop --
 
@@ -641,22 +728,26 @@ class Orchestrator:
 
     def _run_loop(self) -> int:
         if not self.dry_run:
-            rotate_log_if_large()  # keep the append-only escalation log lean before appending this run's entries
+            events.rotate_if_large()  # keep the append-only event log lean before appending this run's entries
         self._recover_in_progress()
         while True:
             graph = dag.load(TASKS_PATH)
             if not self.dry_run:
                 update_state_view(graph)  # keep state.md's human-facing board fresh each iteration
+                events.refresh_state_view()
             counts = graph.counts()
             unfinished = len(graph.tasks) - counts["done"]
             if unfinished == 0:
-                return self._present_gate4(graph)
+                return self._present_gate4(graph, self._post_build_security_review())
 
             batch = plan_batch(graph, self.config.max_parallel)
             if batch is None:
                 # frontier empty & there are unfinished ones = all blocked/needs-revision. To the human.
                 blocked = [t.id for t in graph.tasks if t.status in ("blocked", "needs-revision")]
-                log_escalation(f"No runnable tasks and {unfinished} unfinished ({', '.join(blocked)}). Help needed.")
+                log_escalation(
+                    "no_runnable",
+                    f"No runnable tasks and {unfinished} unfinished ({', '.join(blocked)}). Help needed.",
+                )
                 return 1
 
             mode, tasks = batch
@@ -684,14 +775,17 @@ class Orchestrator:
             ok, log = self._run_task_to_done(task, cwd=".")
             if not ok:
                 set_task_status(task.id, "blocked")
-                log_escalation(f"{task.id}: could not pass the quality gate within the limit; blocked.\n{log}")
+                log_escalation(
+                    "blocked",
+                    f"{task.id}: could not pass the quality gate within the limit; blocked.\n{log}",
+                    task=task.id,
+                )
                 raise StopLoop(f"{task.id} is blocked. Human intervention needed.", code=1)
-            if not self.dry_run:
-                # Finalize the task diff only. The .agentloop/ orchestration state (tasks.yaml status, etc.)
-                # is not included in the per-task commit (keeping one commit = one task).
-                _run(["git", "add", "-A", "--", ".", ":(exclude).agentloop"], cwd=".")
-                # If the implementer has not committed, finalize here (if there is a diff; no-op otherwise).
-                _run(["git", "commit", "-m", f"{task.id}: {task.title}"], cwd=".")
+            # Finalize the task diff only. The .agentloop/ orchestration state (tasks.yaml status, etc.)
+            # is not included in the per-task commit (keeping one commit = one task). If the
+            # implementer has not committed, this finalizes the diff (no-op otherwise).
+            self._finalize_commit(".", f"{task.id}: {task.title}")
+            self._log_task_done(task)
             set_task_status(task.id, "done")
 
     def _consume_parallel(self, tasks: list[dag.Task]) -> None:
@@ -711,30 +805,126 @@ class Orchestrator:
                 results[task.id] = future.result()
 
         blocked_any = False
+        merged: list[dag.Task] = []
         # Merge deterministically in ascending id order (sequential join).
         for task in sorted(tasks, key=lambda t: t.id):
             ok, log = results[task.id]
             if not ok:
                 set_task_status(task.id, "blocked")
-                log_escalation(f"{task.id}: could not pass the quality gate within the limit; blocked.\n{log}")
+                log_escalation(
+                    "blocked",
+                    f"{task.id}: could not pass the quality gate within the limit; blocked.\n{log}",
+                    task=task.id,
+                )
                 self._cleanup_worktree(task)  # the branch keeps the diff for inspection
                 blocked_any = True
                 continue
+            # The leaf's full diff must be on its branch before the merge — an implementer that
+            # forgot to commit would otherwise lose that work when the worktree is removed.
+            self._finalize_commit(self._worktree_path(task), f"{task.id}: {task.title}")
             if self.merge_leaf(task, branches[task.id]):
-                set_task_status(task.id, "done")
+                merged.append(task)  # done is decided after the integration gate below
             else:
                 set_task_status(task.id, "blocked")
                 self._cleanup_worktree(task)  # conflict: aborted merge, worktree no longer needed
                 blocked_any = True
+        # Integration gate: only a join of 2+ leaves creates a combined tree nobody has verified
+        # (a single-leaf join is byte-identical to that leaf's already-gated worktree state).
+        if len(merged) >= 2 and self.config.integration_gate:
+            ok, log = self._integration_gate(merged)
+        else:
+            ok, log = True, ""
+        ids = ",".join(t.id for t in merged)
+        if ok:
+            for task in merged:
+                set_task_status(task.id, "done")
+                self._log_task_done(task)
+        else:
+            for task in merged:
+                set_task_status(task.id, "blocked")
+            log_escalation(
+                "integration_red",
+                f"{ids}: merged into work, but the integrated state fails the quality gate within the "
+                f"limit. Fix the work branch, then set these tasks back to done.\n{log}",
+                task=ids,
+            )
+            blocked_any = True
         if blocked_any:
             raise StopLoop("A blocked task occurred. Human intervention needed.", code=1)
 
-    def _present_gate4(self, graph: dag.Graph) -> int:
+    # -- post-build security review (binds the review to this build's deliverable) --
+
+    def _reviewed_head(self) -> str:
+        """The `Reviewed-HEAD:` hash recorded in the last security-review report ("" if none).
+
+        This is the freshness/idempotence key: a re-invoked loop at the same HEAD must not pay
+        for a second headless review, and a stale report (HEAD moved on) must not pass for a
+        current one at gate ④.
+        """
+        try:
+            text = Path(SECURITY_REVIEW_PATH).read_text(encoding="utf-8")
+        except OSError:
+            return ""
+        m = re.search(r"^Reviewed-HEAD:\s*([0-9a-fA-F]+)", text, re.MULTILINE)
+        return m.group(1) if m else ""
+
+    def _security_review_prompt(self, head: str) -> str:
+        return (
+            "You are the security reviewer (the post-build security gate before gate ④).\n"
+            "Apply the /security-review discipline to this work branch's changes: find the diff base "
+            "(e.g. `git merge-base HEAD <default branch>`; if unclear, review this branch's commits) and "
+            "review the full diff plus the code it interacts with for vulnerabilities (injection, authn/z "
+            "flaws, secret exposure, unsafe deserialization, path traversal, SSRF, ...).\n"
+            f"Write your report to {SECURITY_REVIEW_PATH} (overwrite it), starting with exactly this line:\n"
+            f"Reviewed-HEAD: {head}\n"
+            "Then a one-paragraph verdict, then each finding with severity (must-fix / should-fix / note), "
+            "location, and a concrete remediation. If there are no findings, say so explicitly.\n"
+            "Do NOT modify any code — report only: fixes go back through the implementer after human/lead "
+            "triage (gate rule 3), and this report is the gate-④ evidence."
+        )
+
+    def _post_build_security_review(self) -> str:
+        """Run the headless security review once per work-branch HEAD; return a gate-④ status line.
+
+        Report-only by design (the reviewer must not fix code), written to SECURITY_REVIEW_PATH with
+        the reviewed HEAD embedded, and recorded as a security_review event carrying that hash —
+        binding "which state was reviewed" to the build's deliverable instead of leaving the review
+        as an unrecorded conversational step. /verify still runs its own full review later.
+        """
+        if self.dry_run:
+            return "[dry-run] security review not launched"
+        if not self.config.security_review:
+            return (
+                "post-build security review is OFF (build.post_build.security_review: false) — "
+                "run /security-review by hand before approving gate ④."
+            )
+        _, out = _run(["git", "rev-parse", "HEAD"], cwd=".")
+        head = out.strip()
+        if head and self._reviewed_head() == head:
+            return f"already reviewed at current HEAD — report: {SECURITY_REVIEW_PATH} (Reviewed-HEAD {head[:12]})"
+        rc, out = _run(
+            [self.claude_bin, "-p", self._security_review_prompt(head)], cwd=".", timeout=self.config.timeout_agent
+        )
+        if rc != 0:
+            return (
+                f"security-review launch FAILED (rc={rc}) — run /security-review by hand before gate ④.\n{out[-500:]}"
+            )
+        if self._reviewed_head() != head:
+            return (
+                f"security review ran but {SECURITY_REVIEW_PATH} does not record Reviewed-HEAD {head[:12]} — "
+                "treat it as not done; run /security-review by hand before gate ④."
+            )
+        events.append_event("security_review", commit=head, detail=SECURITY_REVIEW_PATH)
+        events.refresh_state_view()  # this event lands after the loop-top refresh; keep the view current
+        return f"report written: {SECURITY_REVIEW_PATH} (Reviewed-HEAD {head[:12]})"
+
+    def _present_gate4(self, graph: dag.Graph, security_note: str) -> int:
         print("\n========== all tasks done (gate ④) ==========")
         print(dag.render(graph))
         print(
             "\nNext steps (human approval needed):\n"
-            "  1. Run /security-review and resolve vulnerabilities in the work-branch diff.\n"
+            f"  1. Security review: {security_note}\n"
+            "     Triage the report's findings; must-fix items go back to the implementer before gate ④.\n"
             "  2. Review the implementation summary and, if fine, approve at /build's gate ④.\n"
             "  * This script does not set gates.build to approved (only the human opens a gate)."
         )
