@@ -203,7 +203,5 @@ def test_open_escalation_warns(project: Path) -> None:
 def test_version_prefers_manifest_over_version_file(project: Path) -> None:
     (project / "VERSION").write_text("0.2.0\n", encoding="utf-8")
     assert any("template repo, VERSION 0.2.0" in m for m in _messages(doctor.run_checks(), "INFO"))
-    (project / ".agentloop" / "adopt-manifest.yaml").write_text(
-        "template:\n  version: 0.1.0\n", encoding="utf-8"
-    )
+    (project / ".agentloop" / "adopt-manifest.yaml").write_text("template:\n  version: 0.1.0\n", encoding="utf-8")
     assert any("template version 0.1.0" in m for m in _messages(doctor.run_checks(), "INFO"))

@@ -17,6 +17,14 @@ Legend: ✅ pass / ❌ fail / ⬜ not run
 ## 2. Non-functional requirement tests (criteria checklist)
 
 > Criteria-based since it is stack-independent. Make it concrete for your product.
+> One row per `NFR-N` from `docs/10-requirements.md` — `/verify` runs
+> `dag.py --trace --test-plan docs/test/test-plan.md`, which mechanically fails any R/NFR
+> that does not appear in this plan.
+
+| NFR | What to check (criterion) | Means (auto/manual) | Result | Notes |
+|-----|---------------------------|---------------------|--------|-------|
+| NFR-1 | | | ⬜ | |
+| NFR-2 | | | ⬜ | |
 
 ### Performance
 - [ ] Main operations' response time within requirement

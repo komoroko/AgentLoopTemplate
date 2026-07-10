@@ -165,9 +165,7 @@ def check_git(front: dict[str, object], config: dict[str, object]) -> list[Findi
     current = out.strip()
     declared = str(front.get("branch", ""))
     if declared and not declared.startswith("<") and current != declared:
-        findings.append(
-            Finding("WARN", "git", f"checked-out branch '{current}' ≠ state.md branch '{declared}'")
-        )
+        findings.append(Finding("WARN", "git", f"checked-out branch '{current}' ≠ state.md branch '{declared}'"))
     build_cfg = config.get("build")
     wt_cfg = build_cfg.get("worktree") if isinstance(build_cfg, dict) else None
     wt_dir = Path(str(wt_cfg.get("dir", ".worktrees"))) if isinstance(wt_cfg, dict) else Path(".worktrees")

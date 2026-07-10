@@ -31,11 +31,21 @@ While drafting, mark anything undecided inline as `[NEEDS CLARIFICATION: <what>]
 <!-- Add R-3, R-4... as many as needed -->
 
 ## Non-functional requirements (criteria)
-- **Performance**: <e.g. main operations within 1 second>
-- **Security**: <e.g. do not store secrets in plaintext>
-- **Availability / reliability**:
-- **Operations / maintainability**:
-- **Other**:
+
+Non-functional requirements get IDs too (`NFR-1`, `NFR-2`, … in the headings), so `dag.py --trace` can
+follow them into the design, tasks, and the test plan the same way as R-N. A cross-cutting NFR with no
+dedicated design section or task is fine (the trace only WARNs) — but every NFR **must** appear in
+`docs/test/test-plan.md`, which is checked mechanically at `/verify` (`--trace --test-plan`).
+
+### NFR-1: <title, e.g. Performance>
+- **Criterion (measurable)**: <e.g. main operations complete within 1 second at the expected data volume>
+- **How verified**: <e.g. timed run in the test plan §2 / a task's automated test (set the task's `req: NFR-1`)>
+
+### NFR-2: <title, e.g. Security>
+- **Criterion (measurable)**: <e.g. no secrets stored or logged in plaintext>
+- **How verified**: <e.g. /security-review + make audit results recorded in the test plan §2>
+
+<!-- Add NFR-3, NFR-4... as many as needed (availability/reliability, operations/maintainability, ...) -->
 
 ## Out of scope (non-goals)
 -
