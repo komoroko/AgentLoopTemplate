@@ -10,7 +10,7 @@
 
 AGENTLOOP_PY := uv run --no-project --with pyyaml python
 
-.PHONY: init adopt agentloop-upgrade agentloop-uninstall cycle-close build-loop issue-sync feedback revise events test-tools
+.PHONY: init adopt agentloop-upgrade agentloop-uninstall cycle-close build-loop issue-sync feedback revise events doctor test-tools
 
 # Turn the copied template into a product (idempotent): fills the pyproject / state.md placeholders,
 # snapshots the pristine docs scaffolds, records the adopt-manifest (FROM = the template's git URL,
@@ -86,6 +86,13 @@ events:
 #   make revise ARGS="--to design --reason 'rethink the auth method'"
 revise:
 	$(AGENTLOOP_PY) scripts/agentloop/revise.py $(ARGS)
+
+# One-shot read-only diagnosis of the environment and the SSOT's consistency: binaries on PATH,
+# config/state/tasks parse + gate-chain invariant, gate-guard hook registration, git branch vs
+# state.md, leftover worktrees/lock, open escalations. Exit 1 if anything is FAIL-level.
+#   make doctor
+doctor:
+	$(AGENTLOOP_PY) scripts/agentloop/doctor.py $(ARGS)
 
 # Self-tests for the template's foundational tools (scripts/agentloop/). Unit tests of the
 # deterministic orchestrator, DAG, gate hook, and the init/adopt/cycle helpers.
