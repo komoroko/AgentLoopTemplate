@@ -11,7 +11,7 @@
 
 ## Options
 
-> Mirror the form `/design` presents via AskUserQuestion. Always attach trade-offs to each option.
+> Mirror the form `/design` presents via `structured-question`. Always attach trade-offs to each option.
 
 ### Option A: <name>
 - Overview:

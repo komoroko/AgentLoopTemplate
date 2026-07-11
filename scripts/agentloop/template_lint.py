@@ -152,8 +152,26 @@ def check_capability_mapping(claude_text: str, copilot_text: str, agents_text: s
     return failures
 
 
+def neutral_texts(root: Path) -> dict[str, str]:
+    """The agent-neutral files the dialect canary scans: AGENTS.md, the shared bodies, and the
+    docs scaffolds (docs/notes/ and docs/archive/ are records, not scaffolds — Claude mentions
+    there are legitimate)."""
+    texts = {AGENTS_MD: (root / AGENTS_MD).read_text(encoding="utf-8")}
+    scans: tuple[tuple[Path, tuple[str, ...]], ...] = (
+        (root / ".agentloop" / "prompts", ()),
+        (root / "docs", ("notes", "archive")),
+    )
+    for base, excluded in scans:
+        for path in sorted(base.rglob("*.md")):
+            rel = path.relative_to(root)
+            if len(rel.parts) > 1 and rel.parts[1] in excluded:
+                continue
+            texts[rel.as_posix()] = path.read_text(encoding="utf-8")
+    return texts
+
+
 def check_neutral_vocabulary(texts: dict[str, str]) -> list[str]:
-    """No Claude-only mechanism name may appear in the agent-neutral files (AGENTS.md, bodies)."""
+    """No Claude-only mechanism name may appear in the agent-neutral files (AGENTS.md, bodies, scaffolds)."""
     failures: list[str] = []
     for path, text in sorted(texts.items()):
         for term in _CLAUDE_ONLY_TERMS:
@@ -218,10 +236,7 @@ def main(argv: list[str] | None = None) -> int:
             Path(COPILOT_MAPPING).read_text(encoding="utf-8"),
             files[AGENTS_MD],
         )
-        neutral = {AGENTS_MD: files[AGENTS_MD]}
-        for path in sorted(Path(".agentloop/prompts").rglob("*.md")):
-            neutral[path.as_posix()] = path.read_text(encoding="utf-8")
-        failures += check_neutral_vocabulary(neutral)
+        failures += check_neutral_vocabulary(neutral_texts(Path()))
         failures += check_readme_parity(files["README.md"], files["README.ja.md"])
         failures += check_version_changelog(
             adopt.read_version(Path()), Path("CHANGELOG.md").read_text(encoding="utf-8")

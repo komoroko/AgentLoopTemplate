@@ -164,6 +164,25 @@ def test_check_neutral_vocabulary_trips_on_dialect_leak() -> None:
     ]
 
 
+def test_neutral_texts_scans_docs_scaffolds_but_not_records(tmp_path: Path) -> None:
+    (tmp_path / "AGENTS.md").write_text("rules\n", encoding="utf-8")
+    (tmp_path / ".agentloop" / "prompts" / "commands").mkdir(parents=True)
+    (tmp_path / ".agentloop" / "prompts" / "commands" / "req.md").write_text("body\n", encoding="utf-8")
+    (tmp_path / "docs" / "decisions").mkdir(parents=True)
+    (tmp_path / "docs" / "decisions" / "ADR-template.md").write_text("via AskUserQuestion\n", encoding="utf-8")
+    (tmp_path / "docs" / "notes").mkdir()
+    (tmp_path / "docs" / "notes" / "comparison.md").write_text("Claude Code's AskUserQuestion\n", encoding="utf-8")
+    (tmp_path / "docs" / "archive").mkdir()
+    (tmp_path / "docs" / "archive" / "old.md").write_text("AskUserQuestion transcript\n", encoding="utf-8")
+
+    texts = template_lint.neutral_texts(tmp_path)
+    assert set(texts) == {"AGENTS.md", ".agentloop/prompts/commands/req.md", "docs/decisions/ADR-template.md"}
+    failures = template_lint.check_neutral_vocabulary(texts)
+    assert failures == [
+        "docs/decisions/ADR-template.md: Claude-only mechanism `AskUserQuestion` leaked into a neutral file"
+    ]
+
+
 # --- README parity ---------------------------------------------------------------
 
 _EN = "## A\n## B\nRun `make init` then `make -f agentloop.mk agentloop-upgrade`.\nSee scripts/agentloop/dag.py.\n"
@@ -232,10 +251,7 @@ def test_live_repo_has_no_drift() -> None:
         (_REPO_ROOT / template_lint.COPILOT_MAPPING).read_text(encoding="utf-8"),
         files[template_lint.AGENTS_MD],
     )
-    neutral = {template_lint.AGENTS_MD: files[template_lint.AGENTS_MD]}
-    for path in sorted((_REPO_ROOT / ".agentloop" / "prompts").rglob("*.md")):
-        neutral[path.relative_to(_REPO_ROOT).as_posix()] = path.read_text(encoding="utf-8")
-    failures += template_lint.check_neutral_vocabulary(neutral)
+    failures += template_lint.check_neutral_vocabulary(template_lint.neutral_texts(_REPO_ROOT))
     failures += template_lint.check_readme_parity(files["README.md"], files["README.ja.md"])
     import adopt
 

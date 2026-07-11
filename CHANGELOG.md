@@ -22,6 +22,19 @@ copied by `make adopt` — the manifest's `template.version` is the identity rec
   procedure now state explicitly that implementation stays at the minimum the
   ticket's acceptance criteria require — no speculative generality. No new gate step.
 
+### Changed
+- **Agent-specific text pruned from the neutral files; AGENTS.md compacted ~15%**: the
+  `AskUserQuestion` dialect leak in the docs scaffolds is fixed and template_lint's dialect
+  canary now scans the docs scaffolds too (`docs/notes/` and `docs/archive/` are records and
+  stay exempt). AGENTS.md no longer names per-agent hook hosts or "Claude Code's
+  `/security-review`" — that detail lives in the capability mappings — and its prose is
+  tightened throughout (every rule, table, and machine-checked token survives verbatim).
+- **Mode A's requirement stated accurately**: the deterministic build loop needs **the
+  `claude` CLI installed and authenticated** (the orchestrator launches `claude -p` itself),
+  not "Claude Code only" — any agent, or the human in a terminal, can invoke
+  `make build-loop`; without the CLI, use mode B. build.md, both mappings, and both READMEs'
+  agent-support matrices updated.
+
 ### Fixed
 - **`build_loop.py --dry-run` is now strictly read-only**: it used to write task
   statuses through to `tasks.yaml` (one dry run marked every task `done`) and could

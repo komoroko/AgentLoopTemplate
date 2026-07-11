@@ -8,8 +8,8 @@ If unapproved, do not work; say "please approve `/tasks` first" and stop.
 
 ## Execution modes
 
-### A. Deterministic execution (recommended; requires Claude Code) — `make build-loop`
-Delegate scheduling to the deterministic orchestrator `scripts/agentloop/build_loop.py`. Code decides **which tasks, at what parallelism, in what merge order, and when to stop** deterministically from `.agentloop/config.yaml` and `tasks.yaml` (not relying on LLM discretion). The orchestrator launches its implementer/reviewer agents headless via the `claude` CLI, so **mode A is Claude Code-only**; from any other agent, use mode B below:
+### A. Deterministic execution (recommended; requires the `claude` CLI) — `make build-loop`
+Delegate scheduling to the deterministic orchestrator `scripts/agentloop/build_loop.py`. Code decides **which tasks, at what parallelism, in what merge order, and when to stop** deterministically from `.agentloop/config.yaml` and `tasks.yaml` (not relying on LLM discretion). The orchestrator launches its implementer/reviewer agents headless itself via the `claude` CLI, so the requirement is **that CLI installed and authenticated** — any agent (or the human in a terminal) may invoke `make build-loop`. Without the CLI, use mode B below:
 
 ```
 make build-loop              # run
@@ -21,7 +21,7 @@ What the orchestrator does deterministically: compute the frontier → sort the 
 The non-deterministic parts are each task's implementation code content and the `review` agent step's fixes. Both are absorbed deterministically: after an agent step changes code, the already-passed cmd steps are re-run; a red cmd step retries until green, else blocked.
 
 ### B. Interactive loop — `autonomous-build-iteration` of /build (fallback: the lead re-enacts mode A by hand)
-For when the orchestrator can't run (no `claude` CLI — e.g. you are VS Code Copilot or Codex) or the human wants to drive in conversation. Start it with your environment's `autonomous-build-iteration` mechanism (see your capability mapping), or simply repeat the iteration below until the frontier is empty.
+For when the orchestrator can't run (no `claude` CLI on the machine) or the human wants to drive in conversation. Start it with your environment's `autonomous-build-iteration` mechanism (see your capability mapping), or simply repeat the iteration below until the frontier is empty.
 
 The lead re-enacts **exactly the mode-A algorithm above**, iteration by iteration: derive the frontier (todo tasks whose `blockedBy` are all done) → order it (foundation/high fan-out first — the sooner done, the more leaves free up; then the critical path) → foundation tasks serial on the work branch (isolating them would strand derivatives on a stale base), independent leaves by **`role-delegation` to the `implementer` role with `git worktree` isolation** (never subtree) at **most 3 in parallel**, each reporting its branch name for the merge — *if your environment cannot delegate or isolate, run the leaves serially on the work branch, adopting the implementer role inline per its role file* → per-task DoD pipeline → deterministic **ascending-id merges** (conflicts resolved by the implementer at the merge point) → a completed merge frees the frontier for integration tasks; recompute and continue. Empty frontier with unfinished tasks = all blocked/needs-revision → escalate and stop; all done → gate ④ below. Behavior is identical to A — what changes is who runs the machinery, which puts four duties on the lead that mode A does in code:
 
