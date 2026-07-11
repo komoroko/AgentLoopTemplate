@@ -369,6 +369,43 @@ def test_task_test_failure_consumes_budget_and_blocks(project: Path, monkeypatch
     assert fails and all(e.step == "task-test" for e in fails)
 
 
+# --- smoke `required` knob (a runnable deliverable must not skip its launch check)
+
+
+def test_config_parses_step_required_flag(project: Path) -> None:
+    (project / ".agentloop" / "config.yaml").write_text(
+        _CONFIG_STEPS.replace("run: '', retries: 1", "run: '', retries: 1, required: true"), encoding="utf-8"
+    )
+    steps = {s.name: s.required for s in build_loop.Config.load().steps}
+    assert steps["smoke"] is True
+    assert steps["test"] is False  # default stays off
+
+
+def test_required_step_without_command_refuses_to_start(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Fail-fast: the contradiction must stop the loop before any implementer is paid for —
+    # not surface as a silent skip at gate ④ after the whole build ran.
+    (project / ".agentloop" / "config.yaml").write_text(
+        _CONFIG_STEPS.replace("run: '', retries: 1", "run: '', retries: 1, required: true"), encoding="utf-8"
+    )
+    _provision(project)
+    monkeypatch.setattr(
+        build_loop, "_run", lambda cmd, cwd, timeout=None: pytest.fail("must stop before any git/claude call")
+    )
+    orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
+    assert orch._run_loop() == 2
+    assert {t.id: t.status for t in dag.load(".agentloop/tasks.yaml").tasks}["T-001"] == "todo"  # nothing consumed
+
+
+def test_present_gate4_flags_empty_cmd_steps(project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    # The empty-smoke nudge is machine output at the gate, not a lead's memory item.
+    (project / ".agentloop" / "config.yaml").write_text(_CONFIG_STEPS, encoding="utf-8")
+    _provision(project)
+    orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=True)
+    orch._present_gate4(dag.load(".agentloop/tasks.yaml"), "n/a")
+    out = capsys.readouterr().out
+    assert "DoD ran WITHOUT: smoke" in out and "required: true" in out
+
+
 def test_task_test_appears_in_implementer_prompt(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # Instruction and execution must not diverge: the implementer is told the exact command the
     # gate will judge it by first.

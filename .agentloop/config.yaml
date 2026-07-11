@@ -55,6 +55,9 @@ build:
         retries: 1           # soon as any entry point exists — e.g. "uv run python -m yourapp --help"
                              # (add a make target if you prefer). Tests can be green while the launch
                              # path is broken; an empty run is flagged at gate ④ (/build).
+        required: false      # the human decision knob (at /design or /tasks): set true once the
+                             # deliverable is runnable — then an empty `run` refuses to build
+                             # (fail-fast) instead of silently skipping the launch check.
 
   # Steps run once when every task is done, before presenting gate ④.
   post_build:

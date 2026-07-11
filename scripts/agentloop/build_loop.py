@@ -68,12 +68,18 @@ class GateStep:
     kind="agent" — a headless review+simplify pass (`claude -p`) that fixes findings in place.
                    Its content is non-deterministic, so the pipeline re-runs the cmd steps that
                    already passed whenever it changed the tree.
+
+    `required` (cmd only): an empty `run` is normally a silent skip — fine for a library, but for
+    a runnable deliverable a forgotten smoke command lets the whole build finish without ever
+    launching the thing. Marking the step required makes the loop refuse to start until `run` is
+    filled (fail-fast, before any implementer is paid for).
     """
 
     name: str
     kind: str
     run: str = ""
     retries: int = 2
+    required: bool = False
 
 
 def _parse_steps(qg: Any, retries: Any) -> tuple[GateStep, ...]:
@@ -103,6 +109,7 @@ def _parse_steps(qg: Any, retries: Any) -> tuple[GateStep, ...]:
                 kind=kind,
                 run=str(entry.get("run") or ""),
                 retries=max(0, int(entry.get("retries", 2))),
+                required=bool(entry.get("required", False)),
             )
         )
     return tuple(steps)
@@ -777,6 +784,17 @@ class Orchestrator:
             release_lock()
 
     def _run_loop(self) -> int:
+        # Fail fast on a contradictory DoD: a step marked required with no command would otherwise
+        # be silently skipped every task and only be noticed (if at all) at gate ④ — after the
+        # whole build was paid for. Refuse before consuming anything.
+        unrunnable = [s.name for s in self.config.steps if s.kind == "cmd" and s.required and not s.run.strip()]
+        if unrunnable:
+            print(
+                f"quality_gate step(s) marked `required: true` have no command: {', '.join(unrunnable)}. "
+                "Fill `run` in .agentloop/config.yaml (or drop `required`) before running the build loop.",
+                file=sys.stderr,
+            )
+            return 2
         if not self.dry_run:
             events.rotate_if_large()  # keep the append-only event log lean before appending this run's entries
         self._recover_in_progress()
@@ -979,6 +997,14 @@ class Orchestrator:
     def _present_gate4(self, graph: dag.Graph, security_note: str) -> int:
         print("\n========== all tasks done (gate ④) ==========")
         print(dag.render(graph))
+        skipped = [s.name for s in self.config.steps if s.kind == "cmd" and not s.run.strip()]
+        if skipped:
+            # The empty-step nudge must reach the gate reviewer mechanically, not depend on the
+            # lead remembering it: a silently skipped smoke means the DoD never launched the thing.
+            print(
+                f"\n  ! The DoD ran WITHOUT: {', '.join(skipped)} (no command configured). If the deliverable "
+                "is runnable, fill `run` (and set `required: true`) in .agentloop/config.yaml."
+            )
         print(
             "\nNext steps (human approval needed):\n"
             f"  1. Security review: {security_note}\n"

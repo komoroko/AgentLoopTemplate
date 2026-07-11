@@ -89,6 +89,39 @@ def test_missing_claude_is_warn_and_gh_is_info(project: Path, monkeypatch: pytes
     assert doctor.main([]) == 0  # degraded features, not broken invariants
 
 
+def _steps_config(smoke_attrs: str) -> str:
+    return (
+        "build:\n"
+        "  quality_gate:\n"
+        "    steps:\n"
+        "      - {name: test, kind: cmd, run: 'make test'}\n"
+        f"      - {{name: smoke, kind: cmd, run: ''{smoke_attrs}}}\n"
+        "gates:\n  enforce_hook: true\n  template_mode: false\n"
+    )
+
+
+def test_required_step_without_command_fails(project: Path) -> None:
+    # The same contradiction build_loop refuses to start on must surface here, pre-launch.
+    (project / ".agentloop" / "config.yaml").write_text(_steps_config(", required: true"), encoding="utf-8")
+    findings = doctor.run_checks()
+    assert any("'smoke' is `required: true` but has no command" in m for m in _messages(findings, "FAIL"))
+
+
+def test_empty_smoke_without_required_key_warns(project: Path) -> None:
+    # An undecided empty smoke is the classic silent DoD hole — nudge until a human decides.
+    (project / ".agentloop" / "config.yaml").write_text(_steps_config(""), encoding="utf-8")
+    findings = doctor.run_checks()
+    assert any("smoke has no command" in m for m in _messages(findings, "WARN"))
+
+
+def test_empty_smoke_with_explicit_required_false_is_accepted(project: Path) -> None:
+    # `required: false` written out is the recorded human decision (not runnable) — no nagging.
+    (project / ".agentloop" / "config.yaml").write_text(_steps_config(", required: false"), encoding="utf-8")
+    findings = doctor.run_checks()
+    assert not [m for m in _messages(findings, "WARN") if "smoke" in m]
+    assert not _messages(findings, "FAIL")
+
+
 def test_unparseable_config_fails(project: Path) -> None:
     (project / ".agentloop" / "config.yaml").write_text("build: [not a mapping", encoding="utf-8")
     assert any("not valid YAML" in m for m in _messages(doctor.run_checks(), "FAIL"))

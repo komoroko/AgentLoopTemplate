@@ -81,7 +81,46 @@ def check_config() -> tuple[list[Finding], dict[str, object]]:
     runnable = [s for s in config.steps if s.kind == "cmd" and s.run]
     if not runnable:
         findings.append(Finding("WARN", "config", "no cmd step has a command — the quality gate would check nothing"))
+    findings.extend(_check_step_commands(config, raw))
     return findings, raw
+
+
+def _check_step_commands(config: build_loop.Config, raw: dict[str, object]) -> list[Finding]:
+    """A `required` step with no command is a contradiction build_loop refuses to run (FAIL here
+    too, so it surfaces before the loop is even launched). An empty smoke without a *deliberate*
+    `required: false` gets a WARN: a runnable deliverable whose DoD never launches it is the
+    exact miss the smoke step exists to catch."""
+    build = raw.get("build") if isinstance(raw.get("build"), dict) else {}
+    qg = build.get("quality_gate") if isinstance(build, dict) else {}
+    raw_steps = qg.get("steps") if isinstance(qg, dict) else None
+    explicit: dict[str, bool] = {}  # step name → `required` key present in the YAML
+    if isinstance(raw_steps, list):
+        for entry in raw_steps:
+            if isinstance(entry, dict):
+                explicit[str(entry.get("name", ""))] = "required" in entry
+    out: list[Finding] = []
+    for step in config.steps:
+        if step.kind != "cmd" or step.run.strip():
+            continue
+        if step.required:
+            out.append(
+                Finding(
+                    "FAIL",
+                    "config",
+                    f"step '{step.name}' is `required: true` but has no command — "
+                    "build_loop refuses to start; fill `run` or drop `required`",
+                )
+            )
+        elif step.name == "smoke" and not explicit.get("smoke", False):
+            out.append(
+                Finding(
+                    "WARN",
+                    "config",
+                    "smoke has no command — fill `run` (+ `required: true`) for a runnable "
+                    "deliverable, or set `required: false` explicitly to record the decision",
+                )
+            )
+    return out
 
 
 def check_state() -> tuple[list[Finding], dict[str, object]]:
