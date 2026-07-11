@@ -5,6 +5,47 @@ installed version (recorded in `.agentloop/adopt-manifest.yaml`) and the new one
 one `## [x.y.z] - YYYY-MM-DD` heading per release. Neither this file nor `VERSION` is
 copied by `make adopt` — the manifest's `template.version` is the identity record.
 
+## [0.3.0] - 2026-07-11
+
+### Added
+- **Per-task test execution**: tasks.yaml's `test` command — documented as the task's
+  green decision but never actually run — is now prepended to the quality gate as a
+  focused `task-test` step when it differs from the configured cmd steps (dedup keeps
+  the default `make test` single), and named in the implementer prompt.
+- **`required` step knob**: a quality-gate cmd step marked `required: true` with an
+  empty `run` makes `build_loop.py` refuse to start (fail-fast) instead of silently
+  skipping — set it on `smoke` once the deliverable is runnable. Gate ④ now prints
+  which cmd steps the DoD skipped; doctor FAILs the contradiction and WARNs an
+  undecided empty smoke (an explicit `required: false` records the decision).
+- **JSON Schemas** (`.agentloop/schema/*.schema.json`) for config.yaml / tasks.yaml:
+  editor completion/validation via `yaml-language-server` modelines (the tasks.yaml
+  one survives rewrites through `TASKS_HEADER`); `make doctor` validates both files
+  (doctor/test-tools now pull in `jsonschema`; the ordinary runtime stays pyyaml-only).
+- **`make pr-draft`** (`scripts/agentloop/pr_draft.py`): assemble a PR body from the
+  SSOT (gate approvals with date/approver, task table, requirement coverage,
+  security-review binding, commit list) into `.agentloop/pr-draft.md`. Read-only and
+  never calls gh — PR creation stays human-run.
+- **doctor, field-driven checks**: task↔ticket parity (docs/tasks/T-NNN.md), UNMERGED
+  vs merged leftover leaf branches, security-review↔HEAD staleness once all tasks are
+  done, events.ndjson size vs the rotation threshold, and `guard_paths` gate-name
+  typos (which silently disable that path's guard → FAIL).
+
+### Fixed
+- **`_finalize_commit` swallowed failures**: a real commit failure (unset git identity,
+  index lock) was indistinguishable from the clean-tree no-op, and the forced worktree
+  removal right after would drop the very diff the finalize exists to preserve. The
+  no-op is now decided by `git status --porcelain` up front, every rc is checked, the
+  commit runs `--no-verify` (preservation, not a quality decision), and on failure the
+  tree/worktree is kept and the loop escalates instead of continuing.
+
+### Changed / migration notes (for repos upgrading the machinery)
+- `requires-python` relaxed from `>=3.13,<3.14` to the measured floor `>=3.10`
+  (ruff `target-version` / mypy `python_version` follow). Products may re-pin freely.
+- `make doctor` / `make test-tools` now launch with `--with jsonschema` in addition to
+  pyyaml (first run downloads it once; everything else is unchanged).
+- tasks.yaml gets a `yaml-language-server` modeline as its first header line on the
+  next rewrite; add `.agentloop/schema/` when upgrading by hand so it resolves.
+
 ## [0.2.0] - 2026-07-10
 
 ### Added

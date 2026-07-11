@@ -306,7 +306,9 @@ def check_events() -> list[Finding]:
     opened = events.open_escalations(events.load_events())
     if opened:
         ids = ", ".join(f"#{e.id} {e.event}({e.task or '-'})" for e in opened)
-        findings.append(Finding("WARN", "events", f"{len(opened)} open escalation(s): {ids} — resolve via `make events`"))
+        findings.append(
+            Finding("WARN", "events", f"{len(opened)} open escalation(s): {ids} — resolve via `make events`")
+        )
     log = Path(events.EVENTS_PATH)
     if log.is_file() and log.stat().st_size > events.EVENTS_MAX_BYTES * 0.8:
         findings.append(

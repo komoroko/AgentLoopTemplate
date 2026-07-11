@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import argparse
 import re
-import sys
 from pathlib import Path
 
 import build_loop
@@ -70,7 +69,12 @@ def _git(args: list[str]) -> str:
 def _task_section(graph: dag.Graph) -> list[str]:
     counts = graph.counts()
     done = counts.get("done", 0)
-    lines = [f"{done}/{len(graph.tasks)} tasks done.", "", "| task | kind | status | req | title |", "|---|---|---|---|---|"]
+    lines = [
+        f"{done}/{len(graph.tasks)} tasks done.",
+        "",
+        "| task | kind | status | req | title |",
+        "|---|---|---|---|---|",
+    ]
     for t in graph.tasks:
         lines.append(f"| {t.id} | {t.kind} | {t.status} | {t.req or '-'} | {t.title} |")
     return lines
@@ -103,9 +107,7 @@ def build_draft(base: str) -> str:
         lines.append("_(no readable tasks.yaml)_")
 
     lines += ["", "## Quality evidence", ""]
-    lines.append(
-        f"- Test plan: `{TEST_PLAN_PATH}` " + ("present" if Path(TEST_PLAN_PATH).exists() else "**absent**")
-    )
+    lines.append(f"- Test plan: `{TEST_PLAN_PATH}` " + ("present" if Path(TEST_PLAN_PATH).exists() else "**absent**"))
     reviewed, head = _reviewed_head(), _git(["rev-parse", "HEAD"])
     if reviewed:
         # Either hash may be abbreviated — prefix-match in both directions.
