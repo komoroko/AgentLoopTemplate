@@ -135,7 +135,7 @@ Three layers: **gitleaks** at commit stage (in `make check`; false positives →
 - Implement **on a work branch** (recorded in `branch` of `state.md`; created by `make init`), never directly on main. Parallel leaf tasks use worktree-derived branches (`<branch>-T-NNN`) merged back on completion.
 - Per-task commits: **`T-NNN: <summary>`**, one commit = one task. Approving `/build` covers that loop's local commits (no per-commit confirmation).
 - **Commit each phase's deliverables at its gate approval** (ADRs, task tickets, `state.md`/`tasks.yaml` updates) with a `docs: gate ③ tasks`-style message — not left uncommitted across the whole build.
-- **Push / PR creation / merging to main are outward-facing** — only after separate human approval. **Writing to GitHub Issues is also outward-facing**: only with the `github.enabled: true` opt-in; `make issue-sync` mirrors one-way and never reads Issues back. Likewise `make feedback` (filing retrospective rows marked `upstream` as issues on the template repository): `github.feedback.enabled` opt-in and human-run.
+- **Push / PR creation / merging to main are outward-facing** — only after separate human approval. **Writing to GitHub Issues is also outward-facing**: only with the `github.enabled: true` opt-in; `make issue-sync` mirrors one-way and never reads Issues back.
 
 ## Tool-execution permissions (distinct from gate approvals)
 
@@ -144,7 +144,7 @@ Three layers: **gitleaks** at commit stage (in `make check`; false positives →
 ## Directories
 
 - `.agentloop/` — SSOT (`state.md`, `tasks.yaml`, `config.yaml`) + the structured event log (`events.ndjson`)
-- `scripts/agentloop/` — deterministic orchestration (`dag.py`, `build_loop.py`, `events.py`, `doctor.py`, `gate_guard.py`, `issue_sync.py`, `pr_draft.py`, `revise.py`, `init.py`, `adopt.py`, `cycle.py`, `feedback.py`, `template_lint.py`). **Product scripts go directly under `scripts/`, not mixed in here.**
+- `scripts/agentloop/` — deterministic orchestration (`dag.py`, `build_loop.py`, `events.py`, `doctor.py`, `gate_guard.py`, `issue_sync.py`, `pr_draft.py`, `revise.py`, `init.py`, `adopt.py`, `cycle.py`, `template_lint.py`). **Product scripts go directly under `scripts/`, not mixed in here.**
 - `docs/` — phase deliverables; `docs/retrospective.md` holds the retrospective at `done`
 - `.claude/commands/` — per-phase entry points (the procedure detail lives here)
 - `.claude/agents/` — specialized subagents

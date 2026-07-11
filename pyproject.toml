@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 # The template's floor, not a recommendation: the agentloop tooling runs on 3.10+ (verified by
-# its test suite; feedback.py's `match` sets the minimum). Products may raise this freely — pin a
+# running its test suite under 3.10). Products may raise this freely — pin a
 # single minor (">=3.13,<3.14" + .python-version) if you value reproducibility over range.
 requires-python = ">=3.10"
 dependencies = [

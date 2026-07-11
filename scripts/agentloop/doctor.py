@@ -61,7 +61,7 @@ def check_binaries() -> list[Finding]:
         ("uv", "FAIL", "every agentloop.mk target launches through it"),
         ("git", "FAIL", "worktrees/merges/commits are git operations"),
         ("claude", "WARN", "build-loop's headless implementer/reviewer launches need it"),
-        ("gh", "INFO", "only needed when github.enabled/feedback is turned on"),
+        ("gh", "INFO", "only needed when github.enabled is turned on"),
     ):
         if shutil.which(name):
             out.append(Finding("PASS", "env", f"{name} found on PATH"))

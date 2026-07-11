@@ -238,22 +238,6 @@ If you want to make tasks visible to the team/stakeholders, you can **one-way-mi
 - **One-way only**: `tasks.yaml` is always the SSOT. Edits on the Issues side are not read back (preserving deterministic, offline operation). Check just the plan with `make issue-sync ARGS=--dry-run`.
 - Writing issues is an outward-facing operation, so the `github.enabled: true` opt-in serves as consent.
 
-### Feeding lessons back to the template (optional)
-
-A cycle's retrospective (§4/§5) collects template-improvement proposals; rows the human marks
-`Promote? = upstream` can be filed as issues on the **upstream template repository** with
-`make feedback`.
-
-- **Off by default.** Enable with `github.feedback.enabled: true` in `.agentloop/config.yaml`. The
-  upstream repo comes from `github.feedback.repo` (owner/repo) or, when empty, the template source
-  recorded in `.agentloop/adopt-manifest.yaml`.
-- `/verify` drafts one self-contained issue per row into `.agentloop/feedback.yaml` (gitignored);
-  **the human reviews and files** — preview offline with `make feedback ARGS=--dry-run`, then
-  `make feedback`. Filing is outward-facing and never pre-authorized.
-- Idempotent via a hidden content-hash body marker (re-running skips what is already filed);
-  the label is best-effort (non-collaborators can file but not label); one-way and additive —
-  upstream issues are never read back, edited, or closed.
-
 ## Troubleshooting
 
 - **First, run `make doctor`** — a read-only diagnosis of the whole setup: binaries on PATH, config/state/tasks consistency (including the gate-chain invariant and `guard_paths` typos), task↔ticket parity, gate-guard hook registration, branch/worktree/leaf-branch/lock leftovers, open escalations and event-log size, the security-review↔HEAD binding, and JSON-Schema validation of `config.yaml`/`tasks.yaml`. Most of the situations below show up there as a FAIL/WARN line.
@@ -275,7 +259,7 @@ A cycle's retrospective (§4/§5) collects template-improvement proposals; rows 
 | `.agentloop/events.ndjson` | structured orchestration events — the escalation log's machine-readable truth (`make events`); state.md embeds the generated view |
 | `.agentloop/config.yaml` | source of knobs for deterministic execution (parallelism, worktree, gate enforcement) and the single definition of the DoD (`quality_gate.steps`) |
 | `.agentloop/schema/` | JSON Schemas for `config.yaml` / `tasks.yaml` — editor completion/validation via the `yaml-language-server` modelines; `make doctor` validates against them |
-| `scripts/agentloop/` | deterministic orchestration (`dag.py` / `build_loop.py` / `events.py` / `doctor.py` / `gate_guard.py` / `pr_draft.py` / `revise.py` / `issue_sync.py` / `feedback.py` / `init.py` / `adopt.py` / `cycle.py`). Product scripts go directly under `scripts/` |
+| `scripts/agentloop/` | deterministic orchestration (`dag.py` / `build_loop.py` / `events.py` / `doctor.py` / `gate_guard.py` / `pr_draft.py` / `revise.py` / `issue_sync.py` / `init.py` / `adopt.py` / `cycle.py`). Product scripts go directly under `scripts/` |
 | `VERSION` / `CHANGELOG.md` | the template's release identity; `agentloop-upgrade` shows the changelog between the installed and new versions |
 | `agentloop.mk` | the AgentLoop make targets, self-contained (uv only) — an existing repo takes just this file |
 | `CLAUDE.md` | agent operating rules and gate rules |

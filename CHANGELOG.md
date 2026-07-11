@@ -30,6 +30,13 @@ copied by `make adopt` — the manifest's `template.version` is the identity rec
   done, events.ndjson size vs the rotation threshold, and `guard_paths` gate-name
   typos (which silently disable that path's guard → FAIL).
 
+### Removed
+- **`make feedback`** (`feedback.py`, `github.feedback.*`): filing retrospective rows as
+  issues on the upstream template repository was elaborate machinery for a flow that a
+  hand-written issue serves just as well — retrospective §5 now simply says to file
+  `Promote? = upstream` rows by hand and record the URL. Repos that upgraded earlier can
+  delete `scripts/agentloop/feedback.py` and the `github.feedback` config block.
+
 ### Fixed
 - **`_finalize_commit` swallowed failures**: a real commit failure (unset git identity,
   index lock) was indistinguishable from the clean-tree no-op, and the forced worktree
