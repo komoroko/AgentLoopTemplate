@@ -357,15 +357,44 @@ def test_live_lock_is_info(project: Path, monkeypatch: pytest.MonkeyPatch) -> No
 
 def test_hook_registration_checked_only_when_enforced(project: Path) -> None:
     (project / ".claude" / "settings.json").write_text('{"hooks": {}}', encoding="utf-8")
-    assert any("not registered" in m for m in _messages(doctor.run_checks(), "FAIL"))
+    assert any("registered in neither" in m for m in _messages(doctor.run_checks(), "FAIL"))
     (project / ".claude" / "settings.json").unlink()
-    assert any("missing while gates.enforce_hook" in m for m in _messages(doctor.run_checks(), "FAIL"))
+    assert any("registered in neither" in m for m in _messages(doctor.run_checks(), "FAIL"))
     (project / ".agentloop" / "config.yaml").write_text(
         _CONFIG.replace("enforce_hook: true", "enforce_hook: false"), encoding="utf-8"
     )
     findings = doctor.run_checks()
     assert not _messages(findings, "FAIL")
     assert any("convention layer only" in m for m in _messages(findings, "INFO"))
+
+
+def _copilot_hooks(project: Path) -> None:
+    (project / ".github" / "hooks").mkdir(parents=True, exist_ok=True)
+    (project / ".github" / "hooks" / "agentloop.json").write_text(
+        '{"hooks": {"PreToolUse": [{"type": "command", "command": "uv run scripts/agentloop/gate_guard.py"}]}}\n',
+        encoding="utf-8",
+    )
+
+
+def test_hook_single_surface_passes_with_an_info(project: Path) -> None:
+    # claude only (the fixture baseline)
+    findings = doctor.run_checks()
+    assert any("gate_guard hook registered (claude)" in m for m in _messages(findings, "PASS"))
+    assert any("only the claude hook host" in m for m in _messages(findings, "INFO"))
+    # copilot only
+    (project / ".claude" / "settings.json").write_text('{"hooks": {}}', encoding="utf-8")
+    _copilot_hooks(project)
+    findings = doctor.run_checks()
+    assert any("gate_guard hook registered (copilot)" in m for m in _messages(findings, "PASS"))
+    assert any("only the copilot hook host" in m for m in _messages(findings, "INFO"))
+    assert not _messages(findings, "FAIL")
+
+
+def test_hook_both_surfaces_pass_without_info(project: Path) -> None:
+    _copilot_hooks(project)
+    findings = doctor.run_checks()
+    assert any("gate_guard hook registered (claude, copilot)" in m for m in _messages(findings, "PASS"))
+    assert not any("hook host" in m for m in _messages(findings, "INFO"))
 
 
 def test_open_escalation_warns(project: Path) -> None:
