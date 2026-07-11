@@ -108,16 +108,30 @@ def test_dry_run_blocks_when_tasks_not_approved(project: Path) -> None:
     assert build_loop.main(["--dry-run"]) == 2
 
 
-def test_dry_run_completes_all_tasks(project: Path) -> None:
+def _snapshot(project: Path) -> dict[str, bytes | None]:
+    """Byte-level snapshot of every SSOT/log file a run could touch (None = absent)."""
+    out: dict[str, bytes | None] = {}
+    files = (".agentloop/tasks.yaml", ".agentloop/state.md", ".agentloop/events.ndjson", ".agentloop/build-loop.lock")
+    for rel in files:
+        p = project / rel
+        out[rel] = p.read_bytes() if p.exists() else None
+    return out
+
+
+def test_dry_run_completes_all_tasks_without_writing(project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    # --dry-run simulates the whole loop to gate ④ in memory; the SSOT files stay byte-identical
+    # (a dry run that marks tasks done would corrupt the next real run's starting state).
     (project / ".agentloop" / "state.md").write_text(_STATE.format(tasks="approved"), encoding="utf-8")
     (project / ".agentloop" / "tasks.yaml").write_text(_TASKS, encoding="utf-8")
+    before = _snapshot(project)
     rc = build_loop.main(["--dry-run"])
     assert rc == 0
-    graph = dag.load(".agentloop/tasks.yaml")
-    assert graph.counts()["done"] == 3
+    assert "all tasks done (gate ④)" in capsys.readouterr().out  # the simulation reached completion
+    assert _snapshot(project) == before
+    assert dag.load(".agentloop/tasks.yaml").counts()["done"] == 0
 
 
-def test_recovers_stale_in_progress(project: Path) -> None:
+def test_recovers_stale_in_progress(project: Path, capsys: pytest.CaptureFixture[str]) -> None:
     # A task left in in_progress from a previous interruption is reset to todo at startup and re-consumed.
     # Without recovery it falls out of the frontier (todo-only) and is never started, deadlocking.
     stale = _TASKS.replace(
@@ -126,10 +140,12 @@ def test_recovers_stale_in_progress(project: Path) -> None:
     )
     (project / ".agentloop" / "state.md").write_text(_STATE.format(tasks="approved"), encoding="utf-8")
     (project / ".agentloop" / "tasks.yaml").write_text(stale, encoding="utf-8")
+    before = _snapshot(project)
     rc = build_loop.main(["--dry-run"])
     assert rc == 0
-    graph = dag.load(".agentloop/tasks.yaml")
-    assert graph.counts()["done"] == 3  # the previously in_progress T-002 also reaches done
+    # The previously in_progress T-002 also reaches done — in the simulation only; the files stay put.
+    assert "all tasks done (gate ④)" in capsys.readouterr().out
+    assert _snapshot(project) == before
 
 
 # --- non-dry-run failure handling (git monkeypatched to simulate) -----------------
@@ -457,7 +473,10 @@ def test_acquire_lock_blocks_live_pid_and_reclaims_stale(tmp_path: Path, monkeyp
 def test_run_refuses_concurrent_loop(project: Path) -> None:
     _provision(project)
     (project / ".agentloop" / "build-loop.lock").write_text("1", encoding="utf-8")  # PID 1 is always alive
-    assert build_loop.main(["--dry-run"]) == 2
+    assert build_loop.main([]) == 2  # a real run refuses while another live run holds the lock
+    # A dry run is read-only, so it neither takes nor honors the lock — it may run alongside.
+    assert build_loop.main(["--dry-run"]) == 0
+    assert (project / ".agentloop" / "build-loop.lock").read_text(encoding="utf-8") == "1"
 
 
 def test_run_refuses_undetermined_work_branch(project: Path) -> None:
@@ -526,10 +545,19 @@ def test_run_escalates_when_all_unfinished_are_blocked(project: Path) -> None:
     blocked = _TASKS.replace("status: todo", "status: blocked")
     (project / ".agentloop" / "state.md").write_text(_STATE.format(tasks="approved"), encoding="utf-8")
     (project / ".agentloop" / "tasks.yaml").write_text(blocked, encoding="utf-8")
-    assert build_loop.main(["--dry-run"]) == 1  # frontier empty + unfinished → escalate, stop
+    assert build_loop.main([]) == 1  # frontier empty + unfinished → escalate, stop (before any git/claude call)
     recorded = events.load_events()  # the escalation lands as a structured event, not free text
     assert [e.event for e in recorded] == ["no_runnable"]
     assert "Help needed" in recorded[0].detail
+
+
+def test_run_escalation_in_dry_run_stays_off_the_event_log(project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    blocked = _TASKS.replace("status: todo", "status: blocked")
+    (project / ".agentloop" / "state.md").write_text(_STATE.format(tasks="approved"), encoding="utf-8")
+    (project / ".agentloop" / "tasks.yaml").write_text(blocked, encoding="utf-8")
+    assert build_loop.main(["--dry-run"]) == 1  # same decision as a real run...
+    assert events.load_events() == []  # ...but read-only: nothing appended
+    assert "Help needed" in capsys.readouterr().err  # the human still sees the escalation on the console
 
 
 # --- state.md generated-view refresh (mode A keeps the human-facing board fresh) ----
@@ -926,7 +954,9 @@ def test_consume_serial_finalize_is_noop_in_dry_run(project: Path, monkeypatch: 
     monkeypatch.setattr(build_loop, "_run", lambda cmd, cwd, timeout=None: pytest.fail("dry-run must not call git"))
     orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=True)
     orch._consume_serial([dag.Task(id="T-001", title="base", kind="foundation")])
-    assert {t.id: t.status for t in dag.load(".agentloop/tasks.yaml").tasks}["T-001"] == "done"
+    # The task completes only in the simulation overlay; tasks.yaml itself is never written.
+    assert orch._sim_status["T-001"] == "done"
+    assert {t.id: t.status for t in dag.load(".agentloop/tasks.yaml").tasks}["T-001"] == "todo"
 
 
 def test_finalize_commit_clean_tree_issues_no_commit(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:

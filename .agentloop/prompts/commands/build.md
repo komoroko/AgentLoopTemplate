@@ -8,8 +8,8 @@ If unapproved, do not work; say "please approve `/tasks` first" and stop.
 
 ## Execution modes
 
-### A. Deterministic execution (recommended; requires Claude Code) — `make build-loop`
-Delegate scheduling to the deterministic orchestrator `scripts/agentloop/build_loop.py`. Code decides **which tasks, at what parallelism, in what merge order, and when to stop** deterministically from `.agentloop/config.yaml` and `tasks.yaml` (not relying on LLM discretion). The orchestrator launches its implementer/reviewer agents headless via the `claude` CLI, so **mode A is Claude Code-only**; from any other agent, use mode B below:
+### A. Deterministic execution (recommended; requires the `claude` CLI) — `make build-loop`
+Delegate scheduling to the deterministic orchestrator `scripts/agentloop/build_loop.py`. Code decides **which tasks, at what parallelism, in what merge order, and when to stop** deterministically from `.agentloop/config.yaml` and `tasks.yaml` (not relying on LLM discretion). The orchestrator launches its implementer/reviewer agents headless itself via the `claude` CLI, so the requirement is **that CLI installed and authenticated** — any agent (or the human in a terminal) may invoke `make build-loop`. Without the CLI, use mode B below:
 
 ```
 make build-loop              # run
@@ -21,7 +21,7 @@ What the orchestrator does deterministically: compute the frontier → sort the 
 The non-deterministic parts are each task's implementation code content and the `review` agent step's fixes. Both are absorbed deterministically: after an agent step changes code, the already-passed cmd steps are re-run; a red cmd step retries until green, else blocked.
 
 ### B. Interactive loop — `autonomous-build-iteration` of /build (fallback: the lead re-enacts mode A by hand)
-For when the orchestrator can't run (no `claude` CLI — e.g. you are VS Code Copilot or Codex) or the human wants to drive in conversation. Start it with your environment's `autonomous-build-iteration` mechanism (see your capability mapping), or simply repeat the iteration below until the frontier is empty.
+For when the orchestrator can't run (no `claude` CLI on the machine) or the human wants to drive in conversation. Start it with your environment's `autonomous-build-iteration` mechanism (see your capability mapping), or simply repeat the iteration below until the frontier is empty.
 
 The lead re-enacts **exactly the mode-A algorithm above**, iteration by iteration: derive the frontier (todo tasks whose `blockedBy` are all done) → order it (foundation/high fan-out first — the sooner done, the more leaves free up; then the critical path) → foundation tasks serial on the work branch (isolating them would strand derivatives on a stale base), independent leaves by **`role-delegation` to the `implementer` role with `git worktree` isolation** (never subtree) at **most 3 in parallel**, each reporting its branch name for the merge — *if your environment cannot delegate or isolate, run the leaves serially on the work branch, adopting the implementer role inline per its role file* → per-task DoD pipeline → deterministic **ascending-id merges** (conflicts resolved by the implementer at the merge point) → a completed merge frees the frontier for integration tasks; recompute and continue. Empty frontier with unfinished tasks = all blocked/needs-revision → escalate and stop; all done → gate ④ below. Behavior is identical to A — what changes is who runs the machinery, which puts four duties on the lead that mode A does in code:
 
@@ -34,7 +34,7 @@ The lead re-enacts **exactly the mode-A algorithm above**, iteration by iteratio
 The pipeline is `quality_gate.steps` in the config — the single definition of the DoD (see mode A). Operational notes:
 
 - **`check`** = `make pre-commit` + `make pre-push` together (lint / format / type-check, all of it). Auto-fixable hooks (ruff/format) resolve on the re-run; manual fixes (mypy, tsc) are part of the step. In a project without `make`, substitute that project's commands in the config steps.
-- **`review`** applies the **`/code-review`** (bugs/correctness) and **`/simplify`** (reuse/simplification/efficiency) disciplines and fixes findings in place; if code changed, the already-passed cmd steps are re-run. (In an environment without those commands, perform an equivalent review pass along the same two axes.)
+- **`review`** applies the **`/code-review`** (bugs/correctness) and **`/simplify`** (reuse/simplification/efficiency — including stripping what the ticket's acceptance criteria do not require: speculative generality, unused knobs/hooks; YAGNI) disciplines and fixes findings in place; if code changed, the already-passed cmd steps are re-run. (In an environment without those commands, perform an equivalent review pass along the same two axes.)
 - **`smoke` (runnable deliverables only)** — for CLI, server, etc., minimally confirm it actually launches and the main commands/endpoints work. Tests can be green while the launch path (packaging, entry point, dependency resolution) is broken; this catches that within build. If it cannot launch, set `blocked` or add a task that makes it launchable. **Fill a provisional `smoke.run` as soon as any entry point launches — don't wait for the integration task** — and note it in the foundation task's Notes. Once the deliverable is runnable, also set the step's **`required: true`** (the human decision knob): from then on an empty `run` makes `build_loop.py` refuse to start instead of silently skipping the launch check. Register that command's execution permission in the product's committed permission settings (`command-preauthorization`) so the smoke step doesn't re-prompt every loop.
 
 ## When all tasks complete (gate ④)

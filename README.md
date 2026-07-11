@@ -83,7 +83,7 @@ This template is itself a multi-agent orchestration, and its own machinery follo
 
 ## Setup (new repository / greenfield)
 
-Prerequisites: WSL / Linux / macOS and `make` (not Windows-native). The deterministic build loop (`make build-loop`, mode A) additionally needs the `claude` CLI installed and authenticated — its implementer and review steps run headless `claude -p` (Claude Code only; from other agents use the interactive mode B — see "Agent support").
+Prerequisites: WSL / Linux / macOS and `make` (not Windows-native). The deterministic build loop (`make build-loop`, mode A) additionally needs the `claude` CLI installed and authenticated — its implementer and review steps run headless `claude -p`. Any agent (or the human in a terminal) can invoke it; without the CLI use the interactive mode B — see "Agent support".
 
 1. **Copy this template** into a new product repository:
    ```bash
@@ -220,7 +220,7 @@ make build-loop ARGS=--dry-run   # check just the control flow without calling c
 ```
 
 **B. Interactive loop — the lead re-enacts mode A in conversation**
-An alternative that runs the loop without the orchestrator (and the only mode available outside Claude Code). Claude Code drives it with `/loop /build`; VS Code Copilot re-invokes the `/build` prompt per iteration; Codex re-runs the `/build` procedure.
+An alternative that runs the loop without the orchestrator (and the only mode available without the `claude` CLI). Claude Code drives it with `/loop /build`; VS Code Copilot re-invokes the `/build` prompt per iteration; Codex re-runs the `/build` procedure.
 
 - A task is complete only after **passing the quality-gate pipeline** — `quality_gate.steps` in `.agentloop/config.yaml` is the **single definition of the DoD** (default: `make test` green → `make check` clean → a review step applying the `/code-review`+`/simplify` disciplines → a real-launch smoke test for runnable deliverables). A task's own `test` command from `tasks.yaml` runs first as a focused step when it differs from the configured ones. Each cmd step has its own retry budget; a failure is sent back to the implementer until the budget runs out (→ `blocked`). Mark the smoke step `required: true` once the deliverable is runnable — an empty command then refuses to build instead of silently skipping the launch check.
 - **Parallel tasks run in isolation**: independent leaf tasks are implemented in their own branch/working directory with `git worktree`, **up to 3 in parallel** (`max_parallel` in `config.yaml`), and merged into the work branch sequentially in ascending id order when done. Foundation tasks are finalized first on the work branch. After a batch merges **2 or more** leaves, the cmd steps run once more on the **merged** work branch (the integration gate — each leaf was green only in isolation); a red goes to a headless fixer within the retry budget, else the batch blocks. Uncommitted worktree changes are finalized onto the leaf branch before merge/cleanup, so nothing is lost with the worktree.
@@ -284,12 +284,12 @@ to realize it. What each agent gets:
 | Capability | Claude Code | VS Code Copilot | Codex (and other AGENTS.md readers) |
 |---|---|---|---|
 | phase entry points | slash commands (`.claude/commands/`) | prompt files `/req` … (`.github/prompts/`) | say the phase name — the agent reads `.agentloop/prompts/commands/<name>.md` |
-| gate enforcement (mechanism layer) | PreToolUse hook (`gate_guard.py`) | same hook via `.github/hooks/agentloop.json` (agent hooks, preview) | convention layer only (its hooks cannot intercept file edits) |
+| gate enforcement (mechanism layer) | PreToolUse hook (`gate_guard.py`) + commit-stage check | same hook via `.github/hooks/agentloop.json` (agent hooks, preview) + commit-stage check | commit-stage check (`gate_guard.py --check-diff` in `make check` / `git commit`); edit-time is convention only |
 | structured questions to the human | AskUserQuestion | numbered options in chat | numbered options in chat |
 | approval presentation | plan mode + ExitPlanMode | Plan mode / explicit "approve" in chat | explicit "approve" in chat |
 | role delegation (context isolation) | subagents, worktree-parallel | custom agents `@architect` … (`.github/agents/`) | inline role adoption (serial) |
 | autonomous build (mode B) | `/loop /build` | re-invoke `/build` per iteration | re-run the `/build` procedure |
-| headless build orchestrator (mode A) | `make build-loop` (`claude -p`) | — (use mode B) | — (use mode B) |
+| headless build orchestrator (mode A) | `make build-loop` (`claude -p`) | `make build-loop` when the `claude` CLI is installed; else mode B | `make build-loop` when the `claude` CLI is installed; else mode B |
 | pending-gate notification | PushNotification | end of turn ("waiting on gate N") | end of turn |
 
 Also used everywhere: **git worktree** (isolated parallel tasks) and the **deterministic
@@ -305,6 +305,8 @@ may also parse `.claude/settings.json` and run the guard twice per tool; that is
 available.
 
 **Codex notes** — Codex reads `AGENTS.md` natively; the generic invocation rule there lets you
-drive phases by name ("run /req"). Gate enforcement is convention-only (Codex hooks intercept
-Bash, not file edits), and the security review is an equivalent manual pass — `make doctor`
-reports which hook hosts are registered.
+drive phases by name ("run /req"). Edit-time gate enforcement is convention-only (Codex hooks
+intercept Bash, not file edits), but the commit stage is mechanical: `gate_guard.py --check-diff`
+runs as a pre-commit hook and inside `make check`, so a gate violation fails the DoD before it
+lands. The security review is an equivalent manual pass — `make doctor` reports which hook hosts
+are registered.

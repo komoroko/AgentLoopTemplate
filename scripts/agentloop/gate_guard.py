@@ -35,12 +35,21 @@ I/O follows the hook convention shared by Claude Code and VS Code Copilot:
 A tool invocation that carries no file path always passes: under VS Code the hook fires for
 every tool (reads, terminal, …), and the fail-closed rule above applies only to actual
 guarded-path writes — never to path-less tools.
+
+`--check-diff` is the **agent-agnostic commit-stage mode**: instead of one hook event, it takes
+every path changed against HEAD (working tree, index, and untracked files via `git status
+--porcelain`) and applies the same `evaluate()` rules; any denial lists the offending paths on
+stderr and exits 1. Registered as a local pre-commit hook, it runs inside `make check` (= the
+quality gate every agent's DoD executes) and on `git commit` once hooks are installed — so an
+agent whose environment cannot intercept file edits (e.g. Codex), or an edit that bypasses the
+tool hook (e.g. a shell redirect), is still gate-checked mechanically before the change lands.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path, PurePosixPath
 
@@ -179,7 +188,56 @@ def evaluate(file_path: str) -> tuple[bool, str]:
     )
 
 
+def _changed_paths() -> list[str] | None:
+    """Every path changed vs HEAD (worktree + index + untracked), repo-relative. None = git unusable.
+
+    `git status --porcelain` covers all three in one call and, unlike `git diff HEAD`, also works
+    in a repository that has no commit yet. `-uall` lists files inside untracked directories
+    (the default collapses them to `dir/`, which would hide a brand-new `docs/tasks/T-001.md`).
+    """
+    try:
+        proc = subprocess.run(["git", "status", "--porcelain", "-uall"], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    paths = []
+    for line in proc.stdout.splitlines():
+        if len(line) < 4:
+            continue
+        path = line[3:]
+        if " -> " in path:  # rename/copy: "R  old -> new" — the new path is what lands
+            path = path.split(" -> ", 1)[1]
+        paths.append(path.strip('"'))  # git quotes paths with special characters
+    return paths
+
+
+def check_diff() -> int:
+    """Commit-stage check: fail (1) when any changed path needs a gate that is not approved.
+
+    The per-path decision is the same `evaluate()` the tool hooks use, so template_mode,
+    enforce_hook, and the fail-closed rule for an unreadable state.md all carry over.
+    """
+    paths = _changed_paths()
+    if paths is None:
+        # Nothing to enforce against (not a git repo / git unavailable). The tool-hook layer,
+        # where present, still guards individual edits.
+        print("gate_guard --check-diff: git status unavailable; skipping.", file=sys.stderr)
+        return 0
+    denied = [(p, reason) for p in paths for ok, reason in [evaluate(p)] if not ok]
+    if not denied:
+        return 0
+    print("gate_guard: changes to gate-guarded paths whose prerequisite gate is not approved:", file=sys.stderr)
+    for path, reason in denied:
+        print(f"  {path}: {reason}", file=sys.stderr)
+    return 1
+
+
 def main(argv: list[str] | None = None) -> int:
+    if argv is None:
+        argv = sys.argv[1:]
+    if "--check-diff" in argv:
+        return check_diff()
     try:
         payload = json.load(sys.stdin)
     except (json.JSONDecodeError, ValueError):

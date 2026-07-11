@@ -22,6 +22,9 @@ After all tasks are done it prints a summary and stops, leaving it to the human'
 Usage:
   uv run python scripts/agentloop/build_loop.py            # run
   uv run python scripts/agentloop/build_loop.py --dry-run  # check just the control flow without calling claude/git
+
+--dry-run is strictly read-only: task statuses advance only in an in-memory overlay, and no SSOT
+file, event log, or lock file is written — running it never changes what a later real run sees.
 """
 
 from __future__ import annotations
@@ -33,7 +36,7 @@ import shlex
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -386,6 +389,28 @@ class Orchestrator:
         self.claude_bin = claude_bin
         self.front = read_frontmatter()
         self.branch = work_branch(self.front)
+        # Dry-run status overlay: the simulated statuses live here instead of tasks.yaml, so the
+        # loop can progress to completion while the run stays strictly read-only.
+        self._sim_status: dict[str, str] = {}
+
+    def _set_status(self, task_id: str, status: str) -> None:
+        if self.dry_run:
+            self._sim_status[task_id] = status
+            print(f"    [dry-run] {task_id} → {status}")
+            return
+        set_task_status(task_id, status)
+
+    def _escalate(self, event: str, message: str, *, task: str = "") -> None:
+        if self.dry_run:  # read-only: surface it on the console without touching the event log
+            print(f"[escalation] {message}", file=sys.stderr)
+            return
+        log_escalation(event, message, task=task)
+
+    def _load_graph(self) -> dag.Graph:
+        graph = dag.load(TASKS_PATH)
+        if self.dry_run and self._sim_status:
+            graph = dag.Graph.from_tasks([replace(t, status=self._sim_status.get(t.id, t.status)) for t in graph.tasks])
+        return graph
 
     # -- implementer launch and quality gate --
 
@@ -470,8 +495,9 @@ class Orchestrator:
         return (
             f'You are the reviewer for task {task.id} "{task.title}" (the quality gate\'s agent step).\n'
             "Review this branch's changes for this task for correctness bugs (the /code-review discipline), "
-            "then simplify: reuse existing code and remove needless complexity (the /simplify discipline). "
-            "Apply the fixes directly.\n"
+            "then simplify: reuse existing code, remove needless complexity, and strip what the ticket's "
+            "acceptance criteria do not require — speculative generality, unused knobs/hooks (YAGNI; the "
+            "/simplify discipline). Apply the fixes directly.\n"
             "Stay within this task's scope; if you find a requirements/design defect, report it instead of fixing it.\n"
             f'If you change anything, commit with the "{task.id}: " prefix and keep {cmds} green.'
         )
@@ -544,7 +570,8 @@ class Orchestrator:
                 return True, ""
             left = budgets.get(failed, 0)
             print(f"    quality gate fail at step '{failed}' (retries left: {left}): {task.id}")
-            events.append_event("step_fail", task=task.id, step=failed, detail=f"retries left: {left}")
+            if not self.dry_run:  # unreachable in dry-run today (the dry pipeline always passes); keep read-only anyway
+                events.append_event("step_fail", task=task.id, step=failed, detail=f"retries left: {left}")
             if left <= 0:
                 return False, failure_log
             budgets[failed] = left - 1
@@ -668,7 +695,9 @@ class Orchestrator:
         by `git status --porcelain` up front, which is what makes a non-zero commit rc a genuine
         failure rather than "nothing to commit". The commit runs --no-verify: this is a
         preservation commit, not a quality decision (the quality gate already ran), and a hook
-        rejection that silently drops the WIP would defeat its purpose.
+        rejection that silently drops the WIP would defeat its purpose. That also bypasses the
+        commit-stage gate guard — acceptable, because this path only finalizes build-phase
+        implementation work, which the loop already code-checked gates.tasks for.
         """
         if self.dry_run:
             return True
@@ -749,7 +778,7 @@ class Orchestrator:
             return
         for t in graph.tasks:
             if t.status == "in_progress":
-                set_task_status(t.id, "todo")
+                self._set_status(t.id, "todo")
                 print(f"  [recover] {t.id}: reset in_progress → todo (resuming from a previous interruption)")
 
     def run(self) -> int:
@@ -773,6 +802,8 @@ class Orchestrator:
                 file=sys.stderr,
             )
             return 2
+        if self.dry_run:
+            return self._run_loop()  # read-only: no lock file either (and no contention to guard against)
         if not acquire_lock():
             print(
                 f"another build-loop run appears to be active ({LOCK_PATH} holds a live PID). "
@@ -801,7 +832,7 @@ class Orchestrator:
             events.rotate_if_large()  # keep the append-only event log lean before appending this run's entries
         self._recover_in_progress()
         while True:
-            graph = dag.load(TASKS_PATH)
+            graph = self._load_graph()
             if not self.dry_run:
                 update_state_view(graph)  # keep state.md's human-facing board fresh each iteration
                 events.refresh_state_view()
@@ -814,7 +845,7 @@ class Orchestrator:
             if batch is None:
                 # frontier empty & there are unfinished ones = all blocked/needs-revision. To the human.
                 blocked = [t.id for t in graph.tasks if t.status in ("blocked", "needs-revision")]
-                log_escalation(
+                self._escalate(
                     "no_runnable",
                     f"No runnable tasks and {unfinished} unfinished ({', '.join(blocked)}). Help needed.",
                 )
@@ -840,12 +871,12 @@ class Orchestrator:
     def _consume_serial(self, tasks: list[dag.Task]) -> None:
         """Finalize foundation tasks etc. serially on the work branch."""
         for task in tasks:
-            set_task_status(task.id, "in_progress")
+            self._set_status(task.id, "in_progress")
             print(f"  [serial] {task.id} {task.title}")
             ok, log = self._run_task_to_done(task, cwd=".")
             if not ok:
-                set_task_status(task.id, "blocked")
-                log_escalation(
+                self._set_status(task.id, "blocked")
+                self._escalate(
                     "blocked",
                     f"{task.id}: could not pass the quality gate within the limit; blocked.\n{log}",
                     task=task.id,
@@ -857,10 +888,10 @@ class Orchestrator:
             if not self._finalize_commit(".", f"{task.id}: {task.title}"):
                 # The tree on the work branch keeps the diff, but the task must not be marked done
                 # without its commit (one commit = one task is the record gate ④ reviews).
-                set_task_status(task.id, "blocked")
+                self._set_status(task.id, "blocked")
                 raise StopLoop(f"{task.id}: finalize commit failed on the work branch. Human intervention needed.")
             self._log_task_done(task)
-            set_task_status(task.id, "done")
+            self._set_status(task.id, "done")
 
     def _consume_parallel(self, tasks: list[dag.Task]) -> None:
         """Implement independent leaves worktree-isolated up to max_parallel, then merge in ascending id order.
@@ -869,7 +900,7 @@ class Orchestrator:
         only the implementation is parallelized.
         """
         for task in tasks:
-            set_task_status(task.id, "in_progress")
+            self._set_status(task.id, "in_progress")
         # Worktree creation is serial (avoid git lock contention). The implementation is run in parallel after.
         branches = {task.id: self._add_worktree(task) for task in tasks}
         results: dict[str, tuple[bool, str]] = {}
@@ -884,8 +915,8 @@ class Orchestrator:
         for task in sorted(tasks, key=lambda t: t.id):
             ok, log = results[task.id]
             if not ok:
-                set_task_status(task.id, "blocked")
-                log_escalation(
+                self._set_status(task.id, "blocked")
+                self._escalate(
                     "blocked",
                     f"{task.id}: could not pass the quality gate within the limit; blocked.\n{log}",
                     task=task.id,
@@ -897,13 +928,13 @@ class Orchestrator:
             # forgot to commit would otherwise lose that work when the worktree is removed.
             if not self._finalize_commit(self._worktree_path(task), f"{task.id}: {task.title}"):
                 # Keep the worktree (it may hold the only copy) and let the rest of the batch merge.
-                set_task_status(task.id, "blocked")
+                self._set_status(task.id, "blocked")
                 blocked_any = True
                 continue
             if self.merge_leaf(task, branches[task.id]):
                 merged.append(task)  # done is decided after the integration gate below
             else:
-                set_task_status(task.id, "blocked")
+                self._set_status(task.id, "blocked")
                 self._cleanup_worktree(task)  # conflict: aborted merge, worktree no longer needed
                 blocked_any = True
         # Integration gate: only a join of 2+ leaves creates a combined tree nobody has verified
@@ -915,12 +946,12 @@ class Orchestrator:
         ids = ",".join(t.id for t in merged)
         if ok:
             for task in merged:
-                set_task_status(task.id, "done")
+                self._set_status(task.id, "done")
                 self._log_task_done(task)
         else:
             for task in merged:
-                set_task_status(task.id, "blocked")
-            log_escalation(
+                self._set_status(task.id, "blocked")
+            self._escalate(
                 "integration_red",
                 f"{ids}: merged into work, but the integrated state fails the quality gate within the "
                 f"limit. Fix the work branch, then set these tasks back to done.\n{log}",

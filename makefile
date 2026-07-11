@@ -21,10 +21,13 @@ install:
 	curl -LsSf https://astral.sh/uv/install.sh | sh
 	curl -fsSL https://get.pnpm.io/install.sh | sh -
 
-# Sync dependencies (including the dev group; generates/updates uv.lock)
+# Sync dependencies (including the dev group; generates/updates uv.lock) and install the
+# git hooks (idempotent) so the commit-stage layer — gitleaks and the AgentLoop gate guard —
+# actually fires on `git commit`, not only inside `make check`.
 # If using the frontend, also run `cd frontend && pnpm install`
 setup:
 	uv sync
+	uv run pre-commit install
 
 # Commit-stage hooks (ruff lint / eslint / various checks)
 pre-commit:

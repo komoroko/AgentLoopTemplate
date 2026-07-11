@@ -5,6 +5,43 @@ installed version (recorded in `.agentloop/adopt-manifest.yaml`) and the new one
 one `## [x.y.z] - YYYY-MM-DD` heading per release. Neither this file nor `VERSION` is
 copied by `make adopt` — the manifest's `template.version` is the identity record.
 
+## [0.5.0] - 2026-07-12
+
+### Added
+- **Commit-stage gate enforcement (agent-agnostic)**: `gate_guard.py --check-diff`
+  fails when the diff vs HEAD (worktree + index + untracked) touches a gate-guarded
+  path whose prerequisite gate is unapproved. Registered as a local pre-commit hook,
+  so it runs inside `make check` (every agent's DoD) and on `git commit`; `make setup`
+  now runs `pre-commit install` so the commit-stage layer actually fires. This gives
+  hook-less agents (e.g. Codex) a mechanism layer at the commit/DoD boundary and also
+  catches edits that bypass the tool hooks (e.g. shell redirects). `template_mode` /
+  `enforce_hook: false` short-circuit it as before.
+- **Minimal-implementation (YAGNI) discipline standardized** (adopted from the
+  ponytail comparison, `docs/notes/ponytail-comparison.md`): AGENTS.md Principles,
+  the implementer protocol, the quality-gate `review` step prompt, and the /build
+  procedure now state explicitly that implementation stays at the minimum the
+  ticket's acceptance criteria require — no speculative generality. No new gate step.
+
+### Changed
+- **Agent-specific text pruned from the neutral files; AGENTS.md compacted ~15%**: the
+  `AskUserQuestion` dialect leak in the docs scaffolds is fixed and template_lint's dialect
+  canary now scans the docs scaffolds too (`docs/notes/` and `docs/archive/` are records and
+  stay exempt). AGENTS.md no longer names per-agent hook hosts or "Claude Code's
+  `/security-review`" — that detail lives in the capability mappings — and its prose is
+  tightened throughout (every rule, table, and machine-checked token survives verbatim).
+- **Mode A's requirement stated accurately**: the deterministic build loop needs **the
+  `claude` CLI installed and authenticated** (the orchestrator launches `claude -p` itself),
+  not "Claude Code only" — any agent, or the human in a terminal, can invoke
+  `make build-loop`; without the CLI, use mode B. build.md, both mappings, and both READMEs'
+  agent-support matrices updated.
+
+### Fixed
+- **`build_loop.py --dry-run` is now strictly read-only**: it used to write task
+  statuses through to `tasks.yaml` (one dry run marked every task `done`) and could
+  append escalation events. Statuses now advance in an in-memory overlay only; the
+  event log, state.md, and the run lock are untouched, so a dry run can no longer
+  corrupt the starting state of the next real run.
+
 ## [0.4.0] - 2026-07-12
 
 ### Added

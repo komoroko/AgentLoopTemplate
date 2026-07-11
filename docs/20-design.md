@@ -1,7 +1,7 @@
 # Design
 
 > `/design` generates this, starting from `docs/10-requirements.md` (approved).
-> Important technical choices are **decided by the human via AskUserQuestion** and recorded in `docs/decisions/ADR-*.md`.
+> Important technical choices are **decided by the human via a `structured-question`** and recorded in `docs/decisions/ADR-*.md`.
 > Finalized once a human approves at **gate ②**.
 
 ## Architecture overview
