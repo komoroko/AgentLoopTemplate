@@ -622,17 +622,42 @@ class Orchestrator:
         except StopLoop as exc:
             return False, str(exc)
 
-    def _finalize_commit(self, cwd: str, message: str) -> None:
+    def _finalize_commit(self, cwd: str, message: str) -> bool:
         """Commit any outstanding diff in `cwd` (excluding .agentloop/) — a no-op on a clean tree.
 
         The implementer is instructed to commit, but an uncommitted tree must never be the only
         copy: a leaf's worktree is removed with --force after the merge (or when blocked), and only
         what is on the branch survives. Finalizing here makes the branch the complete record.
+
+        Returns False (after escalating) when a dirty tree could not be committed — a real failure
+        (unset git identity, index lock, disk full) is the precursor of data loss, so the caller
+        must keep the tree/worktree intact instead of removing it. The clean-tree no-op is decided
+        by `git status --porcelain` up front, which is what makes a non-zero commit rc a genuine
+        failure rather than "nothing to commit". The commit runs --no-verify: this is a
+        preservation commit, not a quality decision (the quality gate already ran), and a hook
+        rejection that silently drops the WIP would defeat its purpose.
         """
         if self.dry_run:
-            return
-        _run(["git", "add", "-A", "--", ".", ":(exclude).agentloop"], cwd=cwd)
-        _run(["git", "commit", "-m", message], cwd=cwd)
+            return True
+        pathspec = [".", ":(exclude).agentloop"]
+        rc, out = _run(["git", "status", "--porcelain", "--", *pathspec], cwd=cwd)
+        if rc == 0 and not out.strip():
+            return True  # clean tree — nothing to preserve
+        if rc == 0:
+            rc, out = _run(["git", "add", "-A", "--", *pathspec], cwd=cwd)
+        if rc == 0:
+            rc, out = _run(["git", "commit", "--no-verify", "-m", message], cwd=cwd)
+        if rc != 0:
+            task_id = message.split(":", 1)[0]
+            log_escalation(
+                "blocked",
+                f"{task_id}: finalize commit failed in {cwd} (rc={rc}) — the uncommitted diff is "
+                f"preserved only in that tree, which is kept for manual recovery.\n"
+                f"{summarize_failure('git finalize commit', rc, out)}",
+                task=task_id,
+            )
+            return False
+        return True
 
     def _cleanup_worktree(self, task: dag.Task) -> None:
         """Remove a leaf's worktree without merging (blocked / merge conflict).
@@ -644,7 +669,8 @@ class Orchestrator:
         """
         if self.dry_run:
             return
-        self._finalize_commit(self._worktree_path(task), f"{task.id}: WIP (blocked)")
+        if not self._finalize_commit(self._worktree_path(task), f"{task.id}: WIP (blocked)"):
+            return  # the worktree may hold the only copy of the diff — keep it rather than destroy it
         _run(["git", "worktree", "remove", "--force", self._worktree_path(task)], cwd=".")
         _run(["git", "worktree", "prune"], cwd=".")
 
@@ -784,7 +810,11 @@ class Orchestrator:
             # Finalize the task diff only. The .agentloop/ orchestration state (tasks.yaml status, etc.)
             # is not included in the per-task commit (keeping one commit = one task). If the
             # implementer has not committed, this finalizes the diff (no-op otherwise).
-            self._finalize_commit(".", f"{task.id}: {task.title}")
+            if not self._finalize_commit(".", f"{task.id}: {task.title}"):
+                # The tree on the work branch keeps the diff, but the task must not be marked done
+                # without its commit (one commit = one task is the record gate ④ reviews).
+                set_task_status(task.id, "blocked")
+                raise StopLoop(f"{task.id}: finalize commit failed on the work branch. Human intervention needed.")
             self._log_task_done(task)
             set_task_status(task.id, "done")
 
@@ -821,7 +851,11 @@ class Orchestrator:
                 continue
             # The leaf's full diff must be on its branch before the merge — an implementer that
             # forgot to commit would otherwise lose that work when the worktree is removed.
-            self._finalize_commit(self._worktree_path(task), f"{task.id}: {task.title}")
+            if not self._finalize_commit(self._worktree_path(task), f"{task.id}: {task.title}"):
+                # Keep the worktree (it may hold the only copy) and let the rest of the batch merge.
+                set_task_status(task.id, "blocked")
+                blocked_any = True
+                continue
             if self.merge_leaf(task, branches[task.id]):
                 merged.append(task)  # done is decided after the integration gate below
             else:
