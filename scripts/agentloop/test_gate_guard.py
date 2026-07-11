@@ -242,3 +242,39 @@ def test_main_does_not_intervene_on_malformed_input(
     for payload in ("not json", "{}", json.dumps({"tool_input": {"file_path": ""}})):
         rc, out = _run_main(payload, monkeypatch, capsys)
         assert (rc, out) == (0, "")
+
+
+# --- VS Code Copilot dialect (camelCase filePath; hook fires on every tool) -----
+
+
+def test_main_denies_camelcase_file_path(
+    in_tmp: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _setup(in_tmp, tasks="pending")
+    payload = json.dumps({"tool_name": "create_file", "tool_input": {"filePath": "backend/app/main.py"}})
+    rc, out = _run_main(payload, monkeypatch, capsys)
+    assert rc == 0
+    decision = json.loads(out)["hookSpecificOutput"]
+    assert decision["permissionDecision"] == "deny"
+    assert "tasks" in decision["permissionDecisionReason"]
+
+
+def test_main_allows_camelcase_file_path_when_gate_approved(
+    in_tmp: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _setup(in_tmp, tasks="approved")
+    payload = json.dumps({"tool_name": "replace_string_in_file", "tool_input": {"filePath": "backend/app/main.py"}})
+    rc, out = _run_main(payload, monkeypatch, capsys)
+    assert (rc, out) == (0, "")
+
+
+def test_main_passes_pathless_tools_even_when_state_is_unreadable(
+    in_tmp: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # VS Code ignores matchers, so the hook sees reads/terminal too. Fail-closed applies
+    # only to guarded-path writes — a path-less tool must pass even with state.md broken.
+    (in_tmp / ".agentloop").mkdir(parents=True, exist_ok=True)
+    (in_tmp / ".agentloop" / "config.yaml").write_text(_CONFIG_ON, encoding="utf-8")
+    payload = json.dumps({"tool_name": "run_in_terminal", "tool_input": {"command": "ls"}})
+    rc, out = _run_main(payload, monkeypatch, capsys)
+    assert (rc, out) == (0, "")

@@ -2,8 +2,10 @@
 while its prerequisite gate is unapproved.
 
 It blocks in code, not relying on AGENTS.md's convention layer (each command checks its own gate).
-Registered as a Claude Code PreToolUse hook on Write/Edit, it cross-checks the edit's target path
-against the gates in `.agentloop/state.md` and **denies** unless the prerequisite is approved.
+Registered as a PreToolUse hook in `.claude/settings.json` (Claude Code, matched to Write/Edit)
+and `.github/hooks/agentloop.json` (VS Code Copilot agent hooks, which ignore matchers and fire
+on every tool), it cross-checks the edit's target path against the gates in `.agentloop/state.md`
+and **denies** unless the prerequisite is approved.
 
 Decision (the built-in default rules; override per repo with gates.guard_paths in config):
   docs/20-design.md, docs/decisions/**           → requirements must be approved
@@ -25,10 +27,14 @@ for guarded paths: the guard is the only mechanism protecting the design/tasks p
 (build_loop.py double-checks only the build gate), so an unknown state must not silently
 open every gate. The deny message points at the repair and the enforce_hook escape hatch.
 
-I/O follows the Claude Code hook convention:
-  stdin  : the hook event JSON (tool_name, tool_input.file_path, etc.)
+I/O follows the hook convention shared by Claude Code and VS Code Copilot:
+  stdin  : the hook event JSON (tool_name, tool_input.file_path, etc.). VS Code sends the
+           target path camelCase (tool_input.filePath); both spellings are accepted.
   stdout : on deny, print JSON with hookSpecificOutput. On allow, print nothing.
   exit   : always 0 (the decision is conveyed via JSON).
+A tool invocation that carries no file path always passes: under VS Code the hook fires for
+every tool (reads, terminal, …), and the fail-closed rule above applies only to actual
+guarded-path writes — never to path-less tools.
 """
 
 from __future__ import annotations
@@ -179,7 +185,8 @@ def main(argv: list[str] | None = None) -> int:
     except (json.JSONDecodeError, ValueError):
         return 0  # do not intervene if it cannot be parsed
     tool_input = payload.get("tool_input") or {}
-    file_path = tool_input.get("file_path")
+    # Claude Code sends snake_case, VS Code Copilot camelCase — accept both.
+    file_path = tool_input.get("file_path") or tool_input.get("filePath")
     if not isinstance(file_path, str) or not file_path:
         return 0
     allowed, reason = evaluate(file_path)
