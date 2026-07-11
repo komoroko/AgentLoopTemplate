@@ -50,7 +50,13 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     (tmp_path / ".agentloop" / "tasks.yaml").write_text(_TASKS, encoding="utf-8")
     (tmp_path / ".claude" / "settings.json").write_text(_SETTINGS, encoding="utf-8")
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
-    monkeypatch.setattr(build_loop, "_run", lambda cmd, cwd, timeout=None: (0, "build/demo\n"))
+
+    def fake_git(cmd: list[str], cwd: str, timeout: float | None = None) -> tuple[int, str]:
+        if cmd[:2] == ["git", "rev-parse"]:
+            return 0, "build/demo\n"
+        return 0, ""  # branch --list etc.: nothing left behind on the healthy baseline
+
+    monkeypatch.setattr(build_loop, "_run", fake_git)
     prev = os.getcwd()
     os.chdir(tmp_path)
     try:
@@ -151,6 +157,96 @@ def test_schema_files_absent_is_info_only(project: Path) -> None:
     # An adopted repo from an older template has no .agentloop/schema/ — degrade, don't fail.
     pytest.importorskip("jsonschema")
     assert _levels(doctor.run_checks(), "schema") == ["INFO", "INFO"]
+
+
+# --- the practical checks: tickets, leaf branches, security binding, log size, guard typos
+
+
+def test_missing_ticket_warns_and_orphan_ticket_is_info(project: Path) -> None:
+    (project / "docs" / "tasks").mkdir(parents=True)
+    (project / "docs" / "tasks" / "T-002.md").write_text("# T-002\n", encoding="utf-8")
+    findings = doctor.run_checks()
+    assert any("no ticket file under docs/tasks/ for: T-001" in m for m in _messages(findings, "WARN"))
+    assert any("no tasks.yaml entry: T-002" in m for m in _messages(findings, "INFO"))
+
+
+def test_no_tickets_dir_stays_silent(project: Path) -> None:
+    # Nothing under docs/tasks/ at all (e.g. a brownfield repo before its first /tasks) — no noise.
+    assert not any("ticket" in m for m in _messages(doctor.run_checks(), "WARN"))
+
+
+def test_unmerged_leaf_branch_warns_and_merged_is_info(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_git(cmd: list[str], cwd: str, timeout: float | None = None) -> tuple[int, str]:
+        if cmd[:2] == ["git", "rev-parse"]:
+            return 0, "build/demo\n"
+        if cmd[:3] == ["git", "branch", "--no-merged"]:
+            return 0, "  build/demo-T-003\n"
+        if cmd[:3] == ["git", "branch", "--list"]:
+            return 0, "  build/demo-T-002\n  build/demo-T-003\n"
+        return 0, ""
+
+    monkeypatch.setattr(build_loop, "_run", fake_git)
+    findings = doctor.run_checks()
+    assert any("UNMERGED leaf branch(es): build/demo-T-003" in m for m in _messages(findings, "WARN"))
+    assert any("merged leaf branch(es) left behind: build/demo-T-002" in m for m in _messages(findings, "INFO"))
+
+
+def _all_done(project: Path) -> None:
+    (project / ".agentloop" / "tasks.yaml").write_text(
+        "tasks:\n  - {id: T-001, title: base, kind: foundation, blockedBy: [], status: done, test: make test}\n",
+        encoding="utf-8",
+    )
+
+
+def _git_with_head(monkeypatch: pytest.MonkeyPatch, head: str) -> None:
+    def fake_git(cmd: list[str], cwd: str, timeout: float | None = None) -> tuple[int, str]:
+        if cmd[:2] == ["git", "rev-parse"]:
+            return (0, "build/demo\n") if "--abbrev-ref" in cmd else (0, f"{head}\n")
+        return 0, ""
+
+    monkeypatch.setattr(build_loop, "_run", fake_git)
+
+
+def test_all_done_without_security_report_is_info(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _all_done(project)
+    _git_with_head(monkeypatch, "abc123")
+    assert any("no .agentloop/security-review.md" in m for m in _messages(doctor.run_checks(), "INFO"))
+
+
+def test_stale_security_review_warns_and_current_passes(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _all_done(project)
+    _git_with_head(monkeypatch, "abc123def")
+    report = project / ".agentloop" / "security-review.md"
+    report.write_text("Reviewed-HEAD: 999999\n", encoding="utf-8")
+    assert any("security review is STALE" in m for m in _messages(doctor.run_checks(), "WARN"))
+    report.write_text("Reviewed-HEAD: abc123def\n", encoding="utf-8")
+    assert any(f.area == "security" and f.level == "PASS" for f in doctor.run_checks())
+
+
+def test_pending_build_stays_silent_on_security(project: Path) -> None:
+    # T-001 is still todo in the baseline fixture — the report legitimately doesn't exist yet.
+    assert not any(f.area == "security" for f in doctor.run_checks())
+
+
+def test_large_events_log_is_flagged_before_rotation(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(events, "EVENTS_MAX_BYTES", 100)
+    (project / ".agentloop" / "events.ndjson").write_text("x" * 90 + "\n", encoding="utf-8")
+    assert any("rotation" in m for m in _messages(doctor.run_checks(), "INFO"))
+
+
+def test_guard_paths_typo_fails(project: Path) -> None:
+    (project / ".agentloop" / "config.yaml").write_text(
+        _CONFIG + "  guard_paths:\n    docs/20-design.md: requirments\n", encoding="utf-8"
+    )
+    findings = doctor.run_checks()
+    assert any("guard_paths values must be one of" in m and "requirments" in m for m in _messages(findings, "FAIL"))
+
+
+def test_guard_paths_valid_passes(project: Path) -> None:
+    (project / ".agentloop" / "config.yaml").write_text(
+        _CONFIG + "  guard_paths:\n    docs/20-design.md: requirements\n    docs/tasks/: design\n", encoding="utf-8"
+    )
+    assert any("guard_paths valid (2 entries)" in m for m in _messages(doctor.run_checks(), "PASS"))
 
 
 def test_unparseable_config_fails(project: Path) -> None:

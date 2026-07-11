@@ -88,8 +88,10 @@ revise:
 	$(AGENTLOOP_PY) scripts/agentloop/revise.py $(ARGS)
 
 # One-shot read-only diagnosis of the environment and the SSOT's consistency: binaries on PATH,
-# config/state/tasks parse + gate-chain invariant, gate-guard hook registration, git branch vs
-# state.md, leftover worktrees/lock, open escalations. Exit 1 if anything is FAIL-level.
+# config/state/tasks parse + gate-chain invariant, guard_paths typos, task↔ticket parity,
+# gate-guard hook registration, git branch vs state.md, leftover worktrees/leaf-branches/lock,
+# open escalations + event-log size, security-review↔HEAD binding, JSON-Schema validation.
+# Exit 1 if anything is FAIL-level.
 # (doctor alone also pulls in jsonschema, to validate config/tasks against .agentloop/schema/;
 #  the ordinary runtime stays pyyaml-only.)
 #   make doctor
