@@ -1,7 +1,7 @@
 """PreToolUse hook: the mechanism layer that prevents editing a "next-phase deliverable"
 while its prerequisite gate is unapproved.
 
-It blocks in code, not relying on CLAUDE.md's convention layer (each command checks its own gate).
+It blocks in code, not relying on AGENTS.md's convention layer (each command checks its own gate).
 Registered as a Claude Code PreToolUse hook on Write/Edit, it cross-checks the edit's target path
 against the gates in `.agentloop/state.md` and **denies** unless the prerequisite is approved.
 

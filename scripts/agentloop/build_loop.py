@@ -9,7 +9,7 @@ because an LLM writes it (the implementer launched headless with `claude -p`), b
   - the per-step retry budget / blocked decision / stop condition / prerequisite-gate check
 
 are all decided deterministically by this script. `.agentloop/config.yaml` is the single source of knobs,
-and its `quality_gate.steps` is the single definition of the DoD (CLAUDE.md and /build refer here).
+and its `quality_gate.steps` is the single definition of the DoD (AGENTS.md and /build refer here).
 
 The determinism boundary:
   - Deterministic (here): control flow, parallelism, merge, cmd-step gate decisions, stopping.
@@ -189,11 +189,11 @@ def work_branch(front: dict[str, object]) -> str:
 
 # The pointer header of tasks.yaml. The shipped scaffold starts with exactly these lines, so the
 # round-trip rewrite below is lossless — keep the file pure data + this pointer (schema detail
-# lives in .claude/commands/tasks.md, not in comments a rewrite would destroy).
+# lives in .agentloop/prompts/commands/tasks.md, not in comments a rewrite would destroy).
 TASKS_HEADER = (
     "# yaml-language-server: $schema=schema/tasks.schema.json\n"
     "# .agentloop/tasks.yaml — machine-readable SSOT of the task graph (DAG) (build_loop updates status)\n"
-    "# schema (id/title/kind/blockedBy/status/test/req/phase): see .claude/commands/tasks.md / CLAUDE.md\n"
+    "# schema (id/title/kind/blockedBy/status/test/req/phase): see .agentloop/prompts/commands/tasks.md / AGENTS.md\n"
 )
 
 
@@ -392,7 +392,7 @@ class Orchestrator:
     def _implementer_prompt(self, task: dag.Task, failure_log: str) -> str:
         # Point the implementer at the design section for this task's requirement rather than the whole
         # design doc: reading only the relevant slice keeps the subagent context lean and avoids
-        # "Lost in the Middle" on a long design (see CLAUDE.md "Context budget"). Fall back to the whole
+        # "Lost in the Middle" on a long design (see AGENTS.md "Context budget"). Fall back to the whole
         # doc when the task has no req linkage.
         design_ref = (
             f"the design section(s) for your requirement ({task.req}) in docs/20-design.md"
@@ -417,7 +417,7 @@ class Orchestrator:
         prompt = (
             f'You are the implementer subagent. Your only task is {task.id} "{task.title}".\n'
             f"Read docs/tasks/{task.id}.md, {design_ref}, and the existing code, and implement "
-            f"following the protocol in .claude/agents/implementer.md.{baseline_ref}\n"
+            f"following the protocol in .agentloop/prompts/agents/implementer.md.{baseline_ref}\n"
             f"{task_test_ref}"
             f"Write automated tests and get {gate_list} green.\n"
             "When done, commit your changes to this branch (excluding the orchestration state .agentloop/):\n"

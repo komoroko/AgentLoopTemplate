@@ -1,4 +1,4 @@
 # yaml-language-server: $schema=schema/tasks.schema.json
 # .agentloop/tasks.yaml — machine-readable SSOT of the task graph (DAG) (build_loop updates status)
-# schema (id/title/kind/blockedBy/status/test/req/phase): see .claude/commands/tasks.md / CLAUDE.md
+# schema (id/title/kind/blockedBy/status/test/req/phase): see .agentloop/prompts/commands/tasks.md / AGENTS.md
 tasks: []

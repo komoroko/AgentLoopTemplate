@@ -18,7 +18,7 @@ build:
     # (refs/heads/build/myproduct already exists as a file and cannot become a directory).
     branch_pattern: "{branch}-{task_id}"
 
-  # The quality gate = **the single definition of the DoD** (CLAUDE.md and /build refer to this list).
+  # The quality gate = **the single definition of the DoD** (AGENTS.md and /build refer to this list).
   # Per task, a `test` command in tasks.yaml that differs from every cmd step below is prepended
   # as a focused `task-test` step (the ticket's own green decision runs first, with the test
   # step's retries budget); a shared default like "make test" adds no extra step.
@@ -82,7 +82,7 @@ build:
 
 gates:
   # If true, scripts/agentloop/gate_guard.py (the PreToolUse hook) mechanically blocks
-  # deliverable edits while the prerequisite gate is unapproved. Set false to fall back to the convention layer (CLAUDE.md) only.
+  # deliverable edits while the prerequisite gate is unapproved. Set false to fall back to the convention layer (AGENTS.md) only.
   enforce_hook: true
   # true while this repo IS the template itself: scaffold originals (docs/20-design.md, docs/tasks/**,
   # scripts/**) share paths with product deliverables, so the guard would block its own maintenance.

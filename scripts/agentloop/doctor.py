@@ -164,7 +164,7 @@ def check_state() -> tuple[list[Finding], dict[str, object]]:
             findings.append(Finding("FAIL", "state", f"gate '{gate}' is missing"))
         elif value not in GATE_VALUES:
             findings.append(Finding("FAIL", "state", f"gate '{gate}' has invalid value {value!r} (pending|approved)"))
-    # Chain invariant (CLAUDE.md "Roll back"): if an upstream gate is pending, no downstream
+    # Chain invariant (AGENTS.md "Roll back"): if an upstream gate is pending, no downstream
     # gate may stay approved — a violated chain means an approval survived a roll back.
     pending_seen: str | None = None
     for gate in revise.GATE_ORDER:

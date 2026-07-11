@@ -29,13 +29,13 @@ _CONFIG = """build:
         kind: agent
 """
 
-_CLAUDE = "kinds: foundation / parallel / integration. gates: requirements, design, release. steps: test, review.\n"
+_AGENTS = "kinds: foundation / parallel / integration. gates: requirements, design, release. steps: test, review.\n"
 _TASKS_CMD = "kind: foundation | parallel | integration. status: todo in_progress blocked needs-revision done.\n"
 
 
 def _files(**overrides: str) -> dict[str, str]:
     files = {
-        template_lint.CLAUDE_MD: _CLAUDE,
+        template_lint.AGENTS_MD: _AGENTS,
         template_lint.TASKS_CMD: _TASKS_CMD,
         template_lint.STATE_PATH: _STATE,
         template_lint.CONFIG_PATH: _CONFIG,
@@ -68,9 +68,9 @@ def test_check_vocabulary_trips_on_a_missing_kind() -> None:
 
 
 def test_check_vocabulary_trips_on_a_missing_quality_gate_step() -> None:
-    files = _files(**{template_lint.CLAUDE_MD: _CLAUDE.replace("review", "critique")})
+    files = _files(**{template_lint.AGENTS_MD: _AGENTS.replace("review", "critique")})
     failures = template_lint.check_vocabulary(files)
-    assert any("CLAUDE.md" in f and "`review`" in f for f in failures)
+    assert any("AGENTS.md" in f and "`review`" in f for f in failures)
 
 
 # --- README parity ---------------------------------------------------------------
@@ -126,7 +126,7 @@ def test_live_repo_has_no_drift() -> None:
     files = {
         path: (_REPO_ROOT / path).read_text(encoding="utf-8")
         for path in (
-            template_lint.CLAUDE_MD,
+            template_lint.AGENTS_MD,
             template_lint.TASKS_CMD,
             template_lint.STATE_PATH,
             template_lint.CONFIG_PATH,

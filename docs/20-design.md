@@ -56,7 +56,7 @@
 -
 
 ## Self-assessment (assumptions, confidence)
-> Communicated to the human at gate ② as CLAUDE.md "Gate self-assessment". Do not hide low-confidence design spots.
+> Communicated to the human at gate ② as AGENTS.md "Gate self-assessment". Do not hide low-confidence design spots.
 - **Assumptions made**: <assumptions taken as given about requirements, existing assets, technical choices>
 - **Confidence**: per area high / medium / low (e.g. architecture=high / technical choices=medium / non-functional=low). **Attach a reason for low spots.**
 - **Open questions / points for the human to decide**:

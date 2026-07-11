@@ -1,6 +1,6 @@
 """Self-consistency canaries for the template repo (drift checks across hand-maintained files).
 
-The always-loaded rules (CLAUDE.md), the per-phase commands, the bilingual READMEs, and the
+The always-loaded rules (AGENTS.md), the per-phase procedures, the bilingual READMEs, and the
 code that parses the machine-read vocabulary are maintained by hand in parallel. The classic
 failure is a rename or addition that lands in one file and silently drifts the rest — e.g. a
 new make target documented only in README.md, or a task-status value renamed in dag.py but
@@ -28,8 +28,8 @@ import adopt
 import dag
 import yaml
 
-CLAUDE_MD = "CLAUDE.md"
-TASKS_CMD = ".claude/commands/tasks.md"
+AGENTS_MD = "AGENTS.md"
+TASKS_CMD = ".agentloop/prompts/commands/tasks.md"
 STATE_PATH = ".agentloop/state.md"
 CONFIG_PATH = ".agentloop/config.yaml"
 
@@ -52,7 +52,7 @@ def gate_names(state_text: str) -> list[str]:
 
 
 def quality_gate_steps(config_text: str) -> list[str]:
-    """The DoD step names from config.yaml — defined once there, echoed by CLAUDE.md."""
+    """The DoD step names from config.yaml — defined once there, echoed by AGENTS.md."""
     config = yaml.safe_load(config_text) or {}
     steps = ((config.get("build") or {}).get("quality_gate") or {}).get("steps") or []
     return [step["name"] for step in steps if isinstance(step, dict) and "name" in step]
@@ -63,17 +63,17 @@ def check_vocabulary(files: dict[str, str]) -> list[str]:
 
     dag.py's value sets are what `--validate` enforces on tasks.yaml; state.md's gate keys are
     what gate_guard.py and revise.py act on; config's step names are the single DoD definition.
-    If any of these is renamed without updating CLAUDE.md / the /tasks procedure, the agent is
+    If any of these is renamed without updating AGENTS.md / the /tasks procedure, the agent is
     taught vocabulary the code rejects — this is the drift these canaries trip on.
     """
     failures: list[str] = []
     kinds = sorted(dag.KIND_VALUES)
-    failures += _require(files[CLAUDE_MD], CLAUDE_MD, kinds, "task kind (dag.KIND_VALUES)")
+    failures += _require(files[AGENTS_MD], AGENTS_MD, kinds, "task kind (dag.KIND_VALUES)")
     failures += _require(files[TASKS_CMD], TASKS_CMD, kinds, "task kind (dag.KIND_VALUES)")
     failures += _require(files[TASKS_CMD], TASKS_CMD, sorted(dag.STATUS_VALUES), "task status (dag.STATUS_VALUES)")
-    failures += _require(files[CLAUDE_MD], CLAUDE_MD, gate_names(files[STATE_PATH]), "gate (state.md front matter)")
+    failures += _require(files[AGENTS_MD], AGENTS_MD, gate_names(files[STATE_PATH]), "gate (state.md front matter)")
     failures += _require(
-        files[CLAUDE_MD], CLAUDE_MD, quality_gate_steps(files[CONFIG_PATH]), "quality-gate step (config.yaml)"
+        files[AGENTS_MD], AGENTS_MD, quality_gate_steps(files[CONFIG_PATH]), "quality-gate step (config.yaml)"
     )
     return failures
 
@@ -125,7 +125,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         files = {
             path: Path(path).read_text(encoding="utf-8")
-            for path in (CLAUDE_MD, TASKS_CMD, STATE_PATH, CONFIG_PATH, "README.md", "README.ja.md")
+            for path in (AGENTS_MD, TASKS_CMD, STATE_PATH, CONFIG_PATH, "README.md", "README.ja.md")
         }
         failures = check_vocabulary(files)
         failures += check_readme_parity(files["README.md"], files["README.ja.md"])

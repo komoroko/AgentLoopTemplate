@@ -2,7 +2,7 @@
 # .agentloop/state.md — this project's "Single Source of Truth"
 # Every command/agent reads this file first and updates it after working.
 # gates values are one of pending | approved. You cannot advance to the next phase
-# unless the prerequisite gate is approved (see CLAUDE.md "Gate rules").
+# unless the prerequisite gate is approved (see AGENTS.md "Gate rules").
 # When recording an approval, append the date (and approver, if several humans share the repo)
 # as a trailing comment on the gate line, e.g. `tasks: approved   # 2026-07-07 alice`.
 project: "<enter the product name>"
@@ -33,7 +33,7 @@ markers below is a **derived, human-facing view** — refresh it by pasting the 
 `uv run --no-project --with pyyaml python scripts/agentloop/dag.py --render` (deterministic mode A's `build_loop.py`
 refreshes the block automatically each iteration; keep the markers). Table, layers, critical path, frontier, and
 `fan-out` are all derived — never maintain them by hand. For the `kind`/`status` vocabulary, see the tasks.yaml
-schema / CLAUDE.md.
+schema / AGENTS.md.
 
 <!-- DAG-VIEW:BEGIN -->
 _(run /tasks, then paste the `dag.py --render` output here)_

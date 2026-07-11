@@ -1,6 +1,6 @@
 """pr-draft — assemble a PR body from the cycle's SSOT and deliverables (read-only).
 
-Push / PR creation are outward-facing and stay human-run (CLAUDE.md "Branch / commit
+Push / PR creation are outward-facing and stay human-run (AGENTS.md "Branch / commit
 conventions") — but the *body* of a good PR is exactly what the loop already recorded:
 gate approvals in state.md, the task table in tasks.yaml, requirement coverage, the
 security-review binding, and the commit list. This tool aggregates those into
@@ -29,7 +29,7 @@ REQUIREMENTS_PATH = "docs/10-requirements.md"
 TEST_PLAN_PATH = "docs/test/test-plan.md"
 
 # A gate line in state.md's front matter, with the approval note the YAML parser drops
-# (CLAUDE.md: approvals are recorded as a trailing comment, e.g. `tasks: approved  # 2026-07-07 alice`).
+# (AGENTS.md: approvals are recorded as a trailing comment, e.g. `tasks: approved  # 2026-07-07 alice`).
 _GATE_LINE_RE = re.compile(
     r"^\s*(requirements|design|tasks|build|release):\s*(\w[\w-]*)\s*(?:#\s*(.*?))?\s*$", re.MULTILINE
 )
