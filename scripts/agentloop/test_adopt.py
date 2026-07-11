@@ -92,6 +92,12 @@ def test_default_owner_classification() -> None:
     assert adopt.default_owner("scripts/agentloop/dag.py") == "template"
     assert adopt.default_owner(".claude/commands/req.md") == "template"
     assert adopt.default_owner(".claude/agents/architect.md") == "template"
+    assert adopt.default_owner(".agentloop/prompts/commands/req.md") == "template"
+    assert adopt.default_owner(".agentloop/prompts/agents/architect.md") == "template"
+    assert adopt.default_owner(".github/prompts/req.prompt.md") == "template"
+    assert adopt.default_owner(".github/agents/architect.agent.md") == "template"
+    assert adopt.default_owner(".github/hooks/agentloop.json") == "template"
+    assert adopt.default_owner(".github/instructions/agentloop.instructions.md") == "template"
     assert adopt.default_owner("agentloop.mk") == "template"
     assert adopt.default_owner(adopt.AGENTLOOP_RULES_PATH) == "template"
     assert adopt.default_owner(".agentloop/tasks.yaml") == "seeded"
@@ -270,11 +276,16 @@ def template(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         ),
         encoding="utf-8",
     )
+    (root / ".github" / "prompts").mkdir(parents=True)
+    (root / ".github" / "prompts" / "req.prompt.md").write_text("# /req (copilot)\n", encoding="utf-8")
+    (root / ".github" / "hooks").mkdir(parents=True)
+    (root / ".github" / "hooks" / "agentloop.json").write_text('{"hooks": {}}\n', encoding="utf-8")
     (root / "docs").mkdir()
     (root / "docs" / "00-product-brief.md").write_text("# Brief\n", encoding="utf-8")
     (root / "docs" / "10-requirements.md").write_text("# Requirements scaffold\n", encoding="utf-8")
     (root / "docs" / "20-design.md").write_text("# Design scaffold\n", encoding="utf-8")
-    (root / "CLAUDE.md").write_text("# AgentLoop rules\n", encoding="utf-8")
+    (root / "AGENTS.md").write_text("# AgentLoop rules\n", encoding="utf-8")
+    (root / "CLAUDE.md").write_text("# Claude capability mapping\n@AGENTS.md\n", encoding="utf-8")
     (root / "agentloop.mk").write_text("build-loop:\n\ttrue\n", encoding="utf-8")
     monkeypatch.setattr(adopt, "TEMPLATE_ROOT", root)
     return root
@@ -306,6 +317,8 @@ def test_adopt_installs_without_overwriting(template: Path, target: Path) -> Non
     assert (target / "agentloop.mk").exists()
     assert (target / "scripts" / "agentloop" / "dag.py").exists()
     assert (target / ".claude" / "commands" / "req.md").exists()
+    assert (target / ".github" / "prompts" / "req.prompt.md").exists()
+    assert (target / ".github" / "hooks" / "agentloop.json").exists()
     # Existing files were not overwritten.
     assert (target / "docs" / "10-requirements.md").read_text(encoding="utf-8") == "EXISTING product requirements\n"
     assert "My project rules" in (target / "CLAUDE.md").read_text(encoding="utf-8")
@@ -444,7 +457,7 @@ def test_upgrade_refreshes_pristine_and_respects_local_edits(template: Path, tar
     (template / "scripts" / "agentloop" / "dag.py").write_text("# tool v2\n", encoding="utf-8")
     (template / ".claude" / "commands" / "build.md").write_text("# /build\n", encoding="utf-8")
     (template / ".claude" / "commands" / "req.md").unlink()
-    (template / "CLAUDE.md").write_text("# AgentLoop rules v2\n", encoding="utf-8")
+    (template / "AGENTS.md").write_text("# AgentLoop rules v2\n", encoding="utf-8")
     # Meanwhile the user modified one installed file locally.
     (target / "agentloop.mk").write_text("build-loop:\n\techo custom\n", encoding="utf-8")
     rc = adopt.main(["--target", str(target), "--upgrade"])
@@ -615,6 +628,80 @@ def test_remove_claude_import_is_idempotent() -> None:
     stripped = adopt.remove_claude_import(merged)
     assert stripped == original
     assert adopt.remove_claude_import(stripped) == stripped
+
+
+def test_remove_agents_pointer_is_idempotent() -> None:
+    original = "# My agents rules\nDo the thing.\n"
+    merged = original.rstrip("\n") + "\n" + adopt.agents_pointer_block()
+    stripped = adopt.remove_agents_pointer(merged)
+    assert stripped == original
+    assert adopt.remove_agents_pointer(stripped) == stripped
+
+
+# --- AGENTS.md create/append/skip ---------------------------------------------------
+
+
+def test_adopt_merges_existing_agents_md(template: Path, target: Path) -> None:
+    (target / "AGENTS.md").write_text("# My agent rules\nBe careful.\n", encoding="utf-8")
+    adopt.main(["--target", str(target), "--name", "demo"])
+    text = (target / "AGENTS.md").read_text(encoding="utf-8")
+    assert text.startswith("# My agent rules")
+    assert adopt.CLAUDE_IMPORT_MARKER in text
+    assert adopt.AGENTLOOP_RULES_PATH in text
+    assert adopt.AGENTS_MARKER_END in text
+    assert _manifest(target)["agents_md"] == {"mode": "merged"}
+    # Idempotent: a re-run appends nothing.
+    adopt.main(["--target", str(target), "--name", "demo"])
+    assert (target / "AGENTS.md").read_text(encoding="utf-8") == text
+
+
+def test_adopt_creates_minimal_agents_md_when_absent(template: Path, target: Path) -> None:
+    adopt.main(["--target", str(target), "--name", "demo"])  # the target fixture has no AGENTS.md
+    text = (target / "AGENTS.md").read_text(encoding="utf-8")
+    assert text.startswith(adopt.CLAUDE_IMPORT_MARKER)  # just the pointer shim, not the rules body
+    assert adopt.AGENTLOOP_RULES_PATH in text
+    data = _manifest(target)
+    assert data["agents_md"]["mode"] == "created"
+    assert data["agents_md"]["hash"] == adopt.norm_hash(text.encode("utf-8"))
+
+
+def test_uninstall_restores_pre_adopt_agents_md(template: Path, target: Path) -> None:
+    original = "# My agent rules\nBe careful.\n"
+    (target / "AGENTS.md").write_text(original, encoding="utf-8")
+    adopt.main(["--target", str(target), "--name", "demo"])
+    rc = adopt.main(["--target", str(target), "--uninstall"])
+    assert rc == 0
+    assert (target / "AGENTS.md").read_text(encoding="utf-8") == original
+
+
+# --- legacy rules-path migration (pre-multi-agent installs) --------------------------
+
+
+def test_upgrade_migrates_legacy_rules_import(template: Path, target: Path) -> None:
+    adopt.main(["--target", str(target), "--name", "demo"])
+    # Reconstruct a pre-multi-agent install: the rules lived in .agentloop/CLAUDE.agentloop.md
+    # and CLAUDE.md imported that path.
+    legacy_import = f"@{adopt.LEGACY_RULES_PATH}"
+    claude_path = target / "CLAUDE.md"
+    claude_path.write_text(
+        claude_path.read_text(encoding="utf-8").replace(f"@{adopt.AGENTLOOP_RULES_PATH}", legacy_import),
+        encoding="utf-8",
+    )
+    rules_text = (target / adopt.AGENTLOOP_RULES_PATH).read_text(encoding="utf-8")
+    (target / adopt.AGENTLOOP_RULES_PATH).unlink()
+    (target / adopt.LEGACY_RULES_PATH).write_text(rules_text, encoding="utf-8")
+    manifest_path = target / adopt.MANIFEST_PATH
+    data = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    data["files"][adopt.LEGACY_RULES_PATH] = data["files"].pop(adopt.AGENTLOOP_RULES_PATH)
+    manifest_path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+
+    rc = adopt.main(["--target", str(target), "--upgrade"])
+    assert rc == 0
+    claude = claude_path.read_text(encoding="utf-8")
+    assert f"@{adopt.AGENTLOOP_RULES_PATH}" in claude
+    assert legacy_import not in claude
+    assert (target / adopt.AGENTLOOP_RULES_PATH).exists()
+    assert not (target / adopt.LEGACY_RULES_PATH).exists()  # pristine legacy file retired
 
 
 def test_uninstall_requires_manifest_and_rejects_from_git(template: Path, target: Path) -> None:

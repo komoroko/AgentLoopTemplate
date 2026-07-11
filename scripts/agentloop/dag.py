@@ -22,7 +22,7 @@ STATUS_VALUES = frozenset({"todo", "in_progress", "blocked", "needs-revision", "
 # The display order of STATUS_VALUES (shared by count display and Mermaid color-coding).
 STATUS_ORDER = ("todo", "in_progress", "blocked", "needs-revision", "done")
 KIND_VALUES = frozenset({"foundation", "parallel", "integration"})
-# The lifecycle phase a task originates from (see .claude/commands/tasks.md). Validated because a
+# The lifecycle phase a task originates from (see .agentloop/prompts/commands/tasks.md). Validated because a
 # typo (e.g. "biuld") would otherwise silently drop the task from --trace's build-coverage check.
 PHASE_VALUES = frozenset({"requirements", "design", "build", "verify"})
 

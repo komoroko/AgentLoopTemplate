@@ -3,16 +3,19 @@
   make adopt TARGET=../myrepo NAME=myrepo [BRANCH=...] [TEST_CMD="npm test"] [CHECK_CMD="npm run lint"]
 
 Unlike the greenfield path (copy the whole template, `make init`), an existing repo already has
-its own CLAUDE.md / settings / makefile / docs — so adoption is additive and conflict-aware.
-What it does (idempotent; --dry-run prints the plan only):
+its own AGENTS.md / CLAUDE.md / settings / makefile / docs — so adoption is additive and
+conflict-aware. What it does (idempotent; --dry-run prints the plan only):
 
-  copy   — .agentloop/ (state.md / tasks.yaml / config.yaml), scripts/agentloop/, agentloop.mk,
-           .claude/commands + .claude/agents, and the docs scaffolds. **An existing file is never
-           overwritten** (skipped and reported). The pristine docs scaffolds are snapshotted to
-           .agentloop/scaffold/docs/ so `make cycle-close` can restore them later.
-  merge  — CLAUDE.md: the template rules land in .agentloop/CLAUDE.agentloop.md and one @-import
-           line is appended to the existing CLAUDE.md (marker-guarded, appended at most once;
-           a repo without CLAUDE.md gets a minimal one holding just the import).
+  copy   — .agentloop/ (state.md / tasks.yaml / config.yaml, plus prompts/ — the shared phase
+           procedures), scripts/agentloop/, agentloop.mk, the per-agent wrappers
+           (.claude/commands + .claude/agents, .github/prompts + .github/agents +
+           .github/hooks + .github/instructions), and the docs scaffolds. **An existing file
+           is never overwritten** (skipped and reported). The pristine docs scaffolds are
+           snapshotted to .agentloop/scaffold/docs/ so `make cycle-close` can restore them later.
+  merge  — the template rules (its AGENTS.md) land in .agentloop/AGENTS.agentloop.md; the
+           existing CLAUDE.md gets one marker-guarded @-import block (with the Claude capability
+           mapping) and the existing AGENTS.md one marker-guarded pointer block — each appended
+           at most once; a repo missing either file gets a minimal one holding just the block.
            .claude/settings.json: missing permissions.allow entries and hook groups are appended.
   adapt  — the copied config.yaml gets brownfield defaults: template_mode off, guard_paths scoped
            to the **docs deliverables only** (existing code keeps flowing right after adoption;
@@ -32,8 +35,9 @@ Two more manifest-driven modes (adopt-only — a greenfield `make init` records 
                (config.yaml, state.md, tasks.yaml, filled docs, your CLAUDE.md) is never touched.
   --uninstall — remove everything adopt installed, restoring the pre-adopt state. Pristine files
                only: anything the human edited (filled docs, tuned config, updated state) stays
-               and is listed for manual review. The CLAUDE.md @import block and the merged
-               settings.json entries are retracted too. Needs no template checkout.
+               and is listed for manual review. The CLAUDE.md @import block, the AGENTS.md
+               pointer block, and the merged settings.json entries are retracted too. Needs no
+               template checkout.
   --from-git URL [--ref branch-or-tag] — shallow-clone the template into a temp dir instead of
                running from a checkout. Inside an adopted repo, `--upgrade` without --from-git
                falls back to the source recorded in the manifest (self-upgrade):
@@ -68,13 +72,28 @@ import yaml
 
 TEMPLATE_ROOT = Path(__file__).resolve().parents[2]
 CLAUDE_IMPORT_MARKER = "<!-- agentloop-rules -->"
-AGENTLOOP_RULES_PATH = ".agentloop/CLAUDE.agentloop.md"
+AGENTS_MARKER_END = "<!-- /agentloop-rules -->"
+AGENTLOOP_RULES_PATH = ".agentloop/AGENTS.agentloop.md"
+# Pre-multi-agent installs held the rules here; --upgrade migrates the CLAUDE.md import line.
+LEGACY_RULES_PATH = ".agentloop/CLAUDE.agentloop.md"
 MANIFEST_PATH = ".agentloop/adopt-manifest.yaml"
 SETTINGS_PATH = ".claude/settings.json"
 SCAFFOLD_PREFIX = ".agentloop/scaffold/docs/"
 
 # Trees copied file-by-file (never overwriting). The specially handled files below are excluded.
-COPY_ROOTS = (".agentloop", "scripts/agentloop", ".claude/commands", ".claude/agents", "docs")
+# The .github roots are the VS Code Copilot surfaces (prompt/agent wrappers, capability mapping,
+# hook registration) — deliberately narrow so a product's .github/workflows is never touched.
+COPY_ROOTS = (
+    ".agentloop",
+    "scripts/agentloop",
+    ".claude/commands",
+    ".claude/agents",
+    ".github/prompts",
+    ".github/agents",
+    ".github/hooks",
+    ".github/instructions",
+    "docs",
+)
 COPY_FILES = ("agentloop.mk",)
 # Handled by dedicated logic, not the generic copy loop.
 SPECIAL = {".agentloop/config.yaml", ".agentloop/state.md", "docs/00-product-brief.md"}
@@ -85,7 +104,16 @@ _EXCLUDE_FILE_PREFIXES = ("build-loop.log", "build-loop.lock", "events.ndjson", 
 # Ownership of installed files, recorded per file in the manifest. `template` = the mechanism
 # itself, safe to refresh on --upgrade while pristine; `seeded` = adopt wrote it once but the
 # repo owns it from then on (upgrade never touches it).
-_TEMPLATE_OWNED_PREFIXES = ("scripts/agentloop/", ".claude/commands/", ".claude/agents/")
+_TEMPLATE_OWNED_PREFIXES = (
+    "scripts/agentloop/",
+    ".claude/commands/",
+    ".claude/agents/",
+    ".agentloop/prompts/",
+    ".github/prompts/",
+    ".github/agents/",
+    ".github/hooks/",
+    ".github/instructions/",
+)
 _TEMPLATE_OWNED_FILES = ("agentloop.mk", AGENTLOOP_RULES_PATH)
 
 BRIEF_NOTE = (
@@ -134,11 +162,34 @@ def brownfield_config(text: str, test_cmd: str, check_cmd: str) -> str:
 
 
 def claude_import_block() -> str:
+    """The block appended to the target CLAUDE.md: the Claude Code capability mapping plus the
+    rules import. The @import must stay the block's last line — remove_claude_import() strips
+    marker→first-@ inclusive, so everything in between is retracted with it on uninstall."""
     return (
         f"\n{CLAUDE_IMPORT_MARKER}\n"
         "## AgentLoop\n"
-        "This repo uses AgentLoop (Human-on-the-Loop, gated delta cycles). The operating rules are\n"
-        f"imported from:\n@{AGENTLOOP_RULES_PATH}\n"
+        "This repo uses AgentLoop (Human-on-the-Loop, gated delta cycles). Claude Code realizes\n"
+        "the rules' capability vocabulary as: `phase-invocation` → the /req … /status slash\n"
+        "commands; `structured-question` → AskUserQuestion; `notify-and-wait` → PushNotification;\n"
+        "`approval-presentation` → plan mode + ExitPlanMode; `session-compaction` → /compact\n"
+        "(human-run); `role-delegation` → the subagents in .claude/agents/ (worktree-isolated\n"
+        "parallel leaves); `autonomous-build-iteration` → /loop /build, or headless\n"
+        "`make build-loop` (Claude Code only); `command-preauthorization` → permissions.allow in\n"
+        ".claude/settings.json. The operating rules are imported from:\n"
+        f"@{AGENTLOOP_RULES_PATH}\n"
+    )
+
+
+def agents_pointer_block() -> str:
+    """The block appended to the target AGENTS.md. AGENTS.md has no import mechanism, so the
+    block is a plain pointer, closed by an end marker remove_agents_pointer() strips against."""
+    return (
+        f"\n{CLAUDE_IMPORT_MARKER}\n"
+        "## AgentLoop\n"
+        "This repo uses AgentLoop (Human-on-the-Loop, gated delta cycles). Read and follow the\n"
+        f"operating rules in `{AGENTLOOP_RULES_PATH}`. VS Code Copilot sessions also load the\n"
+        "capability mapping in `.github/instructions/agentloop.instructions.md`.\n"
+        f"{AGENTS_MARKER_END}\n"
     )
 
 
@@ -205,6 +256,7 @@ def build_manifest(
     *,
     version: str = "",
     mode: str = "adopt",
+    agents_record: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The adopt-manifest structure (see the module docstring's `record` step).
 
@@ -225,6 +277,7 @@ def build_manifest(
         "files": {rel: files[rel] for rel in sorted(files)},
         "settings": settings_record,
         "claude_md": claude_record,
+        "agents_md": agents_record or {"mode": "merged"},
     }
 
 
@@ -486,6 +539,19 @@ def remove_claude_import(text: str) -> str:
     return "\n".join(lines)
 
 
+def remove_agents_pointer(text: str) -> str:
+    """Strip the marker..end-marker block adopt appended to AGENTS.md (idempotent; pure)."""
+    lines = text.split("\n")
+    start = next((i for i, line in enumerate(lines) if line.strip() == CLAUDE_IMPORT_MARKER), None)
+    if start is None:
+        return text
+    end = next((i for i in range(start, len(lines)) if lines[i].strip() == AGENTS_MARKER_END), start)
+    del lines[start : end + 1]
+    if 0 < start <= len(lines) and lines[start - 1].strip() == "":
+        del lines[start - 1]
+    return "\n".join(lines)
+
+
 # --- installation steps ---------------------------------------------------------
 
 
@@ -513,10 +579,11 @@ def template_items(template_root: Path, mode: str = "adopt") -> dict[str, tuple[
     """Everything a fresh adopt would install verbatim: rel -> (hash, owner, content source).
 
     Includes the scaffold-snapshot copies of the template docs (template-owned: cycle-close
-    restores from them) and the CLAUDE rules body. The SPECIAL files are absent — their
-    installed content is target-adapted (seeded), so no template hash compares against them.
-    In `mode="init"` (greenfield) the rules body is absent too: the repo's root CLAUDE.md IS
-    the rules and is owned by the product, so no `.agentloop/CLAUDE.agentloop.md` exists.
+    restores from them) and the rules body (the template's AGENTS.md). The SPECIAL files are
+    absent — their installed content is target-adapted (seeded), so no template hash compares
+    against them. In `mode="init"` (greenfield) the rules body is absent too: the repo's root
+    AGENTS.md IS the rules and is owned by the product, so no `.agentloop/AGENTS.agentloop.md`
+    exists.
     """
     items: dict[str, tuple[str, str, Path | str]] = {}
     for rel in _iter_template_files(template_root):
@@ -526,7 +593,7 @@ def template_items(template_root: Path, mode: str = "adopt") -> dict[str, tuple[
         if rel.startswith("docs/"):
             items[SCAFFOLD_PREFIX + rel[len("docs/") :]] = (digest, "template", src)
     if mode != "init":
-        rules = (template_root / "CLAUDE.md").read_text(encoding="utf-8")
+        rules = (template_root / "AGENTS.md").read_text(encoding="utf-8")
         items[AGENTLOOP_RULES_PATH] = (norm_hash(rules.encode("utf-8")), "template", rules)
     return items
 
@@ -617,6 +684,7 @@ class Installer:
         self.copied_docs: set[str] = set()
         self.settings_record: dict[str, Any] = {"created": False, "permissions_allow": [], "hooks": {}}
         self.claude_record: dict[str, Any] = {"mode": "merged"}
+        self.agents_record: dict[str, Any] = {"mode": "merged"}
 
     def _record(self, rel: str, text: str, owner: str) -> None:
         self.files[rel] = {"hash": norm_hash(text.encode("utf-8")), "owner": owner}
@@ -666,22 +734,41 @@ class Installer:
         brief = (self.template_root / "docs/00-product-brief.md").read_text(encoding="utf-8") + BRIEF_NOTE
         self._install_fresh("docs/00-product-brief.md", brief, note="with brownfield note")
 
-    def install_claude_md(self) -> None:
-        rules_text = (self.template_root / "CLAUDE.md").read_text(encoding="utf-8")
+    def install_rules(self) -> None:
+        """Install the rules body (the template's AGENTS.md) and point both root rules files at it:
+        CLAUDE.md gets the @import block (with the Claude capability mapping), AGENTS.md gets the
+        plain pointer block (it has no import mechanism). Each is created when absent, appended
+        once when present (marker-guarded), and never rewritten."""
+        rules_text = (self.template_root / "AGENTS.md").read_text(encoding="utf-8")
         if not (self.target / AGENTLOOP_RULES_PATH).exists():
-            self._write(AGENTLOOP_RULES_PATH, rules_text, "copy", "the AgentLoop rules, imported by CLAUDE.md")
+            self._write(AGENTLOOP_RULES_PATH, rules_text, "copy", "the AgentLoop rules, pointed at by AGENTS/CLAUDE.md")
             self._record(AGENTLOOP_RULES_PATH, rules_text, "template")
         dst = self.target / "CLAUDE.md"
         if not dst.exists():
             text = claude_import_block().lstrip("\n")
             self._write("CLAUDE.md", text, "copy", "created with the @import only — put your own rules here")
             self.claude_record = {"mode": "created", "hash": norm_hash(text.encode("utf-8"))}
-            return
-        existing = dst.read_text(encoding="utf-8")
-        if CLAUDE_IMPORT_MARKER in existing:
-            self.actions.append(Action("skip", "CLAUDE.md", "@import already present"))
-            return
-        self._write("CLAUDE.md", existing.rstrip("\n") + "\n" + claude_import_block(), "merge", "@import appended")
+        else:
+            existing = dst.read_text(encoding="utf-8")
+            if CLAUDE_IMPORT_MARKER in existing:
+                self.actions.append(Action("skip", "CLAUDE.md", "@import already present"))
+            else:
+                self._write(
+                    "CLAUDE.md", existing.rstrip("\n") + "\n" + claude_import_block(), "merge", "@import appended"
+                )
+        agents_dst = self.target / "AGENTS.md"
+        if not agents_dst.exists():
+            text = agents_pointer_block().lstrip("\n")
+            self._write("AGENTS.md", text, "copy", "created with the pointer only — put your own rules here")
+            self.agents_record = {"mode": "created", "hash": norm_hash(text.encode("utf-8"))}
+        else:
+            existing = agents_dst.read_text(encoding="utf-8")
+            if CLAUDE_IMPORT_MARKER in existing:
+                self.actions.append(Action("skip", "AGENTS.md", "pointer already present"))
+            else:
+                self._write(
+                    "AGENTS.md", existing.rstrip("\n") + "\n" + agents_pointer_block(), "merge", "pointer appended"
+                )
 
     def install_settings(self) -> None:
         """Merge (or create) settings.json, recording the pre-adopt text so uninstall can restore
@@ -747,6 +834,7 @@ class Installer:
                     if _canon(group) not in have:
                         record.setdefault("hooks", {}).setdefault(event, []).append(group)
             data["settings"] = record
+            data.setdefault("agents_md", self.agents_record)
             self.actions.append(Action("merge", MANIFEST_PATH, "newly installed files recorded"))
             path.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
             return
@@ -760,6 +848,7 @@ class Installer:
             date.today().isoformat(),
             None,
             version=read_version(self.template_root),
+            agents_record=self.agents_record,
         )
         self._write(MANIFEST_PATH, yaml.safe_dump(manifest, sort_keys=False, allow_unicode=True), "adapt", note)
 
@@ -859,9 +948,23 @@ class Upgrader:
                 new_settings_text = json.dumps(merged, ensure_ascii=False, indent=2) + "\n"
                 new_settings_record["hash"] = norm_hash(new_settings_text.encode("utf-8"))
 
+        # Rules-path migration: pre-multi-agent installs imported the rules from
+        # .agentloop/CLAUDE.agentloop.md. The removed-file plan already retires that file
+        # (it is absent from the new template set); the import line in CLAUDE.md is ours
+        # (inside the marker block), so rewrite just that line to the new path.
+        claude_path = self.target / "CLAUDE.md"
+        claude_migrated_text = ""
+        if claude_path.is_file():
+            claude_text = claude_path.read_text(encoding="utf-8")
+            legacy_import = f"@{LEGACY_RULES_PATH}"
+            if CLAUDE_IMPORT_MARKER in claude_text and legacy_import in claude_text:
+                claude_migrated_text = claude_text.replace(legacy_import, f"@{AGENTLOOP_RULES_PATH}")
+
         to_touch = [i.rel for i in plan if i.op in ("update", "remove", "restore")]
         if new_settings_text:
             to_touch.append(SETTINGS_PATH)
+        if claude_migrated_text:
+            to_touch.append("CLAUDE.md")
         if not self.force and not self.dry_run:
             dirty = tracked_dirty_paths(self.target, to_touch)
             if dirty:
@@ -889,6 +992,10 @@ class Upgrader:
             print(f"{prefix}{'settings':<14} {SETTINGS_PATH}  ({note})")
         if new_settings_text and not self.dry_run:
             dst_settings.write_text(new_settings_text, encoding="utf-8")
+        if claude_migrated_text:
+            print(f"{prefix}{'migrate':<14} CLAUDE.md  (rules import → @{AGENTLOOP_RULES_PATH})")
+            if not self.dry_run:
+                claude_path.write_text(claude_migrated_text, encoding="utf-8")
 
         if not self.dry_run:
             # Rebuild the manifest last — a crash before this line re-converges on the next run.
@@ -912,6 +1019,7 @@ class Upgrader:
                 today,
                 version=read_version(self.template_root),
                 mode=install_mode,
+                agents_record=manifest.get("agents_md") or {"mode": "merged"},
             )
             manifest_path.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
 
@@ -960,7 +1068,8 @@ class Uninstaller:
         }
         plan = plan_uninstall(mf_files, target_hashes, self.force)
 
-        # CLAUDE.md: delete outright if we created it and it is untouched; otherwise strip the block.
+        # CLAUDE.md / AGENTS.md: delete outright if we created it and it is untouched;
+        # otherwise strip the marker block.
         claude_record: dict[str, Any] = manifest.get("claude_md") or {}
         claude_path = self.target / "CLAUDE.md"
         claude_delete = False
@@ -973,6 +1082,18 @@ class Uninstaller:
                 stripped = remove_claude_import(text)
                 if stripped != text:
                     claude_new_text = stripped
+        agents_record: dict[str, Any] = manifest.get("agents_md") or {}
+        agents_path = self.target / "AGENTS.md"
+        agents_delete = False
+        agents_new_text: str | None = None
+        if agents_path.is_file():
+            text = agents_path.read_text(encoding="utf-8")
+            if agents_record.get("mode") == "created" and agents_record.get("hash") == norm_hash(text.encode("utf-8")):
+                agents_delete = True
+            else:
+                stripped = remove_agents_pointer(text)
+                if stripped != text:
+                    agents_new_text = stripped
 
         # settings.json: while we were the last writer (hash matches), delete a created file or
         # restore the recorded pre-adopt text byte-for-byte; once the user edited it, fall back
@@ -999,6 +1120,8 @@ class Uninstaller:
         to_touch = [i.rel for i in plan if i.op == "remove"] + [MANIFEST_PATH]
         if claude_delete or claude_new_text is not None:
             to_touch.append("CLAUDE.md")
+        if agents_delete or agents_new_text is not None:
+            to_touch.append("AGENTS.md")
         if settings_delete or settings_new_text is not None:
             to_touch.append(SETTINGS_PATH)
         if not self.force and not self.dry_run and self._adoption_committed():
@@ -1025,6 +1148,10 @@ class Uninstaller:
             print(f"{prefix}{'remove':<14} CLAUDE.md  (created by adopt, still pristine)")
         elif claude_new_text is not None:
             print(f"{prefix}{'unmerge':<14} CLAUDE.md  (@import block removed)")
+        if agents_delete:
+            print(f"{prefix}{'remove':<14} AGENTS.md  (created by adopt, still pristine)")
+        elif agents_new_text is not None:
+            print(f"{prefix}{'unmerge':<14} AGENTS.md  (pointer block removed)")
         if settings_delete:
             print(f"{prefix}{'remove':<14} {SETTINGS_PATH}  (created by adopt, still pristine)")
         for note in settings_notes:
@@ -1034,6 +1161,10 @@ class Uninstaller:
                 _remove_and_prune(self.target, "CLAUDE.md")
             elif claude_new_text is not None:
                 claude_path.write_text(claude_new_text, encoding="utf-8")
+            if agents_delete:
+                _remove_and_prune(self.target, "AGENTS.md")
+            elif agents_new_text is not None:
+                agents_path.write_text(agents_new_text, encoding="utf-8")
             if settings_delete:
                 _remove_and_prune(self.target, SETTINGS_PATH)
             elif settings_new_text is not None:
@@ -1124,7 +1255,7 @@ def main(argv: list[str] | None = None) -> int:
         inst = Installer(target, template_root, dry_run=args.dry_run)
         inst.copy_tree()
         inst.install_special(name, branch, args.test_cmd.strip(), args.check_cmd.strip())
-        inst.install_claude_md()
+        inst.install_rules()
         inst.install_settings()
         inst.snapshot()
         inst.write_manifest(source_label, ref, git_head(template_root))

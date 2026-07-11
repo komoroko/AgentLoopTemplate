@@ -229,7 +229,7 @@ def main(argv: list[str] | None = None) -> int:
     _archive(rows)
     # The orchestration event log (and its rotated generation) and the post-build security-review
     # report belong to the closing cycle: archive them alongside the deliverables so the next cycle
-    # starts clean (CLAUDE.md "Context budget" — logs are rotated/archived, never left to grow
+    # starts clean (AGENTS.md "Context budget" — logs are rotated/archived, never left to grow
     # without bound). The legacy pre-events build-loop.log is swept the same way.
     runtime_artifacts = [
         f"{base}{suffix}" for base in (events.EVENTS_PATH, ".agentloop/build-loop.log") for suffix in ("", ".1")

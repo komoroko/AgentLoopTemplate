@@ -1,0 +1,19 @@
+{
+  "$comment": "VS Code Copilot agent-hooks registration (preview). Same gate_guard as .claude/settings.json — VS Code may parse both and run the guard twice per tool; that is harmless (read-only, idempotent deny). Matchers are ignored by VS Code, so gate_guard runs on every tool and passes anything that carries no file path.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "type": "command",
+        "command": "uv run --no-project --with pyyaml python scripts/agentloop/gate_guard.py",
+        "timeout": 30
+      }
+    ],
+    "SessionStart": [
+      {
+        "type": "command",
+        "command": "test -f .agentloop/state.md && echo '--- AgentLoop current state (top of .agentloop/state.md) ---' && sed -n '1,20p' .agentloop/state.md || true",
+        "timeout": 10
+      }
+    ]
+  }
+}

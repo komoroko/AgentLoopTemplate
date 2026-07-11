@@ -34,6 +34,7 @@ import revise
 import yaml
 
 SETTINGS_PATH = ".claude/settings.json"
+COPILOT_HOOKS_DIR = ".github/hooks"
 MANIFEST_PATH = ".agentloop/adopt-manifest.yaml"
 PHASE_VALUES = ("brief", "requirements", "design", "tasks", "build", "verify", "done")
 GATE_VALUES = ("pending", "approved")
@@ -60,7 +61,7 @@ def check_binaries() -> list[Finding]:
     for name, level, why in (
         ("uv", "FAIL", "every agentloop.mk target launches through it"),
         ("git", "FAIL", "worktrees/merges/commits are git operations"),
-        ("claude", "WARN", "build-loop's headless implementer/reviewer launches need it"),
+        ("claude", "WARN", "headless mode A (build-loop) needs it; interactive mode B does not"),
         ("gh", "INFO", "only needed when github.enabled is turned on"),
     ):
         if shutil.which(name):
@@ -164,7 +165,7 @@ def check_state() -> tuple[list[Finding], dict[str, object]]:
             findings.append(Finding("FAIL", "state", f"gate '{gate}' is missing"))
         elif value not in GATE_VALUES:
             findings.append(Finding("FAIL", "state", f"gate '{gate}' has invalid value {value!r} (pending|approved)"))
-    # Chain invariant (CLAUDE.md "Roll back"): if an upstream gate is pending, no downstream
+    # Chain invariant (AGENTS.md "Roll back"): if an upstream gate is pending, no downstream
     # gate may stay approved — a violated chain means an approval survived a roll back.
     pending_seen: str | None = None
     for gate in revise.GATE_ORDER:
@@ -307,18 +308,50 @@ def _check_leaf_branches(declared: str, wt_cfg: dict[str, object]) -> list[Findi
 
 
 def check_hook(config: dict[str, object]) -> list[Finding]:
-    """The gate guard is only real if the PreToolUse hook is actually registered in settings.json."""
+    """The gate guard is only real if the PreToolUse hook is registered in at least one hook host.
+
+    Two hosts can carry it: .claude/settings.json (Claude Code) and .github/hooks/*.json
+    (VS Code Copilot agent hooks). One is enough for that host's sessions; the other host —
+    and any agent without a compatible hook mechanism (e.g. Codex) — runs convention-layer only.
+    """
     gates_cfg = config.get("gates") if isinstance(config.get("gates"), dict) else {}
     enforce = bool(gates_cfg.get("enforce_hook", True)) if isinstance(gates_cfg, dict) else True
     if not enforce:
         return [Finding("INFO", "hook", "gates.enforce_hook is false — convention layer only")]
+    surfaces: list[str] = []
     try:
-        settings = Path(SETTINGS_PATH).read_text(encoding="utf-8")
+        if "gate_guard.py" in Path(SETTINGS_PATH).read_text(encoding="utf-8"):
+            surfaces.append("claude")
     except OSError:
-        return [Finding("FAIL", "hook", f"{SETTINGS_PATH} missing while gates.enforce_hook is true")]
-    if "gate_guard.py" not in settings:
-        return [Finding("FAIL", "hook", f"gate_guard.py is not registered in {SETTINGS_PATH} (mechanism layer absent)")]
-    return [Finding("PASS", "hook", "gate_guard hook registered")]
+        pass
+    for hook_file in sorted(Path(COPILOT_HOOKS_DIR).glob("*.json")):
+        try:
+            if "gate_guard.py" in hook_file.read_text(encoding="utf-8"):
+                surfaces.append("copilot")
+                break
+        except OSError:
+            continue
+    if not surfaces:
+        return [
+            Finding(
+                "FAIL",
+                "hook",
+                f"gate_guard.py is registered in neither {SETTINGS_PATH} nor {COPILOT_HOOKS_DIR}/*.json "
+                "while gates.enforce_hook is true (mechanism layer absent)",
+            )
+        ]
+    findings = [Finding("PASS", "hook", f"gate_guard hook registered ({', '.join(surfaces)})")]
+    if len(surfaces) == 1:
+        other = "VS Code Copilot" if surfaces == ["claude"] else "Claude Code"
+        findings.append(
+            Finding(
+                "INFO",
+                "hook",
+                f"only the {surfaces[0]} hook host is registered — {other} sessions (and hook-less "
+                "agents such as Codex) run convention-layer only",
+            )
+        )
+    return findings
 
 
 def check_events() -> list[Finding]:

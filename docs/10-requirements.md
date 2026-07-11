@@ -59,7 +59,7 @@ dedicated design section or task is fine (the trace only WARNs) — but every NF
 -
 
 ## Self-assessment (assumptions, confidence)
-> Communicated to the human at gate ① as CLAUDE.md "Gate self-assessment". Leave it here, not just spoken.
+> Communicated to the human at gate ① as AGENTS.md "Gate self-assessment". Leave it here, not just spoken.
 - **Assumptions made**: <assumptions taken as given without confirming; points where, if wrong, the requirements break>
 - **Confidence**: high / medium / low (may be split per requirement/area; **attach a reason for low spots**)
 - **Open questions / points for the human to decide**:

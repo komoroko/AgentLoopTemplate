@@ -29,13 +29,13 @@ _CONFIG = """build:
         kind: agent
 """
 
-_CLAUDE = "kinds: foundation / parallel / integration. gates: requirements, design, release. steps: test, review.\n"
+_AGENTS = "kinds: foundation / parallel / integration. gates: requirements, design, release. steps: test, review.\n"
 _TASKS_CMD = "kind: foundation | parallel | integration. status: todo in_progress blocked needs-revision done.\n"
 
 
 def _files(**overrides: str) -> dict[str, str]:
     files = {
-        template_lint.CLAUDE_MD: _CLAUDE,
+        template_lint.AGENTS_MD: _AGENTS,
         template_lint.TASKS_CMD: _TASKS_CMD,
         template_lint.STATE_PATH: _STATE,
         template_lint.CONFIG_PATH: _CONFIG,
@@ -68,9 +68,100 @@ def test_check_vocabulary_trips_on_a_missing_kind() -> None:
 
 
 def test_check_vocabulary_trips_on_a_missing_quality_gate_step() -> None:
-    files = _files(**{template_lint.CLAUDE_MD: _CLAUDE.replace("review", "critique")})
+    files = _files(**{template_lint.AGENTS_MD: _AGENTS.replace("review", "critique")})
     failures = template_lint.check_vocabulary(files)
-    assert any("CLAUDE.md" in f and "`review`" in f for f in failures)
+    assert any("AGENTS.md" in f and "`review`" in f for f in failures)
+
+
+# --- wrapper parity ----------------------------------------------------------------
+
+
+def _wrapper_tree(root: Path) -> None:
+    """A minimal healthy body+wrapper layout (one command, one agent role)."""
+    (root / ".agentloop" / "prompts" / "commands").mkdir(parents=True)
+    (root / ".agentloop" / "prompts" / "agents").mkdir(parents=True)
+    (root / ".claude" / "commands").mkdir(parents=True)
+    (root / ".claude" / "agents").mkdir(parents=True)
+    (root / ".github" / "prompts").mkdir(parents=True)
+    (root / ".github" / "agents").mkdir(parents=True)
+    (root / ".agentloop" / "prompts" / "commands" / "req.md").write_text("# /req\n", encoding="utf-8")
+    (root / ".agentloop" / "prompts" / "agents" / "architect.md").write_text("# Role\n", encoding="utf-8")
+    (root / ".claude" / "commands" / "req.md").write_text(
+        "---\ndescription: Phase 1.\n---\n@.agentloop/prompts/commands/req.md\n", encoding="utf-8"
+    )
+    (root / ".github" / "prompts" / "req.prompt.md").write_text(
+        "---\ndescription: Phase 1.\n---\nRead `.agentloop/prompts/commands/req.md`.\n", encoding="utf-8"
+    )
+    (root / ".claude" / "agents" / "architect.md").write_text(
+        "---\nname: architect\ndescription: Designs.\n---\nRead `.agentloop/prompts/agents/architect.md`.\n",
+        encoding="utf-8",
+    )
+    (root / ".github" / "agents" / "architect.agent.md").write_text(
+        "---\ndescription: Designs.\n---\nRead `.agentloop/prompts/agents/architect.md`.\n", encoding="utf-8"
+    )
+
+
+def test_check_wrapper_parity_green(tmp_path: Path) -> None:
+    _wrapper_tree(tmp_path)
+    assert template_lint.check_wrapper_parity(tmp_path) == []
+
+
+def test_check_wrapper_parity_trips_on_missing_wrapper(tmp_path: Path) -> None:
+    _wrapper_tree(tmp_path)
+    (tmp_path / ".github" / "prompts" / "req.prompt.md").unlink()
+    failures = template_lint.check_wrapper_parity(tmp_path)
+    assert any("missing wrapper req.prompt.md" in f for f in failures)
+
+
+def test_check_wrapper_parity_trips_on_orphan_wrapper_and_stale_reference(tmp_path: Path) -> None:
+    _wrapper_tree(tmp_path)
+    (tmp_path / ".claude" / "commands" / "extra.md").write_text("---\ndescription: X.\n---\n", encoding="utf-8")
+    (tmp_path / ".claude" / "agents" / "architect.md").write_text(
+        "---\nname: architect\ndescription: Designs.\n---\nno reference here\n", encoding="utf-8"
+    )
+    failures = template_lint.check_wrapper_parity(tmp_path)
+    assert any("extra.md: no shared body" in f for f in failures)
+    assert any("does not reference .agentloop/prompts/agents/architect.md" in f for f in failures)
+
+
+def test_check_wrapper_parity_trips_on_description_drift(tmp_path: Path) -> None:
+    _wrapper_tree(tmp_path)
+    (tmp_path / ".github" / "prompts" / "req.prompt.md").write_text(
+        "---\ndescription: Phase one, reworded.\n---\nRead `.agentloop/prompts/commands/req.md`.\n", encoding="utf-8"
+    )
+    failures = template_lint.check_wrapper_parity(tmp_path)
+    assert any("descriptions for `req` differ" in f for f in failures)
+
+
+# --- capability mapping --------------------------------------------------------------
+
+_CLAUDE_MAP = "| `structured-question` | AskUserQuestion |\n| `notify-and-wait` | PushNotification |\n"
+_COPILOT_MAP = "| `structured-question` | numbered options in chat |\n| `notify-and-wait` | end the turn |\n"
+_AGENTS_VOCAB = "vocabulary: `structured-question`, `notify-and-wait`.\n"
+
+
+def test_check_capability_mapping_green() -> None:
+    assert template_lint.check_capability_mapping(_CLAUDE_MAP, _COPILOT_MAP, _AGENTS_VOCAB) == []
+
+
+def test_check_capability_mapping_trips_on_one_sided_token() -> None:
+    failures = template_lint.check_capability_mapping(
+        _CLAUDE_MAP + "| `session-compaction` | /compact |\n", _COPILOT_MAP, _AGENTS_VOCAB
+    )
+    assert any("missing capability `session-compaction`" in f and "instructions" in f for f in failures)
+
+
+def test_check_capability_mapping_trips_on_undefined_token() -> None:
+    failures = template_lint.check_capability_mapping(_CLAUDE_MAP, _COPILOT_MAP, "vocabulary: `notify-and-wait`.\n")
+    assert any("`structured-question` is mapped but never defined" in f for f in failures)
+
+
+def test_check_neutral_vocabulary_trips_on_dialect_leak() -> None:
+    texts = {"AGENTS.md": "clean\n", ".agentloop/prompts/commands/req.md": "ask via AskUserQuestion\n"}
+    failures = template_lint.check_neutral_vocabulary(texts)
+    assert failures == [
+        ".agentloop/prompts/commands/req.md: Claude-only mechanism `AskUserQuestion` leaked into a neutral file"
+    ]
 
 
 # --- README parity ---------------------------------------------------------------
@@ -126,7 +217,7 @@ def test_live_repo_has_no_drift() -> None:
     files = {
         path: (_REPO_ROOT / path).read_text(encoding="utf-8")
         for path in (
-            template_lint.CLAUDE_MD,
+            template_lint.AGENTS_MD,
             template_lint.TASKS_CMD,
             template_lint.STATE_PATH,
             template_lint.CONFIG_PATH,
@@ -135,6 +226,16 @@ def test_live_repo_has_no_drift() -> None:
         )
     }
     failures = template_lint.check_vocabulary(files)
+    failures += template_lint.check_wrapper_parity(_REPO_ROOT)
+    failures += template_lint.check_capability_mapping(
+        (_REPO_ROOT / template_lint.CLAUDE_MAPPING).read_text(encoding="utf-8"),
+        (_REPO_ROOT / template_lint.COPILOT_MAPPING).read_text(encoding="utf-8"),
+        files[template_lint.AGENTS_MD],
+    )
+    neutral = {template_lint.AGENTS_MD: files[template_lint.AGENTS_MD]}
+    for path in sorted((_REPO_ROOT / ".agentloop" / "prompts").rglob("*.md")):
+        neutral[path.relative_to(_REPO_ROOT).as_posix()] = path.read_text(encoding="utf-8")
+    failures += template_lint.check_neutral_vocabulary(neutral)
     failures += template_lint.check_readme_parity(files["README.md"], files["README.ja.md"])
     import adopt
 

@@ -106,9 +106,9 @@ def record_manifest(root: Path, source: str, today: str) -> str:
         if path.is_file():
             files[rel] = {"hash": adopt.norm_hash(path.read_bytes()), "owner": "seeded"}
 
-    # settings.json / the root CLAUDE.md are the product's own from day one in a greenfield
-    # copy ({"mode": "owned"}): upgrade and uninstall leave both alone. commit is "unknown" —
-    # after `rm -rf .git && git init`, HEAD is the product's history, not the template's.
+    # settings.json / the root AGENTS.md and CLAUDE.md are the product's own from day one in a
+    # greenfield copy ({"mode": "owned"}): upgrade and uninstall leave them alone. commit is
+    # "unknown" — after `rm -rf .git && git init`, HEAD is the product's history, not the template's.
     data = adopt.build_manifest(
         files,
         {"mode": "owned"},
@@ -120,6 +120,7 @@ def record_manifest(root: Path, source: str, today: str) -> str:
         None,
         version=adopt.read_version(root),
         mode="init",
+        agents_record={"mode": "owned"},
     )
     manifest_path.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
     return f"created: {adopt.MANIFEST_PATH} (drives agentloop-upgrade / agentloop-uninstall)"

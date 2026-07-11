@@ -21,7 +21,7 @@ init:
 	$(AGENTLOOP_PY) scripts/agentloop/init.py --name "$(NAME)" $(if $(BRANCH),--branch "$(BRANCH)") $(if $(FROM),--source "$(FROM)")
 
 # Install AgentLoop into an EXISTING repository (run from this template checkout). Copies the
-# machinery without overwriting anything, merges CLAUDE.md/settings.json additively, and writes
+# machinery without overwriting anything, merges AGENTS.md/CLAUDE.md/settings.json additively, and writes
 # brownfield defaults (guard_paths = docs only). See scripts/agentloop/adopt.py for details.
 #   make adopt TARGET=../myrepo NAME=myrepo [TEST_CMD="npm test"] [CHECK_CMD="npm run lint"] [ARGS=--dry-run]
 adopt:
@@ -38,7 +38,7 @@ agentloop-upgrade:
 	$(AGENTLOOP_PY) scripts/agentloop/adopt.py --upgrade --target "$(or $(TARGET),.)" $(if $(FROM),--from-git "$(FROM)") $(if $(REF),--ref "$(REF)") $(if $(FORCE),--force) $(ARGS)
 
 # Remove everything adopt installed from THIS repo (pristine files only: anything you edited is
-# left in place and listed for manual review). Retracts the CLAUDE.md @import block and the
+# left in place and listed for manual review). Retracts the CLAUDE.md @import block, the AGENTS.md pointer block, and the
 # merged settings.json entries too. Manifest-driven — needs no template checkout.
 #   make -f agentloop.mk agentloop-uninstall [FORCE=1] [ARGS=--dry-run]
 agentloop-uninstall:
