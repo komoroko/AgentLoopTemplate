@@ -3,7 +3,10 @@ name = "project-name"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.13,<3.14"
+# The template's floor, not a recommendation: the agentloop tooling runs on 3.10+ (verified by
+# its test suite; feedback.py's `match` sets the minimum). Products may raise this freely — pin a
+# single minor (">=3.13,<3.14" + .python-version) if you value reproducibility over range.
+requires-python = ">=3.10"
 dependencies = [
 ]
 
@@ -24,7 +27,7 @@ exclude-newer = "1 week"
 [tool.ruff]
 exclude = [".git", ".mypy_cache", ".venv", "third_party"]
 line-length = 120
-target-version = "py313"
+target-version = "py310"  # match requires-python's floor (keeps UP suggestions 3.10-safe)
 
 [tool.ruff.lint]
 fixable = ["ALL"]
@@ -39,6 +42,7 @@ line-ending = "auto"
 strict = true
 ignore_missing_imports = true
 warn_unused_ignores = false
+python_version = "3.10"  # type-check against the floor so 3.11+ stdlib use is caught mechanically
 
 [dependency-groups]
 dev = [
