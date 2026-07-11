@@ -28,7 +28,8 @@ build:
   #                 implementer; when it runs out the task becomes blocked (escalated to the human).
   #                 An empty `run` skips the step. `run` is shlex-split (quoted arguments work);
   #                 there is no shell, so wrap pipes/redirects in a make target or script.
-  #   kind: agent — a headless `claude -p` review+simplify pass that fixes findings in place.
+  #   kind: agent — a headless `claude -p` review+simplify pass that fixes findings in place (mode A, Claude Code only;
+  #     in interactive mode B the lead applies the same review disciplines itself).
   #                 If it changes code, the cmd steps that already passed are re-run (re-verified).
   # If copied into a project without make, substitute the commands with that project's own.
   quality_gate:
@@ -67,7 +68,8 @@ build:
     # HEAD skip, so a re-invoked loop never pays twice; the run is recorded as a security_review
     # event). Report-only: findings are triaged by the human/lead and fixed via the implementer,
     # and /verify still runs its own full /security-review + make audit later.
-    # Cost: one claude -p per completed build. false = run /security-review by hand before gate ④.
+    # Cost: one claude -p per completed build (mode A, Claude Code only). false = run the security
+    # review yourself before gate ④ (Claude Code: /security-review; other agents: an equivalent pass).
     security_review: true
 
   # Hard timeouts for the external processes the loop runs, in seconds (0 = no timeout).

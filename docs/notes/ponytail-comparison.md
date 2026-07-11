@@ -47,6 +47,12 @@ opencode / Gemini CLI …)に plugin / skill / ルールファイルとして配
 1. **マルチエージェント対応(16 ホスト)** — 本テンプレートの核は gate_guard(PreToolUse hook)・
    subagents・commands という Claude Code 機構への深い結合。ポータブル化は「ゲートが慣習だけの
    instruction-tier 劣化版」にしかならない。ponytail がポータブルなのは本体がプロンプト 1 枚だから。
+   > **2026-07 方針転換**: VS Code Copilot が Claude Code 互換の hooks(PreToolUse の同一 deny
+   > 契約)・prompt files・custom agents を備えたため、「ゲートが慣習に劣化する」という上の前提が
+   > 崩れた — 機構レイヤーごと移植できる。AGENTS.md を正本化し、手順本文を `.agentloop/prompts/`
+   > に共有化して Claude / Copilot をフル対応、Codex は規約+手順レベル(ゲートは慣習のみ)で対応
+   > した。「16 ホスト対応」ではなく、hooks 互換のホストに限る点は変えていない。ヘッドレスの
+   > モード A(`claude -p`)は Claude Code 専用のまま。
 2. **plugin / marketplace 配布** — 配るものが「リポジトリの骨格」(docs/, .agentloop/, scripts/ が
    プロダクトの一部として git 管理される)であり、plugin の守備範囲(エージェントの挙動)外。
    copy / adopt + adopt-manifest が正しい形。

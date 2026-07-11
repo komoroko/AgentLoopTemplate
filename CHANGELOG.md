@@ -5,6 +5,38 @@ installed version (recorded in `.agentloop/adopt-manifest.yaml`) and the new one
 one `## [x.y.z] - YYYY-MM-DD` heading per release. Neither this file nor `VERSION` is
 copied by `make adopt` — the manifest's `template.version` is the identity record.
 
+## [0.4.0] - 2026-07-12
+
+### Added
+- **Multi-agent support**: the operating rules move to a canonical, agent-neutral
+  `AGENTS.md` (capability vocabulary + degradation rules; Codex and other AGENTS.md
+  readers get rules+procedures support natively), the eight phase procedures and three
+  role definitions move to shared bodies in `.agentloop/prompts/`, and
+  `.claude/commands|agents/*` become thin wrappers over them. `CLAUDE.md` shrinks to
+  the Claude Code capability mapping (+ `@AGENTS.md` import).
+- **VS Code GitHub Copilot surfaces**: `.github/prompts/*.prompt.md` (the `/req` …
+  entry points), `.github/agents/*.agent.md` (`@architect` etc.),
+  `.github/instructions/agentloop.instructions.md` (the Copilot capability mapping),
+  and `.github/hooks/agentloop.json` — the same `gate_guard.py` deny contract runs
+  under VS Code agent hooks (preview), so the gates' mechanism layer works from
+  Copilot too. `gate_guard.py` accepts the camelCase `filePath` VS Code sends.
+- **template_lint drift checks** for the new layout: wrapper parity (both dialects
+  wrap every shared body, descriptions byte-identical), capability-mapping set
+  equality across the two mapping files (every token defined in AGENTS.md), and a
+  dialect canary (Claude-only mechanism names must not leak into neutral files).
+
+### Changed
+- **adopt/upgrade/uninstall**: the rules body installs as
+  `.agentloop/AGENTS.agentloop.md` (was `CLAUDE.agentloop.md`; `--upgrade` migrates
+  the CLAUDE.md import line and retires the pristine legacy file). The target
+  AGENTS.md gets a marker-guarded pointer block (recorded as `agents_md` in the
+  manifest, retracted on uninstall); the CLAUDE.md import block now carries the
+  Claude capability mapping. The `.github` surfaces and `.agentloop/prompts/` are
+  copied template-owned.
+- **doctor**: `check_hook` passes on either hook host (`.claude/settings.json` or
+  `.github/hooks/*.json`), reports which are registered, and flags single-host
+  registration as INFO (the other host runs convention-layer only).
+
 ## [0.3.0] - 2026-07-11
 
 ### Added

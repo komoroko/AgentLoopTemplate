@@ -2,9 +2,12 @@
 
 **English** | [日本語](README.ja.md)
 
-A Claude Code template for developing software **Human on the Loop**.
+A coding-agent template for developing software **Human on the Loop**.
 A coding agent performs the work, produces the deliverables, and self-tests from requirements through testing,
 while **humans only approve/decide at the "gate" on each phase boundary**.
+Works with **Claude Code** and **VS Code GitHub Copilot** (full support, including the hook-enforced gates),
+and with **Codex** and any other agent that reads `AGENTS.md` (rules + procedures; gates by convention) —
+see "Agent support" below.
 
 ## Concept
 
@@ -74,13 +77,13 @@ Only the human opens each gate. Rewinding approval (`/revise`) is also at the hu
 
 This template is itself a multi-agent orchestration, and its own machinery follows three design axes:
 
-- **Architecture** — the simplest structure that meets the need: `build_loop.py` is a **deterministic DAG** (controllable, debuggable), and each phase is delegated to a dedicated subagent to separate concerns.
-- **Context** — kept minimal: SSOT files (`state.md` / `tasks.yaml`) hold the truth, subagents read only what they need, failures are **summarized, not dumped**, oversized logs rotate, and the session itself is compacted at phase-boundary `/compact` checkpoints — memory is tiered (session / cycle / permanent), each tier with its own refresh cycle (see "Context budget" in `CLAUDE.md`).
-- **Tools** — minimal, scoped subagent grants; the quality gate has a **retry cap** (`config.yaml`); `summarize_failure()` returns compact, actionable failures.
+- **Architecture** — the simplest structure that meets the need: `build_loop.py` is a **deterministic DAG** (controllable, debuggable), and each phase is delegated to a dedicated role agent to separate concerns.
+- **Context** — kept minimal: SSOT files (`state.md` / `tasks.yaml`) hold the truth, role agents read only what they need, failures are **summarized, not dumped**, oversized logs rotate, and the session itself is compacted at phase-boundary checkpoints — memory is tiered (session / cycle / permanent), each tier with its own refresh cycle (see "Context budget" in `AGENTS.md`).
+- **Tools** — minimal, scoped role-agent grants; the quality gate has a **retry cap** (`config.yaml`); `summarize_failure()` returns compact, actionable failures.
 
 ## Setup (new repository / greenfield)
 
-Prerequisites: WSL / Linux / macOS and `make` (not Windows-native). The deterministic build loop (`make build-loop`) additionally needs the `claude` CLI installed and authenticated — its implementer and review steps run headless `claude -p`.
+Prerequisites: WSL / Linux / macOS and `make` (not Windows-native). The deterministic build loop (`make build-loop`, mode A) additionally needs the `claude` CLI installed and authenticated — its implementer and review steps run headless `claude -p` (Claude Code only; from other agents use the interactive mode B — see "Agent support").
 
 1. **Copy this template** into a new product repository:
    ```bash
@@ -105,9 +108,9 @@ Prerequisites: WSL / Linux / macOS and `make` (not Windows-native). The determin
    It also records `.agentloop/adopt-manifest.yaml` (provenance + per-file hashes), which is what
    makes `agentloop-upgrade` / `agentloop-uninstall` work for a copied template too. `FROM` is the
    template's git URL (or a local checkout path), remembered as the default upgrade source — omit
-   it and upgrades will ask for `FROM=` each time. The root `CLAUDE.md` and `.claude/settings.json`
-   are yours from day one: upgrades never rewrite them (template rule updates reach greenfield
-   repos only through the other tooling files).
+   it and upgrades will ask for `FROM=` each time. The root `AGENTS.md`, `CLAUDE.md`, and
+   `.claude/settings.json` are yours from day one: upgrades never rewrite them (template rule
+   updates reach greenfield repos only through the other tooling files).
 4. Sanity check: `make check` (lint/format/type)・`make test` (pytest; passes on the empty template)・`make test-tools` (self-tests of the deterministic orchestrator in `scripts/agentloop/`).
 
 ## Adopting into an existing repository (brownfield)
@@ -125,8 +128,8 @@ What lands where (idempotent; re-runs skip everything already present):
 
 | Kind | Files | Behavior |
 |------|-------|----------|
-| copy | `.agentloop/`, `scripts/agentloop/`, `agentloop.mk`, `.claude/commands|agents`, docs scaffolds | **Existing files are never overwritten** (skipped and reported) |
-| merge | `CLAUDE.md` | Template rules land in `.agentloop/CLAUDE.agentloop.md`; one `@`-import line is appended to your CLAUDE.md (once) |
+| copy | `.agentloop/` (incl. `prompts/`, the shared procedures), `scripts/agentloop/`, `agentloop.mk`, `.claude/commands|agents`, `.github/prompts|agents|hooks|instructions`, docs scaffolds | **Existing files are never overwritten** (skipped and reported) |
+| merge | `AGENTS.md` / `CLAUDE.md` | Template rules land in `.agentloop/AGENTS.agentloop.md`; your AGENTS.md gets one pointer block, your CLAUDE.md one `@`-import block with the Claude capability mapping (each appended once) |
 | merge | `.claude/settings.json` | Missing permissions/hook entries appended; yours untouched |
 | adapt | `.agentloop/config.yaml` | **`guard_paths` scoped to docs deliverables only** — pending gates never freeze your existing code; add code paths (e.g. `src/: tasks`) when ready. Quality-gate commands from `TEST_CMD`/`CHECK_CMD` |
 | manual | your `makefile`, `.pre-commit-config.yaml` | Not touched — add one line `include agentloop.mk` (or run `make -f agentloop.mk build-loop`); gitleaks hook recommended |
@@ -161,19 +164,21 @@ Then, inside the adopted repo:
    hash-checked — **a file you edited since install is never overwritten or removed**; it is
    skipped and listed (`FORCE=1` overrides). Review with `git diff` afterwards and commit:
    ```bash
-   # inside the repo — refresh the template-owned tooling (scripts/agentloop/,
-   # .claude/commands|agents, agentloop.mk, the imported rules). FROM is a git URL or local
+   # inside the repo — refresh the template-owned tooling (scripts/agentloop/, the shared
+   # procedures in .agentloop/prompts/, the per-agent wrappers under .claude/ and .github/,
+   # agentloop.mk, the imported rules). FROM is a git URL or local
    # path; without it the source recorded at init/adopt time is reused. REF = branch/tag, not a SHA.
    # Prints the installed → new template version with the CHANGELOG entries in between;
    # ARGS=--dry-run previews everything (version, changelog, per-file plan) without applying.
    make -f agentloop.mk agentloop-upgrade FROM=https://github.com/you/AgentLoopTemplate.git
 
    # retract the installation: everything installed is removed while pristine; the CLAUDE.md
-   # @import block and the merged settings.json entries are retracted too
+   # @import block, the AGENTS.md pointer block, and the merged settings.json entries are
+   # retracted too
    make -f agentloop.mk agentloop-uninstall ARGS=--dry-run
    ```
    Upgrade never touches repo-owned state (`config.yaml`, `state.md`, `tasks.yaml`, filled docs,
-   your CLAUDE.md); uninstall removes it only while still unedited. The template's identity comes
+   your AGENTS.md/CLAUDE.md); uninstall removes it only while still unedited. The template's identity comes
    from `VERSION`/`CHANGELOG.md` at its root — neither is copied on adopt; the manifest's
    `template.version` is the record. And when `TEST_CMD`/`CHECK_CMD` are omitted at adopt time,
    commands detected from your build files (package.json, pyproject.toml, Cargo.toml, go.mod,
@@ -204,7 +209,7 @@ Then, inside the adopted repo:
 
 ### Running the implementation phase autonomously
 
-The implementation loop has two modes. The behavior (DoD, parallelism/merge rules) is identical. Below is a summary; the canon for operation is `.claude/commands/build.md` (procedure) and `CLAUDE.md` (rules):
+The implementation loop has two modes. The behavior (DoD, parallelism/merge rules) is identical. Below is a summary; the canon for operation is `.agentloop/prompts/commands/build.md` (procedure) and `AGENTS.md` (rules):
 
 **A. Deterministic execution (recommended) — `make build-loop`**
 An orchestrator that drives scheduling deterministically in code (`scripts/agentloop/build_loop.py`). It decides **which tasks, at what parallelism, in what merge order, and when to stop** deterministically from `.agentloop/config.yaml` and `tasks.yaml`, not relying on LLM discretion.
@@ -214,8 +219,8 @@ make build-loop                  # run
 make build-loop ARGS=--dry-run   # check just the control flow without calling claude/git
 ```
 
-**B. Interactive loop — `/loop /build`**
-An alternative that runs the loop in conversation without the orchestrator.
+**B. Interactive loop — the lead re-enacts mode A in conversation**
+An alternative that runs the loop without the orchestrator (and the only mode available outside Claude Code). Claude Code drives it with `/loop /build`; VS Code Copilot re-invokes the `/build` prompt per iteration; Codex re-runs the `/build` procedure.
 
 - A task is complete only after **passing the quality-gate pipeline** — `quality_gate.steps` in `.agentloop/config.yaml` is the **single definition of the DoD** (default: `make test` green → `make check` clean → a review step applying the `/code-review`+`/simplify` disciplines → a real-launch smoke test for runnable deliverables). A task's own `test` command from `tasks.yaml` runs first as a focused step when it differs from the configured ones. Each cmd step has its own retry budget; a failure is sent back to the implementer until the budget runs out (→ `blocked`). Mark the smoke step `required: true` once the deliverable is runnable — an empty command then refuses to build instead of silently skipping the launch check.
 - **Parallel tasks run in isolation**: independent leaf tasks are implemented in their own branch/working directory with `git worktree`, **up to 3 in parallel** (`max_parallel` in `config.yaml`), and merged into the work branch sequentially in ascending id order when done. Foundation tasks are finalized first on the work branch. After a batch merges **2 or more** leaves, the cmd steps run once more on the **merged** work branch (the integration gate — each leaf was green only in isolation); a red goes to a headless fixer within the retry budget, else the batch blocks. Uncommitted worktree changes are finalized onto the leaf branch before merge/cleanup, so nothing is lost with the worktree.
@@ -226,7 +231,7 @@ An alternative that runs the loop in conversation without the orchestrator.
 
 ### Security review
 
-Ensured in three layers: **gitleaks** (mechanically prevents committing secrets at pre-commit; exclude false positives with `.gitleaksignore`) / **`/security-review`** mandatory at implementation completion — in deterministic mode A, `build_loop.py` auto-runs it headless when all tasks are done and binds the report to the reviewed HEAD in `.agentloop/security-review.md` (config `build.post_build.security_review`; re-runs at the same HEAD skip) / **`/security-review` + `make audit`** (dependency vulnerability audit) mandatory in `/verify`.
+Ensured in three layers: **gitleaks** (mechanically prevents committing secrets at pre-commit; exclude false positives with `.gitleaksignore`) / a **security review** mandatory at implementation completion — in deterministic mode A, `build_loop.py` auto-runs Claude Code's `/security-review` headless when all tasks are done and binds the report to the reviewed HEAD in `.agentloop/security-review.md` (config `build.post_build.security_review`; re-runs at the same HEAD skip) / a **security review + `make audit`** (dependency vulnerability audit) mandatory in `/verify`. An agent without the `/security-review` command performs an equivalent security-focused review pass and records it the same way.
 
 ### GitHub Issues integration (optional)
 
@@ -262,19 +267,44 @@ If you want to make tasks visible to the team/stakeholders, you can **one-way-mi
 | `scripts/agentloop/` | deterministic orchestration (`dag.py` / `build_loop.py` / `events.py` / `doctor.py` / `gate_guard.py` / `pr_draft.py` / `revise.py` / `issue_sync.py` / `init.py` / `adopt.py` / `cycle.py`). Product scripts go directly under `scripts/` |
 | `VERSION` / `CHANGELOG.md` | the template's release identity; `agentloop-upgrade` shows the changelog between the installed and new versions |
 | `agentloop.mk` | the AgentLoop make targets, self-contained (uv only) — an existing repo takes just this file |
-| `CLAUDE.md` | agent operating rules and gate rules |
-| `.claude/commands/` | entry points for each phase (`/req`–`/verify`, plus `/onboard`, `/revise`, `/status`) |
-| `.claude/agents/` | specialized subagents (requirements/design/implementation) |
+| `AGENTS.md` | the canonical, agent-neutral operating rules (capability vocabulary + gate rules) |
+| `CLAUDE.md` | the Claude Code capability mapping (imports AGENTS.md) |
+| `.agentloop/prompts/` | the shared phase procedures and role definitions every agent reads |
+| `.claude/commands/`, `.github/prompts/` | per-agent entry points for each phase (`/req`–`/verify`, plus `/onboard`, `/revise`, `/status`) — thin wrappers over `.agentloop/prompts/commands/` |
+| `.claude/agents/`, `.github/agents/` | role-agent wrappers (requirements/design/implementation) over `.agentloop/prompts/agents/` |
+| `.github/instructions/`, `.github/hooks/` | the VS Code Copilot capability mapping and its gate-guard hook registration |
 | `docs/` | phase deliverables (requirements, design, ADR, task tickets, test plan) |
 
-## Claude Code features used
+## Agent support
 
-- **plan mode + ExitPlanMode** — the approval gate for the thinking phase
-- **AskUserQuestion** — human decisions such as technical choices
-- **/loop** — autonomous consumption of implementation tasks (interactive mode)
-- **the deterministic orchestrator (`make build-loop`)** — drives scheduling, parallelism, merge, and gate decisions deterministically in code
-- **PreToolUse hook (`gate_guard.py`)** — mechanically denies editing a deliverable while the prerequisite gate is unapproved
-- **git worktree** — isolated execution of parallel tasks
-- **subagent** — specialization and context isolation per phase
-- **slash command** — standardizing each phase
-- **/schedule (optional)** — periodic progress checks for long-running loops
+The rules (`AGENTS.md`) and phase procedures (`.agentloop/prompts/`) are agent-neutral: they name
+human-interaction points with a **capability vocabulary**, and each agent's mapping file says how
+to realize it. What each agent gets:
+
+| Capability | Claude Code | VS Code Copilot | Codex (and other AGENTS.md readers) |
+|---|---|---|---|
+| phase entry points | slash commands (`.claude/commands/`) | prompt files `/req` … (`.github/prompts/`) | say the phase name — the agent reads `.agentloop/prompts/commands/<name>.md` |
+| gate enforcement (mechanism layer) | PreToolUse hook (`gate_guard.py`) | same hook via `.github/hooks/agentloop.json` (agent hooks, preview) | convention layer only (its hooks cannot intercept file edits) |
+| structured questions to the human | AskUserQuestion | numbered options in chat | numbered options in chat |
+| approval presentation | plan mode + ExitPlanMode | Plan mode / explicit "approve" in chat | explicit "approve" in chat |
+| role delegation (context isolation) | subagents, worktree-parallel | custom agents `@architect` … (`.github/agents/`) | inline role adoption (serial) |
+| autonomous build (mode B) | `/loop /build` | re-invoke `/build` per iteration | re-run the `/build` procedure |
+| headless build orchestrator (mode A) | `make build-loop` (`claude -p`) | — (use mode B) | — (use mode B) |
+| pending-gate notification | PushNotification | end of turn ("waiting on gate N") | end of turn |
+
+Also used everywhere: **git worktree** (isolated parallel tasks) and the **deterministic
+orchestrator** (`make build-loop` — scheduling, parallelism, merge, and gate decisions in code).
+
+**VS Code Copilot notes** — open the repo and the pieces load themselves: the prompts appear as
+`/req` … in chat, `@requirements-analyst`/`@architect`/`@implementer` resolve as custom agents,
+`.github/instructions/agentloop.instructions.md` supplies the capability mapping, and
+`.github/hooks/agentloop.json` registers the gate guard + the session-start state echo (agent
+hooks are a **preview** feature — if they are off, the gates still hold by convention). VS Code
+may also parse `.claude/settings.json` and run the guard twice per tool; that is harmless
+(read-only, idempotent deny). Parallel leaf tasks degrade to serial when delegation isn't
+available.
+
+**Codex notes** — Codex reads `AGENTS.md` natively; the generic invocation rule there lets you
+drive phases by name ("run /req"). Gate enforcement is convention-only (Codex hooks intercept
+Bash, not file edits), and the security review is an equivalent manual pass — `make doctor`
+reports which hook hosts are registered.
