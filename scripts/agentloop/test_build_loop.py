@@ -317,6 +317,66 @@ def test_run_task_to_done_blocks_when_one_step_budget_runs_out(project: Path, mo
     assert log == "still red"
 
 
+# --- per-task test command (tasks.yaml `test` = the ticket's own green decision)
+
+
+def _leaf_with_test(run: str) -> dag.Task:
+    return dag.Task(id="T-002", title="leaf A", kind="parallel", blocked_by=("T-001",), test=run)
+
+
+def test_task_test_runs_first_as_focused_step(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # tasks.yaml documents `test` as the task's green decision — it must actually run, ahead of
+    # the shared pipeline (fastest, most focused failure first).
+    orch = _steps_orch(project, monkeypatch)
+    ran: list[str] = []
+
+    def record(step: build_loop.GateStep, cwd: str) -> str:
+        ran.append(step.name)
+        return ""
+
+    monkeypatch.setattr(orch, "_run_cmd_step", record)
+    monkeypatch.setattr(orch, "_run_agent_step", lambda task, cwd: False)
+    failed, _ = orch._run_pipeline(_leaf_with_test("pytest tests/test_a.py -q"), cwd=".")
+    assert failed is None
+    assert ran == ["task-test", "test", "check"]
+
+
+def test_task_test_duplicating_a_config_step_runs_once(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The default `test: make test` would double the most expensive step — dedup keeps it single.
+    orch = _steps_orch(project, monkeypatch)
+    ran: list[str] = []
+
+    def record(step: build_loop.GateStep, cwd: str) -> str:
+        ran.append(step.name)
+        return ""
+
+    monkeypatch.setattr(orch, "_run_cmd_step", record)
+    monkeypatch.setattr(orch, "_run_agent_step", lambda task, cwd: False)
+    failed, _ = orch._run_pipeline(_leaf_with_test("make test"), cwd=".")
+    assert failed is None
+    assert ran == ["test", "check"]
+
+
+def test_task_test_failure_consumes_budget_and_blocks(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The focused step carries the test step's send-back budget; running out blocks like any step.
+    orch = _steps_orch(project, monkeypatch)
+    monkeypatch.setattr(orch, "_invoke_implementer", lambda task, cwd, log: None)
+    monkeypatch.setattr(orch, "_run_pipeline", lambda task, cwd: ("task-test", "focused red"))
+    ok, log = orch._run_task_to_done(_leaf_with_test("pytest tests/test_a.py -q"), cwd=".")
+    assert ok is False  # test retries: 1 → initial attempt + 1 send-back, then blocked
+    assert log == "focused red"
+    fails = [e for e in events.load_events() if e.event == "step_fail"]
+    assert fails and all(e.step == "task-test" for e in fails)
+
+
+def test_task_test_appears_in_implementer_prompt(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Instruction and execution must not diverge: the implementer is told the exact command the
+    # gate will judge it by first.
+    orch = _steps_orch(project, monkeypatch)
+    assert "pytest tests/test_a.py -q" in orch._implementer_prompt(_leaf_with_test("pytest tests/test_a.py -q"), "")
+    assert "own test command" not in orch._implementer_prompt(_leaf("T-002", "leaf A"), "")
+
+
 # --- robustness: orphan cleanup / single-run lock / quoting / branch guard ----
 
 

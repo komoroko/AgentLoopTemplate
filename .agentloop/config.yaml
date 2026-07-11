@@ -18,6 +18,9 @@ build:
     branch_pattern: "{branch}-{task_id}"
 
   # The quality gate = **the single definition of the DoD** (CLAUDE.md and /build refer to this list).
+  # Per task, a `test` command in tasks.yaml that differs from every cmd step below is prepended
+  # as a focused `task-test` step (the ticket's own green decision runs first, with the test
+  # step's retries budget); a shared default like "make test" adds no extra step.
   # build_loop.py runs the steps in order per task:
   #   kind: cmd   — run the command; pass/fail is decided deterministically by exit code.
   #                 `retries` is that step's own budget for sending a failure back to the

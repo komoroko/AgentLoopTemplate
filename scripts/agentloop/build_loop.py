@@ -398,10 +398,18 @@ class Orchestrator:
             if Path("docs/05-current-state.md").exists()
             else ""
         )
+        # The gate runs the ticket's own test command first (_steps_for), so tell the implementer
+        # the same thing it will be judged by — instruction and execution must not diverge.
+        task_test_ref = (
+            f"The quality gate runs this task's own test command first — make `{task.test.strip()}` green.\n"
+            if task.test.strip()
+            else ""
+        )
         prompt = (
             f'You are the implementer subagent. Your only task is {task.id} "{task.title}".\n'
             f"Read docs/tasks/{task.id}.md, {design_ref}, and the existing code, and implement "
             f"following the protocol in .claude/agents/implementer.md.{baseline_ref}\n"
+            f"{task_test_ref}"
             f"Write automated tests and get {gate_list} green.\n"
             "When done, commit your changes to this branch (excluding the orchestration state .agentloop/):\n"
             f"  git add -A -- . ':(exclude).agentloop' && git commit -m \"{task.id}: <summary>\"\n"
@@ -432,6 +440,21 @@ class Orchestrator:
         if self.config.agent_steps:
             return self.config.steps
         return tuple(s for s in self.config.steps if s.kind == "cmd")
+
+    def _steps_for(self, task: dag.Task) -> tuple[GateStep, ...]:
+        """The gate steps for one task: the task's own `test` command first, then the configured DoD.
+
+        tasks.yaml's per-task `test` (the ticket's automated-test approach — what /tasks recorded
+        as this task's green decision) runs as a focused cmd step ahead of the shared pipeline:
+        it fails faster and summarizes tighter than the whole suite. It is skipped when it
+        duplicates a configured cmd step's `run` (the default "make test" case), so nothing runs
+        twice. Budget: the `test` step's retries (the task command is its focused stand-in)."""
+        steps = self._steps_effective
+        run = task.test.strip()
+        if not run or any(s.kind == "cmd" and s.run.strip() == run for s in self.config.steps):
+            return steps
+        retries = next((s.retries for s in self.config.steps if s.kind == "cmd" and s.name == "test"), 2)
+        return (GateStep(name="task-test", kind="cmd", run=run, retries=retries), *steps)
 
     def _review_prompt(self, task: dag.Task) -> str:
         cmds = ", ".join(f"`{c}`" for c in self.config.gate_cmds)
@@ -473,12 +496,13 @@ class Orchestrator:
         An agent step's fixes invalidate the evidence of the cmd steps that already passed,
         so those are re-run whenever it changed the tree (deterministic re-verification).
         """
+        steps = self._steps_for(task)
         if self.dry_run:
-            shown = " → ".join(f"{s.name}({s.kind})" for s in self._steps_effective)
+            shown = " → ".join(f"{s.name}({s.kind})" for s in steps)
             print(f"    [dry-run] quality gate: {shown} (cwd={cwd})")
             return None, ""
         passed: list[GateStep] = []
-        for step in self._steps_effective:
+        for step in steps:
             if step.kind == "agent":
                 if self._run_agent_step(task, cwd):
                     for prev in passed:
@@ -502,7 +526,7 @@ class Orchestrator:
         that step's budget. Returns (ok, log); ok=False means some step's budget ran out
         (the caller marks the task blocked).
         """
-        budgets = {s.name: s.retries for s in self.config.steps if s.kind == "cmd"}
+        budgets = {s.name: s.retries for s in self._steps_for(task) if s.kind == "cmd"}
         failure_log = ""
         while True:
             self._invoke_implementer(task, cwd, failure_log)
