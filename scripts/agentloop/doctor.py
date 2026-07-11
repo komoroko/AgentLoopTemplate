@@ -84,7 +84,28 @@ def check_config() -> tuple[list[Finding], dict[str, object]]:
     if not runnable:
         findings.append(Finding("WARN", "config", "no cmd step has a command — the quality gate would check nothing"))
     findings.extend(_check_step_commands(config, raw))
+    findings.extend(_check_legacy_keys(raw))
     return findings, raw
+
+
+def _check_legacy_keys(raw: dict[str, object]) -> list[Finding]:
+    """Keys from the pre-0.3.0 config form are dead weight: with `steps` present they are
+    silently ignored, which can fool a reader into thinking they still steer the gate."""
+    build = raw.get("build") if isinstance(raw.get("build"), dict) else {}
+    qg = build.get("quality_gate") if isinstance(build, dict) else {}
+    stale = [f"quality_gate.{k}" for k in ("test_cmd", "check_cmd") if isinstance(qg, dict) and k in qg]
+    if isinstance(build, dict) and isinstance(build.get("retries"), dict):
+        stale.append("build.retries")
+    if stale:
+        return [
+            Finding(
+                "WARN",
+                "config",
+                f"legacy pre-0.3.0 keys are ignored: {', '.join(stale)} — the DoD lives in "
+                "quality_gate.steps (per-step retries); delete them",
+            )
+        ]
+    return []
 
 
 def _check_step_commands(config: build_loop.Config, raw: dict[str, object]) -> list[Finding]:

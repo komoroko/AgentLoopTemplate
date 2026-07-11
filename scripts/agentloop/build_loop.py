@@ -82,17 +82,18 @@ class GateStep:
     required: bool = False
 
 
-def _parse_steps(qg: Any, retries: Any) -> tuple[GateStep, ...]:
-    """Parse quality_gate.steps; fall back to the legacy test_cmd/check_cmd + retries form.
+def _parse_steps(qg: Any) -> tuple[GateStep, ...]:
+    """Parse quality_gate.steps — the required, single definition of the DoD.
 
-    The legacy form maps to exactly the old behavior (two cmd steps, no agent step), so configs
-    written before the pipeline keep working unchanged.
+    (The pre-0.3.0 legacy form — quality_gate.test_cmd/check_cmd + build.retries — was removed;
+    a config still carrying it fails here with a migration hint, and doctor flags the stale keys.)
     """
     raw = qg.get("steps")
     if not raw:
-        return (
-            GateStep("test", "cmd", str(qg.get("test_cmd", "make test")), int(retries.get("test_fix", 2))),
-            GateStep("check", "cmd", str(qg.get("check_cmd", "make check")), int(retries.get("check_fix", 2))),
+        raise ValueError(
+            "quality_gate.steps is missing — define the DoD as a steps list in .agentloop/config.yaml "
+            "(the legacy test_cmd/check_cmd + retries form was removed in 0.3.0; "
+            "see the template config.yaml or .agentloop/schema/config.schema.json)"
         )
     if not isinstance(raw, list):
         raise ValueError("quality_gate.steps must be a list")
@@ -154,7 +155,7 @@ class Config:
             # `-` (not `/`) between branch and task: git forbids a branch that is a path-prefix of
             # another ref ("work" + "work/T-001" cannot coexist), so a slash pattern always fails.
             branch_pattern=str(wt.get("branch_pattern", "{branch}-{task_id}")),
-            steps=_parse_steps(qg, build.get("retries") or {}),
+            steps=_parse_steps(qg),
             agent_steps=bool(qg.get("agent_steps", True)),
             integration_gate=bool(qg.get("integration_gate", True)),
             security_review=bool(pb.get("security_review", True)),

@@ -39,6 +39,11 @@ copied by `make adopt` — the manifest's `template.version` is the identity rec
   tree/worktree is kept and the loop escalates instead of continuing.
 
 ### Changed / migration notes (for repos upgrading the machinery)
+- **The legacy quality-gate config form was removed**: `quality_gate.steps` is now
+  required; `quality_gate.test_cmd` / `check_cmd` and `build.retries` are no longer
+  read. A config still on the old form fails to load with a migration hint, and
+  `make doctor` WARNs about stale legacy keys sitting next to a valid `steps` list.
+  Migrate by writing the two commands as steps (see the template config.yaml).
 - **Dev dependencies trimmed to what the template exercises**: `mkdocs`,
   `mkdocs-material`, `mkdocstrings`, `filetype`, and `pydantic` (plus the mypy hook's
   pydantic stubs) are no longer preinstalled — nothing in the template imported them.

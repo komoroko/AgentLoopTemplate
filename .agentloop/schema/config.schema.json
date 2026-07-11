@@ -4,9 +4,11 @@
   "title": "AgentLoop .agentloop/config.yaml",
   "description": "Editor/doctor validation for the deterministic-orchestration knobs. The runtime parser (build_loop.Config.load / _parse_steps) stays the behavioral truth — when you change it, update this schema in the same commit. Top-level objects allow extra keys on purpose: products may annotate; unknown keys are inert.",
   "type": "object",
+  "required": ["build"],
   "properties": {
     "build": {
       "type": "object",
+      "required": ["quality_gate"],
       "properties": {
         "max_parallel": { "type": "integer", "minimum": 1 },
         "worktree": {
@@ -22,22 +24,12 @@
           },
           "additionalProperties": true
         },
-        "retries": {
-          "type": "object",
-          "description": "Legacy form (pre-pipeline). Prefer per-step `retries` in quality_gate.steps.",
-          "properties": {
-            "test_fix": { "type": "integer", "minimum": 0 },
-            "check_fix": { "type": "integer", "minimum": 0 }
-          },
-          "additionalProperties": true
-        },
         "quality_gate": {
           "type": "object",
+          "required": ["steps"],
           "properties": {
             "agent_steps": { "type": "boolean" },
             "integration_gate": { "type": "boolean" },
-            "test_cmd": { "type": "string", "description": "Legacy form; prefer steps." },
-            "check_cmd": { "type": "string", "description": "Legacy form; prefer steps." },
             "steps": {
               "type": "array",
               "items": {

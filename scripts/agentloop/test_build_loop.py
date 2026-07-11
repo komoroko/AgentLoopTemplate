@@ -68,8 +68,10 @@ _CONFIG = (
     "build:\n"
     "  max_parallel: 3\n"
     "  worktree: {enabled: true, dir: .worktrees, branch_pattern: '{branch}-{task_id}'}\n"
-    "  retries: {test_fix: 2, check_fix: 2}\n"
-    "  quality_gate: {test_cmd: 'make test', check_cmd: 'make check'}\n"
+    "  quality_gate:\n"
+    "    steps:\n"
+    "      - {name: test, kind: cmd, run: 'make test', retries: 2}\n"
+    "      - {name: check, kind: cmd, run: 'make check', retries: 2}\n"
     "gates:\n  enforce_hook: true\n"
 )
 
@@ -210,14 +212,14 @@ _CONFIG_STEPS = (
 )
 
 
-def test_config_legacy_form_maps_to_two_cmd_steps(project: Path) -> None:
-    # The pre-pipeline config form (test_cmd/check_cmd + retries) keeps its exact old behavior.
-    config = build_loop.Config.load()
-    assert [(s.name, s.kind, s.run, s.retries) for s in config.steps] == [
-        ("test", "cmd", "make test", 2),
-        ("check", "cmd", "make check", 2),
-    ]
-    assert config.gate_cmds == ["make test", "make check"]
+def test_config_steps_are_required_with_migration_hint(project: Path) -> None:
+    # The legacy test_cmd/check_cmd + retries form was removed in 0.3.0: a config without a
+    # steps list must fail loudly with the migration pointer, not fall back silently.
+    (project / ".agentloop" / "config.yaml").write_text(
+        "build:\n  quality_gate: {test_cmd: 'make test', check_cmd: 'make check'}\n", encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="quality_gate.steps is missing.*removed in 0.3.0"):
+        build_loop.Config.load()
 
 
 def test_config_steps_form_parses_kinds_and_retries(project: Path) -> None:

@@ -31,7 +31,10 @@ _CONFIG = (
     "build:\n"
     "  max_parallel: 3\n"
     "  worktree: {enabled: true, dir: .worktrees, branch_pattern: '{branch}-{task_id}'}\n"
-    "  quality_gate: {test_cmd: 'make test', check_cmd: 'make check'}\n"
+    "  quality_gate:\n"
+    "    steps:\n"
+    "      - {name: test, kind: cmd, run: 'make test'}\n"
+    "      - {name: check, kind: cmd, run: 'make check'}\n"
     "gates:\n  enforce_hook: true\n  template_mode: false\n"
 )
 
@@ -256,10 +259,21 @@ def test_unparseable_config_fails(project: Path) -> None:
 
 def test_all_empty_cmd_steps_warn(project: Path) -> None:
     (project / ".agentloop" / "config.yaml").write_text(
-        _CONFIG.replace("{test_cmd: 'make test', check_cmd: 'make check'}", "{test_cmd: '', check_cmd: ''}"),
+        _CONFIG.replace("run: 'make test'", "run: ''").replace("run: 'make check'", "run: ''"),
         encoding="utf-8",
     )
     assert any("would check nothing" in m for m in _messages(doctor.run_checks(), "WARN"))
+
+
+def test_stale_legacy_config_keys_warn(project: Path) -> None:
+    # Legacy keys next to a valid steps list are silently ignored — flag them so a reader
+    # doesn't believe test_cmd still steers the gate.
+    (project / ".agentloop" / "config.yaml").write_text(
+        _CONFIG.replace("  quality_gate:\n", "  retries: {test_fix: 2}\n  quality_gate:\n    test_cmd: make test\n"),
+        encoding="utf-8",
+    )
+    warns = [m for m in _messages(doctor.run_checks(), "WARN") if "legacy pre-0.3.0 keys are ignored" in m]
+    assert warns and "quality_gate.test_cmd" in warns[0] and "build.retries" in warns[0]
 
 
 def test_gate_chain_violation_fails(project: Path) -> None:
