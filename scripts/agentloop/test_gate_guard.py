@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import subprocess
 import sys
 from collections.abc import Iterator
 from pathlib import Path
@@ -278,3 +279,73 @@ def test_main_passes_pathless_tools_even_when_state_is_unreadable(
     payload = json.dumps({"tool_name": "run_in_terminal", "tool_input": {"command": "ls"}})
     rc, out = _run_main(payload, monkeypatch, capsys)
     assert (rc, out) == (0, "")
+
+
+# --- --check-diff: the agent-agnostic commit-stage mode --------------------------
+
+
+def _git_init(path: Path) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=path, check=True)
+
+
+def test_check_diff_denies_untracked_guarded_path(in_tmp: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    # A brand-new deliverable is exactly what lands at a gate — untracked files must be covered.
+    _git_init(in_tmp)
+    _setup(in_tmp, design="pending")
+    (in_tmp / "docs" / "tasks").mkdir(parents=True)
+    (in_tmp / "docs" / "tasks" / "T-001.md").write_text("ticket", encoding="utf-8")
+    assert gate_guard.main(["--check-diff"]) == 1
+    err = capsys.readouterr().err
+    assert "docs/tasks/T-001.md" in err
+    assert "design" in err
+
+
+def test_check_diff_passes_when_gate_approved(in_tmp: Path) -> None:
+    _git_init(in_tmp)
+    _setup(in_tmp, design="approved")
+    (in_tmp / "docs" / "tasks").mkdir(parents=True)
+    (in_tmp / "docs" / "tasks" / "T-001.md").write_text("ticket", encoding="utf-8")
+    assert gate_guard.main(["--check-diff"]) == 0
+
+
+def test_check_diff_passes_unguarded_changes_only(in_tmp: Path) -> None:
+    # .agentloop/** and README-like paths are unguarded; a diff of only those must not fail.
+    _git_init(in_tmp)
+    _setup(in_tmp, design="pending")
+    (in_tmp / "README.md").write_text("readme", encoding="utf-8")
+    assert gate_guard.main(["--check-diff"]) == 0
+
+
+def test_check_diff_respects_template_mode(in_tmp: Path) -> None:
+    _git_init(in_tmp)
+    _setup(in_tmp, design="pending", config=_CONFIG_TEMPLATE)
+    (in_tmp / "docs" / "tasks").mkdir(parents=True)
+    (in_tmp / "docs" / "tasks" / "T-001.md").write_text("ticket", encoding="utf-8")
+    assert gate_guard.main(["--check-diff"]) == 0
+
+
+def test_check_diff_denies_modified_tracked_guarded_path(in_tmp: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    _git_init(in_tmp)
+    _setup(in_tmp, requirements="pending")
+    (in_tmp / "docs").mkdir()
+    (in_tmp / "docs" / "20-design.md").write_text("v1", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=in_tmp, check=True)
+    subprocess.run(
+        ["git", "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-qm", "seed"],
+        cwd=in_tmp,
+        check=True,
+    )
+    assert gate_guard.main(["--check-diff"]) == 0  # clean tree: nothing to flag
+    (in_tmp / "docs" / "20-design.md").write_text("v2", encoding="utf-8")
+    assert gate_guard.main(["--check-diff"]) == 1
+    assert "docs/20-design.md" in capsys.readouterr().err
+
+
+def test_check_diff_skips_outside_a_git_repo(
+    in_tmp: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Without git there is no diff to enforce against; skip with a note instead of blocking make check.
+    monkeypatch.setenv("GIT_DIR", str(in_tmp / "nonexistent"))  # make git status fail even under a parent repo
+    _setup(in_tmp, design="pending")
+    assert gate_guard.main(["--check-diff"]) == 0
+    assert "skipping" in capsys.readouterr().err

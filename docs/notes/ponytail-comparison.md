@@ -41,6 +41,11 @@ opencode / Gemini CLI …)に plugin / skill / ルールファイルとして配
    → 同じく `template_lint.py` に同梱。
 3. (姿勢のみ・実装不要)**訂正の透明性** — ベンチマークの過大主張を issue 指摘後に README へ
    経緯ごと残す文化。本テンプレートは CHANGELOG の Known limitations 節で既に同型を実施済み。
+4. **最小実装(YAGNI)規律の明文化**(2026-07 採用)— ponytail の核である「受け入れ基準が要求
+   する最小の実装。投機的一般化を作らない」を、ペルソナ配布ではなく既存面への織り込みで標準化:
+   AGENTS.md Principles 第1項、implementer プロトコル、quality_gate `review` ステップのプロンプト
+   (`_review_prompt`)、build.md の review 説明。新ステップ・intensity levels は追加しない
+   (下記「詰めるべきでない点」4 のとおりゲート構造には触れない)。
 
 ## 詰めるべきでない点(非採用と理由)
 
@@ -53,6 +58,11 @@ opencode / Gemini CLI …)に plugin / skill / ルールファイルとして配
    > に共有化して Claude / Copilot をフル対応、Codex は規約+手順レベル(ゲートは慣習のみ)で対応
    > した。「16 ホスト対応」ではなく、hooks 互換のホストに限る点は変えていない。ヘッドレスの
    > モード A(`claude -p`)は Claude Code 専用のまま。
+   >
+   > **2026-07 追補**: `gate_guard.py --check-diff`(pre-commit local hook、`make check` にも
+   > 乗る)により commit 段の機構層はエージェント非依存になった。Codex でも「編集時は慣習のみ、
+   > commit/DoD 段は機構検査」まで引き上がり、ツールフックを素通りするシェル経由の編集も同じ網に
+   > かかる。編集時 intercept が hooks 互換ホスト限定である点は変わらない。
 2. **plugin / marketplace 配布** — 配るものが「リポジトリの骨格」(docs/, .agentloop/, scripts/ が
    プロダクトの一部として git 管理される)であり、plugin の守備範囲(エージェントの挙動)外。
    copy / adopt + adopt-manifest が正しい形。

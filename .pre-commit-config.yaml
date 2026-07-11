@@ -1,4 +1,19 @@
 ﻿repos:
+  # AgentLoop gate guard, commit-stage mode: fail when the diff vs HEAD touches a gate-guarded
+  # path whose prerequisite gate is not approved (AGENTS.md "Gate rules", mechanism layer).
+  # Agent-agnostic: runs in `make check` (every agent's DoD) and on `git commit` once hooks are
+  # installed — covering agents without tool hooks (e.g. Codex) and edits that bypass them
+  # (e.g. shell redirects). No-op while gates.template_mode is true or enforce_hook is false.
+  - repo: local
+    hooks:
+      - id: agentloop-gate-guard
+        name: agentloop gate guard (commit stage)
+        entry: uv run --no-project --with pyyaml python scripts/agentloop/gate_guard.py --check-diff
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit]
+
   # gitleaks (secret scanning; mechanically prevents committing secrets)
   # Exclude false positives with .gitleaksignore.
   - repo: https://github.com/gitleaks/gitleaks

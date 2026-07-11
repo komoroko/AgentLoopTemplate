@@ -5,6 +5,30 @@ installed version (recorded in `.agentloop/adopt-manifest.yaml`) and the new one
 one `## [x.y.z] - YYYY-MM-DD` heading per release. Neither this file nor `VERSION` is
 copied by `make adopt` — the manifest's `template.version` is the identity record.
 
+## [0.5.0] - 2026-07-12
+
+### Added
+- **Commit-stage gate enforcement (agent-agnostic)**: `gate_guard.py --check-diff`
+  fails when the diff vs HEAD (worktree + index + untracked) touches a gate-guarded
+  path whose prerequisite gate is unapproved. Registered as a local pre-commit hook,
+  so it runs inside `make check` (every agent's DoD) and on `git commit`; `make setup`
+  now runs `pre-commit install` so the commit-stage layer actually fires. This gives
+  hook-less agents (e.g. Codex) a mechanism layer at the commit/DoD boundary and also
+  catches edits that bypass the tool hooks (e.g. shell redirects). `template_mode` /
+  `enforce_hook: false` short-circuit it as before.
+- **Minimal-implementation (YAGNI) discipline standardized** (adopted from the
+  ponytail comparison, `docs/notes/ponytail-comparison.md`): AGENTS.md Principles,
+  the implementer protocol, the quality-gate `review` step prompt, and the /build
+  procedure now state explicitly that implementation stays at the minimum the
+  ticket's acceptance criteria require — no speculative generality. No new gate step.
+
+### Fixed
+- **`build_loop.py --dry-run` is now strictly read-only**: it used to write task
+  statuses through to `tasks.yaml` (one dry run marked every task `done`) and could
+  append escalation events. Statuses now advance in an in-memory overlay only; the
+  event log, state.md, and the run lock are untouched, so a dry run can no longer
+  corrupt the starting state of the next real run.
+
 ## [0.4.0] - 2026-07-12
 
 ### Added
