@@ -122,6 +122,37 @@ def test_empty_smoke_with_explicit_required_false_is_accepted(project: Path) -> 
     assert not _messages(findings, "FAIL")
 
 
+def _install_schemas(project: Path) -> None:
+    """Copy the template's real schemas into the fixture (they live outside the tmp cwd)."""
+    src = Path(__file__).resolve().parents[2] / ".agentloop" / "schema"
+    shutil.copytree(src, project / ".agentloop" / "schema")
+
+
+def test_schema_validation_passes_on_healthy_files(project: Path) -> None:
+    pytest.importorskip("jsonschema")
+    _install_schemas(project)
+    assert _levels(doctor.run_checks(), "schema") == ["PASS", "PASS"]
+
+
+def test_schema_violation_fails_even_when_the_parser_tolerates_it(project: Path) -> None:
+    # dag.load ignores unknown keys (tolerant runtime); the schema is the stricter lint that
+    # catches the typo'd field a tolerant parser would silently drop.
+    pytest.importorskip("jsonschema")
+    _install_schemas(project)
+    (project / ".agentloop" / "tasks.yaml").write_text(
+        "tasks:\n  - {id: T-001, title: base, kind: foundation, blockedBy: [], status: todo, blockedby: [T-002]}\n",
+        encoding="utf-8",
+    )
+    findings = doctor.run_checks()
+    assert any("violates its schema" in m for m in _messages(findings, "FAIL"))
+
+
+def test_schema_files_absent_is_info_only(project: Path) -> None:
+    # An adopted repo from an older template has no .agentloop/schema/ — degrade, don't fail.
+    pytest.importorskip("jsonschema")
+    assert _levels(doctor.run_checks(), "schema") == ["INFO", "INFO"]
+
+
 def test_unparseable_config_fails(project: Path) -> None:
     (project / ".agentloop" / "config.yaml").write_text("build: [not a mapping", encoding="utf-8")
     assert any("not valid YAML" in m for m in _messages(doctor.run_checks(), "FAIL"))

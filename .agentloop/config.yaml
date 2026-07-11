@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=schema/config.schema.json
 # .agentloop/config.yaml — the "single source of knobs" for deterministic orchestration
 #
 # scripts/agentloop/build_loop.py (the implementation-loop orchestrator) and

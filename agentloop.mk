@@ -90,11 +90,13 @@ revise:
 # One-shot read-only diagnosis of the environment and the SSOT's consistency: binaries on PATH,
 # config/state/tasks parse + gate-chain invariant, gate-guard hook registration, git branch vs
 # state.md, leftover worktrees/lock, open escalations. Exit 1 if anything is FAIL-level.
+# (doctor alone also pulls in jsonschema, to validate config/tasks against .agentloop/schema/;
+#  the ordinary runtime stays pyyaml-only.)
 #   make doctor
 doctor:
-	$(AGENTLOOP_PY) scripts/agentloop/doctor.py $(ARGS)
+	uv run --no-project --with pyyaml --with jsonschema python scripts/agentloop/doctor.py $(ARGS)
 
 # Self-tests for the template's foundational tools (scripts/agentloop/). Unit tests of the
 # deterministic orchestrator, DAG, gate hook, and the init/adopt/cycle helpers.
 test-tools:
-	uv run --no-project --with pyyaml,pytest python -m pytest -vv scripts/agentloop/
+	uv run --no-project --with pyyaml,pytest,jsonschema python -m pytest -vv scripts/agentloop/

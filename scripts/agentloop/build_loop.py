@@ -190,6 +190,7 @@ def work_branch(front: dict[str, object]) -> str:
 # round-trip rewrite below is lossless — keep the file pure data + this pointer (schema detail
 # lives in .claude/commands/tasks.md, not in comments a rewrite would destroy).
 TASKS_HEADER = (
+    "# yaml-language-server: $schema=schema/tasks.schema.json\n"
     "# .agentloop/tasks.yaml — machine-readable SSOT of the task graph (DAG) (build_loop updates status)\n"
     "# schema (id/title/kind/blockedBy/status/test/req/phase): see .claude/commands/tasks.md / CLAUDE.md\n"
 )

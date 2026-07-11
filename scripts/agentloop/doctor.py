@@ -20,6 +20,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
 import sys
 from dataclasses import dataclass
@@ -252,6 +253,43 @@ def check_events() -> list[Finding]:
     return [Finding("PASS", "events", "no open escalations")]
 
 
+SCHEMA_DIR = ".agentloop/schema"
+
+
+def check_schema() -> list[Finding]:
+    """Validate config.yaml / tasks.yaml against the bundled JSON Schemas when possible.
+
+    The schemas (.agentloop/schema/*.schema.json) are primarily editor tooling (the
+    yaml-language-server modeline); here they double as a lint. jsonschema is an optional
+    extra — `make doctor` provides it via `--with`, a bare python run degrades to INFO —
+    so the ordinary agentloop runtime stays pyyaml-only.
+    """
+    try:
+        import jsonschema
+    except ImportError:
+        return [Finding("INFO", "schema", "jsonschema not installed — schema validation skipped (make doctor has it)")]
+    out: list[Finding] = []
+    for data_path, schema_name in ((build_loop.CONFIG_PATH, "config"), (build_loop.TASKS_PATH, "tasks")):
+        schema_path = Path(SCHEMA_DIR) / f"{schema_name}.schema.json"
+        if not schema_path.exists():
+            out.append(Finding("INFO", "schema", f"{schema_path} absent (older template) — skipped"))
+            continue
+        data = _read_yaml(data_path)
+        if data is None:
+            continue  # unreadable/missing data files are already FAILed by their own checks
+        try:
+            schema = json.loads(schema_path.read_text(encoding="utf-8"))
+            jsonschema.validate(data, schema)
+        except jsonschema.ValidationError as exc:
+            where = "/".join(str(p) for p in exc.absolute_path) or "(root)"
+            out.append(Finding("FAIL", "schema", f"{data_path} violates its schema at {where}: {exc.message}"))
+        except (OSError, ValueError, jsonschema.SchemaError) as exc:
+            out.append(Finding("WARN", "schema", f"cannot validate {data_path}: {exc}"))
+        else:
+            out.append(Finding("PASS", "schema", f"{data_path} matches {schema_path.name}"))
+    return out
+
+
 def check_version() -> list[Finding]:
     """Which template version this repo runs (identity only; upgrades are a human action)."""
     manifest = _read_yaml(MANIFEST_PATH)
@@ -277,6 +315,7 @@ def run_checks() -> list[Finding]:
     findings += check_git(front, config)
     findings += check_hook(config)
     findings += check_events()
+    findings += check_schema()
     findings += check_version()
     return findings
 
