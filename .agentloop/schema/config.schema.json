@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agentloop/config.schema.json",
+  "title": "AgentLoop .agentloop/config.yaml",
+  "description": "Editor/doctor validation for the deterministic-orchestration knobs. The runtime parser (build_loop.Config.load / _parse_steps) stays the behavioral truth — when you change it, update this schema in the same commit. Top-level objects allow extra keys on purpose: products may annotate; unknown keys are inert.",
+  "type": "object",
+  "required": ["build"],
+  "properties": {
+    "build": {
+      "type": "object",
+      "required": ["quality_gate"],
+      "properties": {
+        "max_parallel": { "type": "integer", "minimum": 1 },
+        "worktree": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "dir": { "type": "string", "minLength": 1 },
+            "branch_pattern": {
+              "type": "string",
+              "description": "Must join with '-', not '/': git forbids a branch that is a path-prefix of another ref.",
+              "pattern": "^(?!.*\\{branch\\}/).*\\{task_id\\}.*$"
+            }
+          },
+          "additionalProperties": true
+        },
+        "quality_gate": {
+          "type": "object",
+          "required": ["steps"],
+          "properties": {
+            "agent_steps": { "type": "boolean" },
+            "integration_gate": { "type": "boolean" },
+            "steps": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": { "type": "string", "minLength": 1 },
+                  "kind": { "enum": ["cmd", "agent"] },
+                  "run": { "type": "string" },
+                  "retries": { "type": "integer", "minimum": 0 },
+                  "required": {
+                    "type": "boolean",
+                    "description": "cmd only: an empty `run` refuses to build instead of silently skipping."
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          },
+          "additionalProperties": true
+        },
+        "post_build": {
+          "type": "object",
+          "properties": {
+            "security_review": { "type": "boolean" }
+          },
+          "additionalProperties": true
+        },
+        "timeouts": {
+          "type": "object",
+          "properties": {
+            "cmd_sec": { "type": "number", "minimum": 0 },
+            "agent_sec": { "type": "number", "minimum": 0 }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "gates": {
+      "type": "object",
+      "properties": {
+        "enforce_hook": { "type": "boolean" },
+        "template_mode": { "type": "boolean" },
+        "guard_paths": {
+          "type": "object",
+          "description": "path (a key ending in '/' guards the prefix) → the gate that must be approved first",
+          "additionalProperties": { "enum": ["requirements", "design", "tasks", "build", "release"] }
+        }
+      },
+      "additionalProperties": true
+    },
+    "github": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "label": { "type": "string" },
+        "close_on_done": { "type": "boolean" },
+        "repo": { "type": "string" }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

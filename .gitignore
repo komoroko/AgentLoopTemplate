@@ -29,7 +29,7 @@ backend/logfiles/*.log
 .agentloop/build-loop.log   # the pre-events escalation log (legacy; no longer written)
 .agentloop/build-loop.log.1 # its rotated previous generation
 .agentloop/build-loop.lock  # the single-run PID lock
-.agentloop/feedback.yaml    # per-cycle upstream-issue drafts (make feedback); outcomes live in the retrospective
+.agentloop/pr-draft.md      # generated PR body (make pr-draft); regenerate rather than track
 
 # ---- environment variables / secrets ----
 .env

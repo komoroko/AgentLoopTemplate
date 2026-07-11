@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agentloop/tasks.schema.json",
+  "title": "AgentLoop .agentloop/tasks.yaml",
+  "description": "Editor/doctor validation for the task-graph SSOT. The runtime parser (dag.load) stays the behavioral truth — when you change it, update this schema in the same commit. dag.py additionally validates what a schema cannot (cycles, unknown blockedBy targets, duplicate ids).",
+  "type": "object",
+  "required": ["tasks"],
+  "properties": {
+    "tasks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "title", "kind"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^T-\\d+$" },
+          "title": { "type": "string", "minLength": 1 },
+          "kind": { "enum": ["foundation", "parallel", "integration"] },
+          "blockedBy": {
+            "type": "array",
+            "items": { "type": "string", "pattern": "^T-\\d+$" }
+          },
+          "status": { "enum": ["todo", "in_progress", "blocked", "needs-revision", "done"] },
+          "test": {
+            "type": "string",
+            "description": "The task's own test command — /build runs it as the focused first gate step when it differs from the configured quality_gate.steps."
+          },
+          "req": {
+            "type": "string",
+            "description": "Requirement ids this task covers: R-N / NFR-N, comma/space-separated.",
+            "pattern": "^\\s*(?:R|NFR)-\\d+(?:[,\\s]+(?:R|NFR)-\\d+)*\\s*$"
+          },
+          "phase": { "enum": ["requirements", "design", "build", "verify"] }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

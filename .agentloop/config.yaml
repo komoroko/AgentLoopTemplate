@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=schema/config.schema.json
 # .agentloop/config.yaml — the "single source of knobs" for deterministic orchestration
 #
 # scripts/agentloop/build_loop.py (the implementation-loop orchestrator) and
@@ -18,6 +19,9 @@ build:
     branch_pattern: "{branch}-{task_id}"
 
   # The quality gate = **the single definition of the DoD** (CLAUDE.md and /build refer to this list).
+  # Per task, a `test` command in tasks.yaml that differs from every cmd step below is prepended
+  # as a focused `task-test` step (the ticket's own green decision runs first, with the test
+  # step's retries budget); a shared default like "make test" adds no extra step.
   # build_loop.py runs the steps in order per task:
   #   kind: cmd   — run the command; pass/fail is decided deterministically by exit code.
   #                 `retries` is that step's own budget for sending a failure back to the
@@ -52,6 +56,9 @@ build:
         retries: 1           # soon as any entry point exists — e.g. "uv run python -m yourapp --help"
                              # (add a make target if you prefer). Tests can be green while the launch
                              # path is broken; an empty run is flagged at gate ④ (/build).
+        required: false      # the human decision knob (at /design or /tasks): set true once the
+                             # deliverable is runnable — then an empty `run` refuses to build
+                             # (fail-fast) instead of silently skipping the launch check.
 
   # Steps run once when every task is done, before presenting gate ④.
   post_build:
@@ -102,12 +109,3 @@ github:
   label: agentloop        # the label identifying mirror issues (only issues with this label are managed)
   close_on_done: true     # close the issue for tasks with status==done
   repo: ""                # empty: gh infers from origin. Specify owner/repo to fix it explicitly
-
-  # File retrospective rows marked `Promote? = upstream` as issues on the TEMPLATE repository
-  # (scripts/agentloop/feedback.py; the human runs `make feedback` after /verify drafts
-  # .agentloop/feedback.yaml). **Off by default**; even when true, auto-skips if gh or the
-  # upstream repo is absent. One-way and additive — never reads or edits upstream issues.
-  feedback:
-    enabled: false
-    repo: ""              # owner/repo of the template. empty: derived from adopt-manifest template.source
-    label: agentloop-feedback   # attached when permitted (best-effort for non-collaborators)

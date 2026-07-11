@@ -31,7 +31,10 @@ _CONFIG = (
     "build:\n"
     "  max_parallel: 3\n"
     "  worktree: {enabled: true, dir: .worktrees, branch_pattern: '{branch}-{task_id}'}\n"
-    "  quality_gate: {test_cmd: 'make test', check_cmd: 'make check'}\n"
+    "  quality_gate:\n"
+    "    steps:\n"
+    "      - {name: test, kind: cmd, run: 'make test'}\n"
+    "      - {name: check, kind: cmd, run: 'make check'}\n"
     "gates:\n  enforce_hook: true\n  template_mode: false\n"
 )
 
@@ -50,7 +53,13 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     (tmp_path / ".agentloop" / "tasks.yaml").write_text(_TASKS, encoding="utf-8")
     (tmp_path / ".claude" / "settings.json").write_text(_SETTINGS, encoding="utf-8")
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
-    monkeypatch.setattr(build_loop, "_run", lambda cmd, cwd, timeout=None: (0, "build/demo\n"))
+
+    def fake_git(cmd: list[str], cwd: str, timeout: float | None = None) -> tuple[int, str]:
+        if cmd[:2] == ["git", "rev-parse"]:
+            return 0, "build/demo\n"
+        return 0, ""  # branch --list etc.: nothing left behind on the healthy baseline
+
+    monkeypatch.setattr(build_loop, "_run", fake_git)
     prev = os.getcwd()
     os.chdir(tmp_path)
     try:
@@ -89,6 +98,160 @@ def test_missing_claude_is_warn_and_gh_is_info(project: Path, monkeypatch: pytes
     assert doctor.main([]) == 0  # degraded features, not broken invariants
 
 
+def _steps_config(smoke_attrs: str) -> str:
+    return (
+        "build:\n"
+        "  quality_gate:\n"
+        "    steps:\n"
+        "      - {name: test, kind: cmd, run: 'make test'}\n"
+        f"      - {{name: smoke, kind: cmd, run: ''{smoke_attrs}}}\n"
+        "gates:\n  enforce_hook: true\n  template_mode: false\n"
+    )
+
+
+def test_required_step_without_command_fails(project: Path) -> None:
+    # The same contradiction build_loop refuses to start on must surface here, pre-launch.
+    (project / ".agentloop" / "config.yaml").write_text(_steps_config(", required: true"), encoding="utf-8")
+    findings = doctor.run_checks()
+    assert any("'smoke' is `required: true` but has no command" in m for m in _messages(findings, "FAIL"))
+
+
+def test_empty_smoke_without_required_key_warns(project: Path) -> None:
+    # An undecided empty smoke is the classic silent DoD hole — nudge until a human decides.
+    (project / ".agentloop" / "config.yaml").write_text(_steps_config(""), encoding="utf-8")
+    findings = doctor.run_checks()
+    assert any("smoke has no command" in m for m in _messages(findings, "WARN"))
+
+
+def test_empty_smoke_with_explicit_required_false_is_accepted(project: Path) -> None:
+    # `required: false` written out is the recorded human decision (not runnable) — no nagging.
+    (project / ".agentloop" / "config.yaml").write_text(_steps_config(", required: false"), encoding="utf-8")
+    findings = doctor.run_checks()
+    assert not [m for m in _messages(findings, "WARN") if "smoke" in m]
+    assert not _messages(findings, "FAIL")
+
+
+def _install_schemas(project: Path) -> None:
+    """Copy the template's real schemas into the fixture (they live outside the tmp cwd)."""
+    src = Path(__file__).resolve().parents[2] / ".agentloop" / "schema"
+    shutil.copytree(src, project / ".agentloop" / "schema")
+
+
+def test_schema_validation_passes_on_healthy_files(project: Path) -> None:
+    pytest.importorskip("jsonschema")
+    _install_schemas(project)
+    assert _levels(doctor.run_checks(), "schema") == ["PASS", "PASS"]
+
+
+def test_schema_violation_fails_even_when_the_parser_tolerates_it(project: Path) -> None:
+    # dag.load ignores unknown keys (tolerant runtime); the schema is the stricter lint that
+    # catches the typo'd field a tolerant parser would silently drop.
+    pytest.importorskip("jsonschema")
+    _install_schemas(project)
+    (project / ".agentloop" / "tasks.yaml").write_text(
+        "tasks:\n  - {id: T-001, title: base, kind: foundation, blockedBy: [], status: todo, blockedby: [T-002]}\n",
+        encoding="utf-8",
+    )
+    findings = doctor.run_checks()
+    assert any("violates its schema" in m for m in _messages(findings, "FAIL"))
+
+
+def test_schema_files_absent_is_info_only(project: Path) -> None:
+    # An adopted repo from an older template has no .agentloop/schema/ — degrade, don't fail.
+    pytest.importorskip("jsonschema")
+    assert _levels(doctor.run_checks(), "schema") == ["INFO", "INFO"]
+
+
+# --- the practical checks: tickets, leaf branches, security binding, log size, guard typos
+
+
+def test_missing_ticket_warns_and_orphan_ticket_is_info(project: Path) -> None:
+    (project / "docs" / "tasks").mkdir(parents=True)
+    (project / "docs" / "tasks" / "T-002.md").write_text("# T-002\n", encoding="utf-8")
+    findings = doctor.run_checks()
+    assert any("no ticket file under docs/tasks/ for: T-001" in m for m in _messages(findings, "WARN"))
+    assert any("no tasks.yaml entry: T-002" in m for m in _messages(findings, "INFO"))
+
+
+def test_no_tickets_dir_stays_silent(project: Path) -> None:
+    # Nothing under docs/tasks/ at all (e.g. a brownfield repo before its first /tasks) — no noise.
+    assert not any("ticket" in m for m in _messages(doctor.run_checks(), "WARN"))
+
+
+def test_unmerged_leaf_branch_warns_and_merged_is_info(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_git(cmd: list[str], cwd: str, timeout: float | None = None) -> tuple[int, str]:
+        if cmd[:2] == ["git", "rev-parse"]:
+            return 0, "build/demo\n"
+        if cmd[:3] == ["git", "branch", "--no-merged"]:
+            return 0, "  build/demo-T-003\n"
+        if cmd[:3] == ["git", "branch", "--list"]:
+            return 0, "  build/demo-T-002\n  build/demo-T-003\n"
+        return 0, ""
+
+    monkeypatch.setattr(build_loop, "_run", fake_git)
+    findings = doctor.run_checks()
+    assert any("UNMERGED leaf branch(es): build/demo-T-003" in m for m in _messages(findings, "WARN"))
+    assert any("merged leaf branch(es) left behind: build/demo-T-002" in m for m in _messages(findings, "INFO"))
+
+
+def _all_done(project: Path) -> None:
+    (project / ".agentloop" / "tasks.yaml").write_text(
+        "tasks:\n  - {id: T-001, title: base, kind: foundation, blockedBy: [], status: done, test: make test}\n",
+        encoding="utf-8",
+    )
+
+
+def _git_with_head(monkeypatch: pytest.MonkeyPatch, head: str) -> None:
+    def fake_git(cmd: list[str], cwd: str, timeout: float | None = None) -> tuple[int, str]:
+        if cmd[:2] == ["git", "rev-parse"]:
+            return (0, "build/demo\n") if "--abbrev-ref" in cmd else (0, f"{head}\n")
+        return 0, ""
+
+    monkeypatch.setattr(build_loop, "_run", fake_git)
+
+
+def test_all_done_without_security_report_is_info(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _all_done(project)
+    _git_with_head(monkeypatch, "abc123")
+    assert any("no .agentloop/security-review.md" in m for m in _messages(doctor.run_checks(), "INFO"))
+
+
+def test_stale_security_review_warns_and_current_passes(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _all_done(project)
+    _git_with_head(monkeypatch, "abc123def")
+    report = project / ".agentloop" / "security-review.md"
+    report.write_text("Reviewed-HEAD: 999999\n", encoding="utf-8")
+    assert any("security review is STALE" in m for m in _messages(doctor.run_checks(), "WARN"))
+    report.write_text("Reviewed-HEAD: abc123def\n", encoding="utf-8")
+    assert any(f.area == "security" and f.level == "PASS" for f in doctor.run_checks())
+
+
+def test_pending_build_stays_silent_on_security(project: Path) -> None:
+    # T-001 is still todo in the baseline fixture — the report legitimately doesn't exist yet.
+    assert not any(f.area == "security" for f in doctor.run_checks())
+
+
+def test_large_events_log_is_flagged_before_rotation(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(events, "EVENTS_MAX_BYTES", 100)
+    (project / ".agentloop" / "events.ndjson").write_text("x" * 90 + "\n", encoding="utf-8")
+    assert any("rotation" in m for m in _messages(doctor.run_checks(), "INFO"))
+
+
+def test_guard_paths_typo_fails(project: Path) -> None:
+    (project / ".agentloop" / "config.yaml").write_text(
+        _CONFIG + "  guard_paths:\n    docs/20-design.md: requirments\n", encoding="utf-8"
+    )
+    findings = doctor.run_checks()
+    assert any("guard_paths values must be one of" in m and "requirments" in m for m in _messages(findings, "FAIL"))
+
+
+def test_guard_paths_valid_passes(project: Path) -> None:
+    (project / ".agentloop" / "config.yaml").write_text(
+        _CONFIG + "  guard_paths:\n    docs/20-design.md: requirements\n    docs/tasks/: design\n", encoding="utf-8"
+    )
+    assert any("guard_paths valid (2 entries)" in m for m in _messages(doctor.run_checks(), "PASS"))
+
+
 def test_unparseable_config_fails(project: Path) -> None:
     (project / ".agentloop" / "config.yaml").write_text("build: [not a mapping", encoding="utf-8")
     assert any("not valid YAML" in m for m in _messages(doctor.run_checks(), "FAIL"))
@@ -96,10 +259,21 @@ def test_unparseable_config_fails(project: Path) -> None:
 
 def test_all_empty_cmd_steps_warn(project: Path) -> None:
     (project / ".agentloop" / "config.yaml").write_text(
-        _CONFIG.replace("{test_cmd: 'make test', check_cmd: 'make check'}", "{test_cmd: '', check_cmd: ''}"),
+        _CONFIG.replace("run: 'make test'", "run: ''").replace("run: 'make check'", "run: ''"),
         encoding="utf-8",
     )
     assert any("would check nothing" in m for m in _messages(doctor.run_checks(), "WARN"))
+
+
+def test_stale_legacy_config_keys_warn(project: Path) -> None:
+    # Legacy keys next to a valid steps list are silently ignored — flag them so a reader
+    # doesn't believe test_cmd still steers the gate.
+    (project / ".agentloop" / "config.yaml").write_text(
+        _CONFIG.replace("  quality_gate:\n", "  retries: {test_fix: 2}\n  quality_gate:\n    test_cmd: make test\n"),
+        encoding="utf-8",
+    )
+    warns = [m for m in _messages(doctor.run_checks(), "WARN") if "legacy pre-0.3.0 keys are ignored" in m]
+    assert warns and "quality_gate.test_cmd" in warns[0] and "build.retries" in warns[0]
 
 
 def test_gate_chain_violation_fails(project: Path) -> None:

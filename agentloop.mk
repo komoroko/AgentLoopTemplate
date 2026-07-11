@@ -10,7 +10,7 @@
 
 AGENTLOOP_PY := uv run --no-project --with pyyaml python
 
-.PHONY: init adopt agentloop-upgrade agentloop-uninstall cycle-close build-loop issue-sync feedback revise events doctor test-tools
+.PHONY: init adopt agentloop-upgrade agentloop-uninstall cycle-close build-loop issue-sync revise events doctor pr-draft test-tools
 
 # Turn the copied template into a product (idempotent): fills the pyproject / state.md placeholders,
 # snapshots the pristine docs scaffolds, records the adopt-manifest (FROM = the template's git URL,
@@ -64,13 +64,6 @@ build-loop:
 issue-sync:
 	$(AGENTLOOP_PY) scripts/agentloop/issue_sync.py $(ARGS)
 
-# File cycle feedback (retrospective rows marked `Promote? = upstream`, drafted by /verify into
-# .agentloop/feedback.yaml) as issues on the UPSTREAM template repository. Opt-in
-# (github.feedback.enabled) and outward-facing: human-run only — never add it to permissions.allow.
-#   make feedback ARGS=--dry-run [FILE=.agentloop/feedback.yaml]
-feedback:
-	$(AGENTLOOP_PY) scripts/agentloop/feedback.py $(if $(FILE),--file "$(FILE)") $(ARGS)
-
 # Structured orchestration events (.agentloop/events.ndjson — the escalation log's machine-readable
 # truth; state.md embeds only the generated view between its ESCALATION-VIEW markers).
 #   make events ARGS=--render                                        # view + open escalations
@@ -88,13 +81,24 @@ revise:
 	$(AGENTLOOP_PY) scripts/agentloop/revise.py $(ARGS)
 
 # One-shot read-only diagnosis of the environment and the SSOT's consistency: binaries on PATH,
-# config/state/tasks parse + gate-chain invariant, gate-guard hook registration, git branch vs
-# state.md, leftover worktrees/lock, open escalations. Exit 1 if anything is FAIL-level.
+# config/state/tasks parse + gate-chain invariant, guard_paths typos, task↔ticket parity,
+# gate-guard hook registration, git branch vs state.md, leftover worktrees/leaf-branches/lock,
+# open escalations + event-log size, security-review↔HEAD binding, JSON-Schema validation.
+# Exit 1 if anything is FAIL-level.
+# (doctor alone also pulls in jsonschema, to validate config/tasks against .agentloop/schema/;
+#  the ordinary runtime stays pyyaml-only.)
 #   make doctor
 doctor:
-	$(AGENTLOOP_PY) scripts/agentloop/doctor.py $(ARGS)
+	uv run --no-project --with pyyaml --with jsonschema python scripts/agentloop/doctor.py $(ARGS)
+
+# Assemble a PR body from the SSOT (gates, tasks, requirement coverage, security-review binding,
+# commit list) into .agentloop/pr-draft.md. Read-only and never calls gh — creating the PR stays
+# a human action; the tool prints the `gh pr create --body-file` line to run after review.
+#   make pr-draft [ARGS='--base develop' | ARGS=--stdout]
+pr-draft:
+	$(AGENTLOOP_PY) scripts/agentloop/pr_draft.py $(ARGS)
 
 # Self-tests for the template's foundational tools (scripts/agentloop/). Unit tests of the
 # deterministic orchestrator, DAG, gate hook, and the init/adopt/cycle helpers.
 test-tools:
-	uv run --no-project --with pyyaml,pytest python -m pytest -vv scripts/agentloop/
+	uv run --no-project --with pyyaml,pytest,jsonschema python -m pytest -vv scripts/agentloop/

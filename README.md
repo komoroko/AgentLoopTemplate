@@ -194,7 +194,8 @@ Then, inside the adopted repo:
 
 3. If an upstream (requirements/design) defect comes to light during implementation, you can roll back with **`/revise <phase>`** (resets the gates from the target onward to `pending` in a chain, and reconciles task impact with `dag.py --impacted`) — or directly via `make revise ARGS="--to <phase> --reason '...'"`. Rewinding approval is also at the human's discretion.
 4. Check the current phase, gate approval status, and task progress anytime with `/status`. Generate the **big picture (dependency diagram)** of tasks with `uv run --no-project --with pyyaml python scripts/agentloop/dag.py --mermaid`, which renders directly in GitHub/VS Code/Markdown (status color-coding, critical-path emphasis).
-5. After the release decision (gate ⑤), close the cycle with `make cycle-close NAME=<slug>`: it archives this cycle's docs to `docs/archive/<date>-<slug>/`, restores fresh scaffolds, and resets gates/phase for the next cycle. This applies to greenfield and brownfield repos alike (`docs/00-product-brief.md` and the `docs/05-current-state.md` baseline persist). Closing a cycle is a human operation, like opening a gate.
+5. Shipping the cycle as a PR? `make pr-draft` assembles the PR body from the SSOT (gate approvals, task table, requirement coverage, security-review binding, commit list) into `.agentloop/pr-draft.md` — read-only; it prints the `gh pr create --body-file` line and creating/pushing the PR stays yours.
+6. After the release decision (gate ⑤), close the cycle with `make cycle-close NAME=<slug>`: it archives this cycle's docs to `docs/archive/<date>-<slug>/`, restores fresh scaffolds, and resets gates/phase for the next cycle. This applies to greenfield and brownfield repos alike (`docs/00-product-brief.md` and the `docs/05-current-state.md` baseline persist). Closing a cycle is a human operation, like opening a gate.
 
 > **It does not stall during approval waits**: a notification fires on reaching a gate, and while waiting for approval the agent
 > pulls forward outcome-independent work (environment setup, investigation, test-harness setup, etc.).
@@ -216,7 +217,7 @@ make build-loop ARGS=--dry-run   # check just the control flow without calling c
 **B. Interactive loop — `/loop /build`**
 An alternative that runs the loop in conversation without the orchestrator.
 
-- A task is complete only after **passing the quality-gate pipeline** — `quality_gate.steps` in `.agentloop/config.yaml` is the **single definition of the DoD** (default: `make test` green → `make check` clean → a review step applying the `/code-review`+`/simplify` disciplines → a real-launch smoke test for runnable deliverables). Each cmd step has its own retry budget; a failure is sent back to the implementer until the budget runs out (→ `blocked`).
+- A task is complete only after **passing the quality-gate pipeline** — `quality_gate.steps` in `.agentloop/config.yaml` is the **single definition of the DoD** (default: `make test` green → `make check` clean → a review step applying the `/code-review`+`/simplify` disciplines → a real-launch smoke test for runnable deliverables). A task's own `test` command from `tasks.yaml` runs first as a focused step when it differs from the configured ones. Each cmd step has its own retry budget; a failure is sent back to the implementer until the budget runs out (→ `blocked`). Mark the smoke step `required: true` once the deliverable is runnable — an empty command then refuses to build instead of silently skipping the launch check.
 - **Parallel tasks run in isolation**: independent leaf tasks are implemented in their own branch/working directory with `git worktree`, **up to 3 in parallel** (`max_parallel` in `config.yaml`), and merged into the work branch sequentially in ascending id order when done. Foundation tasks are finalized first on the work branch. After a batch merges **2 or more** leaves, the cmd steps run once more on the **merged** work branch (the integration gate — each leaf was green only in isolation); a red goes to a headless fixer within the retry budget, else the batch blocks. Uncommitted worktree changes are finalized onto the leaf branch before merge/cleanup, so nothing is lost with the worktree.
 - An unsolvable task becomes `blocked`; an upstream defect becomes `needs-revision`, **escalated to the human**, and the loop stops.
 - **The determinism boundary**: control flow, parallelism, merge, cmd-step gate decisions, and stopping are deterministic in code. Each task's implementation code and the review step's fixes are LLM-derived and non-deterministic, absorbed by "re-verify the already-passed steps after a review change; retry until green, else blocked". **The orchestrator does not touch `gates.build`** (only the human opens a gate).
@@ -237,26 +238,10 @@ If you want to make tasks visible to the team/stakeholders, you can **one-way-mi
 - **One-way only**: `tasks.yaml` is always the SSOT. Edits on the Issues side are not read back (preserving deterministic, offline operation). Check just the plan with `make issue-sync ARGS=--dry-run`.
 - Writing issues is an outward-facing operation, so the `github.enabled: true` opt-in serves as consent.
 
-### Feeding lessons back to the template (optional)
-
-A cycle's retrospective (§4/§5) collects template-improvement proposals; rows the human marks
-`Promote? = upstream` can be filed as issues on the **upstream template repository** with
-`make feedback`.
-
-- **Off by default.** Enable with `github.feedback.enabled: true` in `.agentloop/config.yaml`. The
-  upstream repo comes from `github.feedback.repo` (owner/repo) or, when empty, the template source
-  recorded in `.agentloop/adopt-manifest.yaml`.
-- `/verify` drafts one self-contained issue per row into `.agentloop/feedback.yaml` (gitignored);
-  **the human reviews and files** — preview offline with `make feedback ARGS=--dry-run`, then
-  `make feedback`. Filing is outward-facing and never pre-authorized.
-- Idempotent via a hidden content-hash body marker (re-running skips what is already filed);
-  the label is best-effort (non-collaborators can file but not label); one-way and additive —
-  upstream issues are never read back, edited, or closed.
-
 ## Troubleshooting
 
-- **First, run `make doctor`** — a read-only diagnosis of the whole setup: binaries on PATH, config/state/tasks consistency (including the gate-chain invariant), gate-guard hook registration, branch/worktree/lock leftovers, and open escalations. Most of the situations below show up there as a FAIL/WARN line.
-- **A task went `blocked`** — the quality gate could not be passed within the step's retry budget. Read the open escalation with `make events ARGS=--render` (the failure summary is in the event's detail; state.md's escalation view mirrors it), fix the cause (or fix the task ticket), set the task's `status` back to `todo` in `.agentloop/tasks.yaml`, close the event with `make events ARGS='--resolve <ID> --note "…"'`, and re-run `make build-loop`. If the cause is an upstream (requirements/design) defect, roll back with `/revise <phase>` instead.
+- **First, run `make doctor`** — a read-only diagnosis of the whole setup: binaries on PATH, config/state/tasks consistency (including the gate-chain invariant and `guard_paths` typos), task↔ticket parity, gate-guard hook registration, branch/worktree/leaf-branch/lock leftovers, open escalations and event-log size, the security-review↔HEAD binding, and JSON-Schema validation of `config.yaml`/`tasks.yaml`. Most of the situations below show up there as a FAIL/WARN line.
+- **A task went `blocked`** — the quality gate could not be passed within the step's retry budget. Read the open escalation with `make events ARGS=--render` (the failure summary is in the event's detail; state.md's escalation view mirrors it), fix the cause (or fix the task ticket), set the task's `status` back to `todo` in `.agentloop/tasks.yaml`, close the event with `make events ARGS='--resolve <ID> --note "…"'`, and re-run `make build-loop`. If the cause is an upstream (requirements/design) defect, roll back with `/revise <phase>` instead. When the same task keeps blocking, `make events ARGS=--summary` aggregates the history (failures per task / per gate step) to show where the loop is losing time.
 - **The loop was interrupted** (Ctrl-C, crash, network) — just re-run `make build-loop`. On startup it resets tasks left `in_progress` back to `todo` and cleans up leftover worktrees/branches before recreating them, so resuming is safe.
 - **An edit was denied by the gate guard** ("Blocked: gate not approved…") — you are editing a next-phase deliverable while its prerequisite gate is `pending`. That is the mechanism working; get the gate approved first. If the state is genuinely wrong, fix `gates.*` in `.agentloop/state.md` (approval is the human's call). Emergency escape hatch: `gates.enforce_hook: false` in `.agentloop/config.yaml`.
 - **Every guarded edit is denied and the message says state.md is unreadable** — `.agentloop/state.md` is missing or its front-matter is malformed; the guard fails closed. Restore the file (from git history if needed) so the `gates:` block parses again.
@@ -273,7 +258,8 @@ A cycle's retrospective (§4/§5) collects template-improvement proposals; rows 
 | `.agentloop/tasks.yaml` | machine-readable SSOT of the task graph (DAG) |
 | `.agentloop/events.ndjson` | structured orchestration events — the escalation log's machine-readable truth (`make events`); state.md embeds the generated view |
 | `.agentloop/config.yaml` | source of knobs for deterministic execution (parallelism, worktree, gate enforcement) and the single definition of the DoD (`quality_gate.steps`) |
-| `scripts/agentloop/` | deterministic orchestration (`dag.py` / `build_loop.py` / `events.py` / `doctor.py` / `gate_guard.py` / `revise.py` / `issue_sync.py` / `feedback.py` / `init.py` / `adopt.py` / `cycle.py`). Product scripts go directly under `scripts/` |
+| `.agentloop/schema/` | JSON Schemas for `config.yaml` / `tasks.yaml` — editor completion/validation via the `yaml-language-server` modelines; `make doctor` validates against them |
+| `scripts/agentloop/` | deterministic orchestration (`dag.py` / `build_loop.py` / `events.py` / `doctor.py` / `gate_guard.py` / `pr_draft.py` / `revise.py` / `issue_sync.py` / `init.py` / `adopt.py` / `cycle.py`). Product scripts go directly under `scripts/` |
 | `VERSION` / `CHANGELOG.md` | the template's release identity; `agentloop-upgrade` shows the changelog between the installed and new versions |
 | `agentloop.mk` | the AgentLoop make targets, self-contained (uv only) — an existing repo takes just this file |
 | `CLAUDE.md` | agent operating rules and gate rules |

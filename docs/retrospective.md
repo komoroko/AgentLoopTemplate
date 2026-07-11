@@ -34,9 +34,8 @@ Durable ones are promoted the same way as §5 (`upstream` included) — record w
 Improvement ideas for how this loop is run, the gates, self-assessment, and deterministic orchestration
 (feedback to the template itself is welcome too). **Before `cycle-close` archives this file, promote any keeper
 into the always-loaded template (`CLAUDE.md` / `.claude/commands/*` / `.claude/agents/*`) and record where** —
-a durable lesson must not stay only here. A proposal for the upstream template itself gets `Promote? = upstream`:
-/verify drafts it into `.agentloop/feedback.yaml`, the human files it with `make feedback`, and the issue URL
-goes in "Promoted to (file)".
+a durable lesson must not stay only here. A proposal for the upstream template itself gets `Promote? = upstream`;
+the human files it on the template repository by hand (issue/PR) and records the URL in "Promoted to (file)".
 
 | Proposal | Promote? | Promoted to (file) |
 |----------|----------|--------------------|

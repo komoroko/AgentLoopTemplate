@@ -68,8 +68,10 @@ _CONFIG = (
     "build:\n"
     "  max_parallel: 3\n"
     "  worktree: {enabled: true, dir: .worktrees, branch_pattern: '{branch}-{task_id}'}\n"
-    "  retries: {test_fix: 2, check_fix: 2}\n"
-    "  quality_gate: {test_cmd: 'make test', check_cmd: 'make check'}\n"
+    "  quality_gate:\n"
+    "    steps:\n"
+    "      - {name: test, kind: cmd, run: 'make test', retries: 2}\n"
+    "      - {name: check, kind: cmd, run: 'make check', retries: 2}\n"
     "gates:\n  enforce_hook: true\n"
 )
 
@@ -210,14 +212,14 @@ _CONFIG_STEPS = (
 )
 
 
-def test_config_legacy_form_maps_to_two_cmd_steps(project: Path) -> None:
-    # The pre-pipeline config form (test_cmd/check_cmd + retries) keeps its exact old behavior.
-    config = build_loop.Config.load()
-    assert [(s.name, s.kind, s.run, s.retries) for s in config.steps] == [
-        ("test", "cmd", "make test", 2),
-        ("check", "cmd", "make check", 2),
-    ]
-    assert config.gate_cmds == ["make test", "make check"]
+def test_config_steps_are_required_with_migration_hint(project: Path) -> None:
+    # The legacy test_cmd/check_cmd + retries form was removed in 0.3.0: a config without a
+    # steps list must fail loudly with the migration pointer, not fall back silently.
+    (project / ".agentloop" / "config.yaml").write_text(
+        "build:\n  quality_gate: {test_cmd: 'make test', check_cmd: 'make check'}\n", encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="quality_gate.steps is missing.*removed in 0.3.0"):
+        build_loop.Config.load()
 
 
 def test_config_steps_form_parses_kinds_and_retries(project: Path) -> None:
@@ -317,6 +319,103 @@ def test_run_task_to_done_blocks_when_one_step_budget_runs_out(project: Path, mo
     assert log == "still red"
 
 
+# --- per-task test command (tasks.yaml `test` = the ticket's own green decision)
+
+
+def _leaf_with_test(run: str) -> dag.Task:
+    return dag.Task(id="T-002", title="leaf A", kind="parallel", blocked_by=("T-001",), test=run)
+
+
+def test_task_test_runs_first_as_focused_step(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # tasks.yaml documents `test` as the task's green decision — it must actually run, ahead of
+    # the shared pipeline (fastest, most focused failure first).
+    orch = _steps_orch(project, monkeypatch)
+    ran: list[str] = []
+
+    def record(step: build_loop.GateStep, cwd: str) -> str:
+        ran.append(step.name)
+        return ""
+
+    monkeypatch.setattr(orch, "_run_cmd_step", record)
+    monkeypatch.setattr(orch, "_run_agent_step", lambda task, cwd: False)
+    failed, _ = orch._run_pipeline(_leaf_with_test("pytest tests/test_a.py -q"), cwd=".")
+    assert failed is None
+    assert ran == ["task-test", "test", "check"]
+
+
+def test_task_test_duplicating_a_config_step_runs_once(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The default `test: make test` would double the most expensive step — dedup keeps it single.
+    orch = _steps_orch(project, monkeypatch)
+    ran: list[str] = []
+
+    def record(step: build_loop.GateStep, cwd: str) -> str:
+        ran.append(step.name)
+        return ""
+
+    monkeypatch.setattr(orch, "_run_cmd_step", record)
+    monkeypatch.setattr(orch, "_run_agent_step", lambda task, cwd: False)
+    failed, _ = orch._run_pipeline(_leaf_with_test("make test"), cwd=".")
+    assert failed is None
+    assert ran == ["test", "check"]
+
+
+def test_task_test_failure_consumes_budget_and_blocks(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The focused step carries the test step's send-back budget; running out blocks like any step.
+    orch = _steps_orch(project, monkeypatch)
+    monkeypatch.setattr(orch, "_invoke_implementer", lambda task, cwd, log: None)
+    monkeypatch.setattr(orch, "_run_pipeline", lambda task, cwd: ("task-test", "focused red"))
+    ok, log = orch._run_task_to_done(_leaf_with_test("pytest tests/test_a.py -q"), cwd=".")
+    assert ok is False  # test retries: 1 → initial attempt + 1 send-back, then blocked
+    assert log == "focused red"
+    fails = [e for e in events.load_events() if e.event == "step_fail"]
+    assert fails and all(e.step == "task-test" for e in fails)
+
+
+# --- smoke `required` knob (a runnable deliverable must not skip its launch check)
+
+
+def test_config_parses_step_required_flag(project: Path) -> None:
+    (project / ".agentloop" / "config.yaml").write_text(
+        _CONFIG_STEPS.replace("run: '', retries: 1", "run: '', retries: 1, required: true"), encoding="utf-8"
+    )
+    steps = {s.name: s.required for s in build_loop.Config.load().steps}
+    assert steps["smoke"] is True
+    assert steps["test"] is False  # default stays off
+
+
+def test_required_step_without_command_refuses_to_start(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Fail-fast: the contradiction must stop the loop before any implementer is paid for —
+    # not surface as a silent skip at gate ④ after the whole build ran.
+    (project / ".agentloop" / "config.yaml").write_text(
+        _CONFIG_STEPS.replace("run: '', retries: 1", "run: '', retries: 1, required: true"), encoding="utf-8"
+    )
+    _provision(project)
+    monkeypatch.setattr(
+        build_loop, "_run", lambda cmd, cwd, timeout=None: pytest.fail("must stop before any git/claude call")
+    )
+    orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
+    assert orch._run_loop() == 2
+    assert {t.id: t.status for t in dag.load(".agentloop/tasks.yaml").tasks}["T-001"] == "todo"  # nothing consumed
+
+
+def test_present_gate4_flags_empty_cmd_steps(project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    # The empty-smoke nudge is machine output at the gate, not a lead's memory item.
+    (project / ".agentloop" / "config.yaml").write_text(_CONFIG_STEPS, encoding="utf-8")
+    _provision(project)
+    orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=True)
+    orch._present_gate4(dag.load(".agentloop/tasks.yaml"), "n/a")
+    out = capsys.readouterr().out
+    assert "DoD ran WITHOUT: smoke" in out and "required: true" in out
+
+
+def test_task_test_appears_in_implementer_prompt(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Instruction and execution must not diverge: the implementer is told the exact command the
+    # gate will judge it by first.
+    orch = _steps_orch(project, monkeypatch)
+    assert "pytest tests/test_a.py -q" in orch._implementer_prompt(_leaf_with_test("pytest tests/test_a.py -q"), "")
+    assert "own test command" not in orch._implementer_prompt(_leaf("T-002", "leaf A"), "")
+
+
 # --- robustness: orphan cleanup / single-run lock / quoting / branch guard ----
 
 
@@ -394,6 +493,8 @@ def test_consume_serial_commits_task_diff_excluding_agentloop(project: Path, mon
 
     def fake_run(cmd: list[str], cwd: str, timeout: float | None = None) -> tuple[int, str]:
         calls.append(cmd)
+        if cmd[:3] == ["git", "status", "--porcelain"]:
+            return 0, " M app.py"  # dirty tree: the implementer forgot to commit
         return 0, ""
 
     monkeypatch.setattr(build_loop, "_run", fake_run)
@@ -402,7 +503,7 @@ def test_consume_serial_commits_task_diff_excluding_agentloop(project: Path, mon
     foundation = dag.Task(id="T-001", title="base", kind="foundation")
     orch._consume_serial([foundation])
     assert ["git", "add", "-A", "--", ".", ":(exclude).agentloop"] in calls  # one commit = one task
-    assert ["git", "commit", "-m", "T-001: base"] in calls
+    assert ["git", "commit", "--no-verify", "-m", "T-001: base"] in calls
     assert {t.id: t.status for t in dag.load(".agentloop/tasks.yaml").tasks}["T-001"] == "done"
 
 
@@ -795,6 +896,8 @@ def test_parallel_finalizes_worktree_before_merge_and_before_blocked_cleanup(
 
     def fake_run(cmd: list[str], cwd: str, timeout: float | None = None) -> tuple[int, str]:
         calls.append((cmd, cwd))
+        if cmd[:3] == ["git", "status", "--porcelain"]:
+            return 0, " M app.py"  # dirty tree: the implementer forgot to commit
         return 0, ""
 
     monkeypatch.setattr(build_loop, "_run", fake_run)
@@ -808,11 +911,11 @@ def test_parallel_finalizes_worktree_before_merge_and_before_blocked_cleanup(
     wt2, wt3 = str(Path(".worktrees") / "T-002"), str(Path(".worktrees") / "T-003")
     add = ["git", "add", "-A", "--", ".", ":(exclude).agentloop"]
     assert (add, wt2) in calls  # success path: finalize inside the worktree...
-    commit_ok = calls.index((["git", "commit", "-m", "T-002: leaf A"], wt2))
+    commit_ok = calls.index((["git", "commit", "--no-verify", "-m", "T-002: leaf A"], wt2))
     merge = calls.index((["git", "merge", "--no-ff", "--no-edit", "build/demo-T-002"], "."))
     assert commit_ok < merge  # ...before the merge picks the branch up
     assert (add, wt3) in calls  # blocked path: finalize as WIP...
-    commit_wip = calls.index((["git", "commit", "-m", "T-003: WIP (blocked)"], wt3))
+    commit_wip = calls.index((["git", "commit", "--no-verify", "-m", "T-003: WIP (blocked)"], wt3))
     # _add_worktree also pre-cleans worktrees at batch start; the removal that matters is the LAST one.
     removal = len(calls) - 1 - calls[::-1].index((["git", "worktree", "remove", "--force", wt3], "."))
     assert commit_wip < removal  # ...before the forced removal drops the tree
@@ -824,6 +927,86 @@ def test_consume_serial_finalize_is_noop_in_dry_run(project: Path, monkeypatch: 
     orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=True)
     orch._consume_serial([dag.Task(id="T-001", title="base", kind="foundation")])
     assert {t.id: t.status for t in dag.load(".agentloop/tasks.yaml").tasks}["T-001"] == "done"
+
+
+def test_finalize_commit_clean_tree_issues_no_commit(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A clean tree (the implementer committed as instructed) must stay a strict no-op: an
+    # unconditional `git commit` would fail on "nothing to commit", indistinguishable from a
+    # real failure without the porcelain check.
+    _provision(project)
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], cwd: str, timeout: float | None = None) -> tuple[int, str]:
+        calls.append(cmd)
+        return 0, ""  # `git status --porcelain` → empty = clean
+
+    monkeypatch.setattr(build_loop, "_run", fake_run)
+    orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
+    assert orch._finalize_commit(".", "T-001: base") is True
+    assert not [c for c in calls if c[:2] in (["git", "add"], ["git", "commit"])]
+
+
+def _failing_commit_run(calls: list[tuple[list[str], str]], fail_cwd: str | None = None):  # type: ignore[no-untyped-def]
+    """A fake _run: dirty porcelain everywhere; `git commit` fails (optionally only in fail_cwd)."""
+
+    def fake_run(cmd: list[str], cwd: str, timeout: float | None = None) -> tuple[int, str]:
+        calls.append((cmd, cwd))
+        if cmd[:3] == ["git", "status", "--porcelain"]:
+            return 0, " M app.py"
+        if cmd[:2] == ["git", "commit"] and (fail_cwd is None or cwd == fail_cwd):
+            return 128, "fatal: unable to auto-detect email address"
+        return 0, ""
+
+    return fake_run
+
+
+def test_finalize_commit_failure_blocks_serial_task_and_stops(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A dirty tree that cannot be committed is the precursor of data loss — the task must not be
+    # marked done on a swallowed rc, and the failure must land in the escalation log.
+    _provision(project)
+    calls: list[tuple[list[str], str]] = []
+    monkeypatch.setattr(build_loop, "_run", _failing_commit_run(calls))
+    orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
+    monkeypatch.setattr(orch, "_run_task_to_done", lambda task, cwd: (True, ""))
+    with pytest.raises(build_loop.StopLoop, match="finalize commit failed"):
+        orch._consume_serial([dag.Task(id="T-001", title="base", kind="foundation")])
+    assert {t.id: t.status for t in dag.load(".agentloop/tasks.yaml").tasks}["T-001"] == "blocked"
+    blocked = [e for e in events.load_events() if e.event == "blocked"]
+    assert blocked and "finalize commit failed" in blocked[0].detail
+
+
+def test_finalize_commit_failure_keeps_blocked_worktree(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # When even the WIP preservation commit fails, the worktree is the only copy of the diff:
+    # the forced removal must be skipped so a human can recover it.
+    _provision(project)
+    calls: list[tuple[list[str], str]] = []
+    monkeypatch.setattr(build_loop, "_run", _failing_commit_run(calls))
+    orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
+    orch._cleanup_worktree(_leaf("T-003", "leaf B"))
+    assert not [c for c, _ in calls if c[:3] == ["git", "worktree", "remove"]]
+
+
+def test_finalize_failure_before_merge_blocks_leaf_but_merges_the_rest(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # One leaf's finalize failure must not abort the batch: its worktree is kept (the only copy),
+    # the leaf blocks, and the other leaf still merges normally.
+    _provision(project)
+    calls: list[tuple[list[str], str]] = []
+    wt3 = str(Path(".worktrees") / "T-003")
+    monkeypatch.setattr(build_loop, "_run", _failing_commit_run(calls, fail_cwd=wt3))
+    orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
+    monkeypatch.setattr(orch, "_run_task_to_done", lambda task, cwd: (True, ""))
+    with pytest.raises(build_loop.StopLoop):
+        orch._consume_parallel([_leaf("T-002", "leaf A"), _leaf("T-003", "leaf B")])
+    statuses = {t.id: t.status for t in dag.load(".agentloop/tasks.yaml").tasks}
+    assert statuses["T-002"] == "done" and statuses["T-003"] == "blocked"
+    merges = [c for c, _ in calls if c[:2] == ["git", "merge"]]
+    assert merges == [["git", "merge", "--no-ff", "--no-edit", "build/demo-T-002"]]  # T-003 never merged
+    # The startup pre-clean in _add_worktree may remove leftovers; after the failure there must be
+    # no further removal of T-003's worktree.
+    fail_at = calls.index((["git", "commit", "--no-verify", "-m", "T-003: leaf B"], wt3))
+    assert not [c for c, _ in calls[fail_at:] if c[:3] == ["git", "worktree", "remove"] and c[3] == wt3]
 
 
 # --- structured events emitted by the loop (the escalation log's truth) -----

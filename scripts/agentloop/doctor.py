@@ -20,6 +20,8 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
+import re
 import shutil
 import sys
 from dataclasses import dataclass
@@ -59,7 +61,7 @@ def check_binaries() -> list[Finding]:
         ("uv", "FAIL", "every agentloop.mk target launches through it"),
         ("git", "FAIL", "worktrees/merges/commits are git operations"),
         ("claude", "WARN", "build-loop's headless implementer/reviewer launches need it"),
-        ("gh", "INFO", "only needed when github.enabled/feedback is turned on"),
+        ("gh", "INFO", "only needed when github.enabled is turned on"),
     ):
         if shutil.which(name):
             out.append(Finding("PASS", "env", f"{name} found on PATH"))
@@ -81,7 +83,67 @@ def check_config() -> tuple[list[Finding], dict[str, object]]:
     runnable = [s for s in config.steps if s.kind == "cmd" and s.run]
     if not runnable:
         findings.append(Finding("WARN", "config", "no cmd step has a command — the quality gate would check nothing"))
+    findings.extend(_check_step_commands(config, raw))
+    findings.extend(_check_legacy_keys(raw))
     return findings, raw
+
+
+def _check_legacy_keys(raw: dict[str, object]) -> list[Finding]:
+    """Keys from the pre-0.3.0 config form are dead weight: with `steps` present they are
+    silently ignored, which can fool a reader into thinking they still steer the gate."""
+    build = raw.get("build") if isinstance(raw.get("build"), dict) else {}
+    qg = build.get("quality_gate") if isinstance(build, dict) else {}
+    stale = [f"quality_gate.{k}" for k in ("test_cmd", "check_cmd") if isinstance(qg, dict) and k in qg]
+    if isinstance(build, dict) and isinstance(build.get("retries"), dict):
+        stale.append("build.retries")
+    if stale:
+        return [
+            Finding(
+                "WARN",
+                "config",
+                f"legacy pre-0.3.0 keys are ignored: {', '.join(stale)} — the DoD lives in "
+                "quality_gate.steps (per-step retries); delete them",
+            )
+        ]
+    return []
+
+
+def _check_step_commands(config: build_loop.Config, raw: dict[str, object]) -> list[Finding]:
+    """A `required` step with no command is a contradiction build_loop refuses to run (FAIL here
+    too, so it surfaces before the loop is even launched). An empty smoke without a *deliberate*
+    `required: false` gets a WARN: a runnable deliverable whose DoD never launches it is the
+    exact miss the smoke step exists to catch."""
+    build = raw.get("build") if isinstance(raw.get("build"), dict) else {}
+    qg = build.get("quality_gate") if isinstance(build, dict) else {}
+    raw_steps = qg.get("steps") if isinstance(qg, dict) else None
+    explicit: dict[str, bool] = {}  # step name → `required` key present in the YAML
+    if isinstance(raw_steps, list):
+        for entry in raw_steps:
+            if isinstance(entry, dict):
+                explicit[str(entry.get("name", ""))] = "required" in entry
+    out: list[Finding] = []
+    for step in config.steps:
+        if step.kind != "cmd" or step.run.strip():
+            continue
+        if step.required:
+            out.append(
+                Finding(
+                    "FAIL",
+                    "config",
+                    f"step '{step.name}' is `required: true` but has no command — "
+                    "build_loop refuses to start; fill `run` or drop `required`",
+                )
+            )
+        elif step.name == "smoke" and not explicit.get("smoke", False):
+            out.append(
+                Finding(
+                    "WARN",
+                    "config",
+                    "smoke has no command — fill `run` (+ `required: true`) for a runnable "
+                    "deliverable, or set `required: false` explicitly to record the decision",
+                )
+            )
+    return out
 
 
 def check_state() -> tuple[list[Finding], dict[str, object]]:
@@ -150,10 +212,30 @@ def check_tasks() -> list[Finding]:
     needy = [t.id for t in graph.tasks if t.status in ("blocked", "needs-revision")]
     if needy:
         findings.append(Finding("WARN", "tasks", f"awaiting human intervention: {', '.join(needy)}"))
+    findings.extend(_check_ticket_parity(graph))
     if not findings:
         summary = " / ".join(f"{s}={counts[s]}" for s in dag.STATUS_ORDER if counts[s])
         findings.append(Finding("PASS", "tasks", f"valid DAG ({len(graph.tasks)} tasks: {summary or 'empty'})"))
     return findings
+
+
+def _check_ticket_parity(graph: dag.Graph) -> list[Finding]:
+    """Every task id should have its docs/tasks/T-NNN.md ticket (the implementer reads it first).
+
+    A task without a ticket runs the implementer on title-only context; an orphan ticket usually
+    means a task was dropped from tasks.yaml without cleaning up (or a scaffold example remains).
+    """
+    tickets_dir = Path("docs/tasks")
+    if not graph.tasks or not tickets_dir.is_dir():
+        return []
+    tickets = {p.stem for p in tickets_dir.glob("T-*.md")}
+    ids = {t.id for t in graph.tasks}
+    out: list[Finding] = []
+    if missing := sorted(ids - tickets):
+        out.append(Finding("WARN", "tasks", f"no ticket file under docs/tasks/ for: {', '.join(missing)}"))
+    if orphans := sorted(tickets - ids):
+        out.append(Finding("INFO", "tasks", f"ticket files with no tasks.yaml entry: {', '.join(orphans)}"))
+    return out
 
 
 def check_git(front: dict[str, object], config: dict[str, object]) -> list[Finding]:
@@ -184,9 +266,44 @@ def check_git(front: dict[str, object], config: dict[str, object]) -> list[Findi
             findings.append(Finding("INFO", "git", f"a build-loop run appears active (lock PID {pid})"))
         else:
             findings.append(Finding("WARN", "git", "stale build-loop.lock (dead PID; auto-reclaimed on next run)"))
+    findings.extend(_check_leaf_branches(declared, wt_cfg if isinstance(wt_cfg, dict) else {}))
     if not findings:
         findings.append(Finding("PASS", "git", f"on branch '{current}'; no leftover worktrees or lock"))
     return findings
+
+
+def _check_leaf_branches(declared: str, wt_cfg: dict[str, object]) -> list[Finding]:
+    """Leaf branches (`<branch>-T-NNN`) left behind by parallel batches.
+
+    A *merged* leaf branch is normal residue (merge_leaf removes only the worktree) — INFO with a
+    cleanup hint. An *unmerged* one is interrupted or blocked work whose diff lives only there —
+    WARN, because deleting it by reflex would lose that diff.
+    """
+    if not declared or declared.startswith("<"):
+        return []
+    pattern = str(wt_cfg.get("branch_pattern", "{branch}-{task_id}"))
+    glob = pattern.format(branch=declared, task_id="T-*")
+    rc, all_out = build_loop._run(["git", "branch", "--list", glob], cwd=".")
+    if rc != 0:
+        return []
+    leaves = {ln.strip().lstrip("* ") for ln in all_out.splitlines() if ln.strip()}
+    if not leaves:
+        return []
+    rc, unmerged_out = build_loop._run(["git", "branch", "--no-merged", "HEAD", "--list", glob], cwd=".")
+    unmerged = {ln.strip().lstrip("* ") for ln in unmerged_out.splitlines() if ln.strip()} if rc == 0 else set()
+    out: list[Finding] = []
+    if unmerged:
+        out.append(
+            Finding(
+                "WARN",
+                "git",
+                f"UNMERGED leaf branch(es): {', '.join(sorted(unmerged))} — interrupted/blocked work; "
+                "inspect before deleting (the diff may live only there)",
+            )
+        )
+    if merged := sorted(leaves - unmerged):
+        out.append(Finding("INFO", "git", f"merged leaf branch(es) left behind: {', '.join(merged)} — safe to delete"))
+    return out
 
 
 def check_hook(config: dict[str, object]) -> list[Finding]:
@@ -206,11 +323,120 @@ def check_hook(config: dict[str, object]) -> list[Finding]:
 
 def check_events() -> list[Finding]:
     """Open escalations are pending human decisions — they must not sit forgotten."""
+    findings: list[Finding] = []
     opened = events.open_escalations(events.load_events())
     if opened:
         ids = ", ".join(f"#{e.id} {e.event}({e.task or '-'})" for e in opened)
-        return [Finding("WARN", "events", f"{len(opened)} open escalation(s): {ids} — resolve via `make events`")]
-    return [Finding("PASS", "events", "no open escalations")]
+        findings.append(
+            Finding("WARN", "events", f"{len(opened)} open escalation(s): {ids} — resolve via `make events`")
+        )
+    log = Path(events.EVENTS_PATH)
+    if log.is_file() and log.stat().st_size > events.EVENTS_MAX_BYTES * 0.8:
+        findings.append(
+            Finding(
+                "INFO",
+                "events",
+                f"{events.EVENTS_PATH} is {log.stat().st_size // 1024} KiB (>80% of the rotation "
+                "threshold) — the next build-loop run rotates it, carrying open escalations forward",
+            )
+        )
+    return findings or [Finding("PASS", "events", "no open escalations")]
+
+
+def check_security_review() -> list[Finding]:
+    """Once every task is done, the security-review report must exist and be bound to HEAD.
+
+    Before that point the report legitimately doesn't exist yet, so the check stays silent.
+    A stale Reviewed-HEAD means commits landed after the review — gate ④ must not treat the
+    old report as covering them.
+    """
+    try:
+        graph = dag.load(build_loop.TASKS_PATH)
+    except (OSError, dag.DagError, yaml.YAMLError):
+        return []
+    if not graph.tasks or any(t.status != "done" for t in graph.tasks):
+        return []
+    try:
+        text = Path(build_loop.SECURITY_REVIEW_PATH).read_text(encoding="utf-8")
+    except OSError:
+        return [
+            Finding(
+                "INFO",
+                "security",
+                f"all tasks done but no {build_loop.SECURITY_REVIEW_PATH} (mode B, or the knob is off) — "
+                "run /security-review before gate ④",
+            )
+        ]
+    m = re.search(r"^Reviewed-HEAD:\s*([0-9a-fA-F]+)", text, re.MULTILINE)
+    reviewed = m.group(1) if m else ""
+    rc, out = build_loop._run(["git", "rev-parse", "HEAD"], cwd=".")
+    head = out.strip() if rc == 0 else ""
+    if reviewed and head and (head.startswith(reviewed) or reviewed.startswith(head)):
+        return [Finding("PASS", "security", f"security review is bound to HEAD ({reviewed[:12]})")]
+    return [
+        Finding(
+            "WARN",
+            "security",
+            f"security review is STALE (Reviewed-HEAD {reviewed[:12] or '(missing)'} ≠ HEAD {head[:12]}) — "
+            "commits landed after the review; re-run it before gate ④",
+        )
+    ]
+
+
+def check_guard_paths(config: dict[str, object]) -> list[Finding]:
+    """guard_paths values must be real gate names — a typo silently disables that path's guard."""
+    gates_cfg = config.get("gates") if isinstance(config.get("gates"), dict) else {}
+    guard = gates_cfg.get("guard_paths") if isinstance(gates_cfg, dict) else None
+    if not isinstance(guard, dict):
+        return []
+    bad = {str(path): str(gate) for path, gate in guard.items() if gate not in revise.GATE_ORDER}
+    if bad:
+        detail = ", ".join(f"{p!r}: {g!r}" for p, g in bad.items())
+        return [
+            Finding(
+                "FAIL",
+                "config",
+                f"guard_paths values must be one of {'|'.join(revise.GATE_ORDER)} — invalid: {detail}",
+            )
+        ]
+    return [Finding("PASS", "config", f"guard_paths valid ({len(guard)} entries)")]
+
+
+SCHEMA_DIR = ".agentloop/schema"
+
+
+def check_schema() -> list[Finding]:
+    """Validate config.yaml / tasks.yaml against the bundled JSON Schemas when possible.
+
+    The schemas (.agentloop/schema/*.schema.json) are primarily editor tooling (the
+    yaml-language-server modeline); here they double as a lint. jsonschema is an optional
+    extra — `make doctor` provides it via `--with`, a bare python run degrades to INFO —
+    so the ordinary agentloop runtime stays pyyaml-only.
+    """
+    try:
+        import jsonschema
+    except ImportError:
+        return [Finding("INFO", "schema", "jsonschema not installed — schema validation skipped (make doctor has it)")]
+    out: list[Finding] = []
+    for data_path, schema_name in ((build_loop.CONFIG_PATH, "config"), (build_loop.TASKS_PATH, "tasks")):
+        schema_path = Path(SCHEMA_DIR) / f"{schema_name}.schema.json"
+        if not schema_path.exists():
+            out.append(Finding("INFO", "schema", f"{schema_path} absent (older template) — skipped"))
+            continue
+        data = _read_yaml(data_path)
+        if data is None:
+            continue  # unreadable/missing data files are already FAILed by their own checks
+        try:
+            schema = json.loads(schema_path.read_text(encoding="utf-8"))
+            jsonschema.validate(data, schema)
+        except jsonschema.ValidationError as exc:
+            where = "/".join(str(p) for p in exc.absolute_path) or "(root)"
+            out.append(Finding("FAIL", "schema", f"{data_path} violates its schema at {where}: {exc.message}"))
+        except (OSError, ValueError, jsonschema.SchemaError) as exc:
+            out.append(Finding("WARN", "schema", f"cannot validate {data_path}: {exc}"))
+        else:
+            out.append(Finding("PASS", "schema", f"{data_path} matches {schema_path.name}"))
+    return out
 
 
 def check_version() -> list[Finding]:
@@ -234,10 +460,13 @@ def run_checks() -> list[Finding]:
     state_findings, front = check_state()
     findings += state_findings
     findings += check_placeholders(front, config)
+    findings += check_guard_paths(config)
     findings += check_tasks()
     findings += check_git(front, config)
     findings += check_hook(config)
     findings += check_events()
+    findings += check_security_review()
+    findings += check_schema()
     findings += check_version()
     return findings
 

@@ -68,25 +68,32 @@ class GateStep:
     kind="agent" — a headless review+simplify pass (`claude -p`) that fixes findings in place.
                    Its content is non-deterministic, so the pipeline re-runs the cmd steps that
                    already passed whenever it changed the tree.
+
+    `required` (cmd only): an empty `run` is normally a silent skip — fine for a library, but for
+    a runnable deliverable a forgotten smoke command lets the whole build finish without ever
+    launching the thing. Marking the step required makes the loop refuse to start until `run` is
+    filled (fail-fast, before any implementer is paid for).
     """
 
     name: str
     kind: str
     run: str = ""
     retries: int = 2
+    required: bool = False
 
 
-def _parse_steps(qg: Any, retries: Any) -> tuple[GateStep, ...]:
-    """Parse quality_gate.steps; fall back to the legacy test_cmd/check_cmd + retries form.
+def _parse_steps(qg: Any) -> tuple[GateStep, ...]:
+    """Parse quality_gate.steps — the required, single definition of the DoD.
 
-    The legacy form maps to exactly the old behavior (two cmd steps, no agent step), so configs
-    written before the pipeline keep working unchanged.
+    (The pre-0.3.0 legacy form — quality_gate.test_cmd/check_cmd + build.retries — was removed;
+    a config still carrying it fails here with a migration hint, and doctor flags the stale keys.)
     """
     raw = qg.get("steps")
     if not raw:
-        return (
-            GateStep("test", "cmd", str(qg.get("test_cmd", "make test")), int(retries.get("test_fix", 2))),
-            GateStep("check", "cmd", str(qg.get("check_cmd", "make check")), int(retries.get("check_fix", 2))),
+        raise ValueError(
+            "quality_gate.steps is missing — define the DoD as a steps list in .agentloop/config.yaml "
+            "(the legacy test_cmd/check_cmd + retries form was removed in 0.3.0; "
+            "see the template config.yaml or .agentloop/schema/config.schema.json)"
         )
     if not isinstance(raw, list):
         raise ValueError("quality_gate.steps must be a list")
@@ -103,6 +110,7 @@ def _parse_steps(qg: Any, retries: Any) -> tuple[GateStep, ...]:
                 kind=kind,
                 run=str(entry.get("run") or ""),
                 retries=max(0, int(entry.get("retries", 2))),
+                required=bool(entry.get("required", False)),
             )
         )
     return tuple(steps)
@@ -147,7 +155,7 @@ class Config:
             # `-` (not `/`) between branch and task: git forbids a branch that is a path-prefix of
             # another ref ("work" + "work/T-001" cannot coexist), so a slash pattern always fails.
             branch_pattern=str(wt.get("branch_pattern", "{branch}-{task_id}")),
-            steps=_parse_steps(qg, build.get("retries") or {}),
+            steps=_parse_steps(qg),
             agent_steps=bool(qg.get("agent_steps", True)),
             integration_gate=bool(qg.get("integration_gate", True)),
             security_review=bool(pb.get("security_review", True)),
@@ -183,6 +191,7 @@ def work_branch(front: dict[str, object]) -> str:
 # round-trip rewrite below is lossless — keep the file pure data + this pointer (schema detail
 # lives in .claude/commands/tasks.md, not in comments a rewrite would destroy).
 TASKS_HEADER = (
+    "# yaml-language-server: $schema=schema/tasks.schema.json\n"
     "# .agentloop/tasks.yaml — machine-readable SSOT of the task graph (DAG) (build_loop updates status)\n"
     "# schema (id/title/kind/blockedBy/status/test/req/phase): see .claude/commands/tasks.md / CLAUDE.md\n"
 )
@@ -398,10 +407,18 @@ class Orchestrator:
             if Path("docs/05-current-state.md").exists()
             else ""
         )
+        # The gate runs the ticket's own test command first (_steps_for), so tell the implementer
+        # the same thing it will be judged by — instruction and execution must not diverge.
+        task_test_ref = (
+            f"The quality gate runs this task's own test command first — make `{task.test.strip()}` green.\n"
+            if task.test.strip()
+            else ""
+        )
         prompt = (
             f'You are the implementer subagent. Your only task is {task.id} "{task.title}".\n'
             f"Read docs/tasks/{task.id}.md, {design_ref}, and the existing code, and implement "
             f"following the protocol in .claude/agents/implementer.md.{baseline_ref}\n"
+            f"{task_test_ref}"
             f"Write automated tests and get {gate_list} green.\n"
             "When done, commit your changes to this branch (excluding the orchestration state .agentloop/):\n"
             f"  git add -A -- . ':(exclude).agentloop' && git commit -m \"{task.id}: <summary>\"\n"
@@ -432,6 +449,21 @@ class Orchestrator:
         if self.config.agent_steps:
             return self.config.steps
         return tuple(s for s in self.config.steps if s.kind == "cmd")
+
+    def _steps_for(self, task: dag.Task) -> tuple[GateStep, ...]:
+        """The gate steps for one task: the task's own `test` command first, then the configured DoD.
+
+        tasks.yaml's per-task `test` (the ticket's automated-test approach — what /tasks recorded
+        as this task's green decision) runs as a focused cmd step ahead of the shared pipeline:
+        it fails faster and summarizes tighter than the whole suite. It is skipped when it
+        duplicates a configured cmd step's `run` (the default "make test" case), so nothing runs
+        twice. Budget: the `test` step's retries (the task command is its focused stand-in)."""
+        steps = self._steps_effective
+        run = task.test.strip()
+        if not run or any(s.kind == "cmd" and s.run.strip() == run for s in self.config.steps):
+            return steps
+        retries = next((s.retries for s in self.config.steps if s.kind == "cmd" and s.name == "test"), 2)
+        return (GateStep(name="task-test", kind="cmd", run=run, retries=retries), *steps)
 
     def _review_prompt(self, task: dag.Task) -> str:
         cmds = ", ".join(f"`{c}`" for c in self.config.gate_cmds)
@@ -473,12 +505,13 @@ class Orchestrator:
         An agent step's fixes invalidate the evidence of the cmd steps that already passed,
         so those are re-run whenever it changed the tree (deterministic re-verification).
         """
+        steps = self._steps_for(task)
         if self.dry_run:
-            shown = " → ".join(f"{s.name}({s.kind})" for s in self._steps_effective)
+            shown = " → ".join(f"{s.name}({s.kind})" for s in steps)
             print(f"    [dry-run] quality gate: {shown} (cwd={cwd})")
             return None, ""
         passed: list[GateStep] = []
-        for step in self._steps_effective:
+        for step in steps:
             if step.kind == "agent":
                 if self._run_agent_step(task, cwd):
                     for prev in passed:
@@ -502,7 +535,7 @@ class Orchestrator:
         that step's budget. Returns (ok, log); ok=False means some step's budget ran out
         (the caller marks the task blocked).
         """
-        budgets = {s.name: s.retries for s in self.config.steps if s.kind == "cmd"}
+        budgets = {s.name: s.retries for s in self._steps_for(task) if s.kind == "cmd"}
         failure_log = ""
         while True:
             self._invoke_implementer(task, cwd, failure_log)
@@ -622,17 +655,42 @@ class Orchestrator:
         except StopLoop as exc:
             return False, str(exc)
 
-    def _finalize_commit(self, cwd: str, message: str) -> None:
+    def _finalize_commit(self, cwd: str, message: str) -> bool:
         """Commit any outstanding diff in `cwd` (excluding .agentloop/) — a no-op on a clean tree.
 
         The implementer is instructed to commit, but an uncommitted tree must never be the only
         copy: a leaf's worktree is removed with --force after the merge (or when blocked), and only
         what is on the branch survives. Finalizing here makes the branch the complete record.
+
+        Returns False (after escalating) when a dirty tree could not be committed — a real failure
+        (unset git identity, index lock, disk full) is the precursor of data loss, so the caller
+        must keep the tree/worktree intact instead of removing it. The clean-tree no-op is decided
+        by `git status --porcelain` up front, which is what makes a non-zero commit rc a genuine
+        failure rather than "nothing to commit". The commit runs --no-verify: this is a
+        preservation commit, not a quality decision (the quality gate already ran), and a hook
+        rejection that silently drops the WIP would defeat its purpose.
         """
         if self.dry_run:
-            return
-        _run(["git", "add", "-A", "--", ".", ":(exclude).agentloop"], cwd=cwd)
-        _run(["git", "commit", "-m", message], cwd=cwd)
+            return True
+        pathspec = [".", ":(exclude).agentloop"]
+        rc, out = _run(["git", "status", "--porcelain", "--", *pathspec], cwd=cwd)
+        if rc == 0 and not out.strip():
+            return True  # clean tree — nothing to preserve
+        if rc == 0:
+            rc, out = _run(["git", "add", "-A", "--", *pathspec], cwd=cwd)
+        if rc == 0:
+            rc, out = _run(["git", "commit", "--no-verify", "-m", message], cwd=cwd)
+        if rc != 0:
+            task_id = message.split(":", 1)[0]
+            log_escalation(
+                "blocked",
+                f"{task_id}: finalize commit failed in {cwd} (rc={rc}) — the uncommitted diff is "
+                f"preserved only in that tree, which is kept for manual recovery.\n"
+                f"{summarize_failure('git finalize commit', rc, out)}",
+                task=task_id,
+            )
+            return False
+        return True
 
     def _cleanup_worktree(self, task: dag.Task) -> None:
         """Remove a leaf's worktree without merging (blocked / merge conflict).
@@ -644,7 +702,8 @@ class Orchestrator:
         """
         if self.dry_run:
             return
-        self._finalize_commit(self._worktree_path(task), f"{task.id}: WIP (blocked)")
+        if not self._finalize_commit(self._worktree_path(task), f"{task.id}: WIP (blocked)"):
+            return  # the worktree may hold the only copy of the diff — keep it rather than destroy it
         _run(["git", "worktree", "remove", "--force", self._worktree_path(task)], cwd=".")
         _run(["git", "worktree", "prune"], cwd=".")
 
@@ -727,6 +786,17 @@ class Orchestrator:
             release_lock()
 
     def _run_loop(self) -> int:
+        # Fail fast on a contradictory DoD: a step marked required with no command would otherwise
+        # be silently skipped every task and only be noticed (if at all) at gate ④ — after the
+        # whole build was paid for. Refuse before consuming anything.
+        unrunnable = [s.name for s in self.config.steps if s.kind == "cmd" and s.required and not s.run.strip()]
+        if unrunnable:
+            print(
+                f"quality_gate step(s) marked `required: true` have no command: {', '.join(unrunnable)}. "
+                "Fill `run` in .agentloop/config.yaml (or drop `required`) before running the build loop.",
+                file=sys.stderr,
+            )
+            return 2
         if not self.dry_run:
             events.rotate_if_large()  # keep the append-only event log lean before appending this run's entries
         self._recover_in_progress()
@@ -784,7 +854,11 @@ class Orchestrator:
             # Finalize the task diff only. The .agentloop/ orchestration state (tasks.yaml status, etc.)
             # is not included in the per-task commit (keeping one commit = one task). If the
             # implementer has not committed, this finalizes the diff (no-op otherwise).
-            self._finalize_commit(".", f"{task.id}: {task.title}")
+            if not self._finalize_commit(".", f"{task.id}: {task.title}"):
+                # The tree on the work branch keeps the diff, but the task must not be marked done
+                # without its commit (one commit = one task is the record gate ④ reviews).
+                set_task_status(task.id, "blocked")
+                raise StopLoop(f"{task.id}: finalize commit failed on the work branch. Human intervention needed.")
             self._log_task_done(task)
             set_task_status(task.id, "done")
 
@@ -821,7 +895,11 @@ class Orchestrator:
                 continue
             # The leaf's full diff must be on its branch before the merge — an implementer that
             # forgot to commit would otherwise lose that work when the worktree is removed.
-            self._finalize_commit(self._worktree_path(task), f"{task.id}: {task.title}")
+            if not self._finalize_commit(self._worktree_path(task), f"{task.id}: {task.title}"):
+                # Keep the worktree (it may hold the only copy) and let the rest of the batch merge.
+                set_task_status(task.id, "blocked")
+                blocked_any = True
+                continue
             if self.merge_leaf(task, branches[task.id]):
                 merged.append(task)  # done is decided after the integration gate below
             else:
@@ -921,6 +999,14 @@ class Orchestrator:
     def _present_gate4(self, graph: dag.Graph, security_note: str) -> int:
         print("\n========== all tasks done (gate ④) ==========")
         print(dag.render(graph))
+        skipped = [s.name for s in self.config.steps if s.kind == "cmd" and not s.run.strip()]
+        if skipped:
+            # The empty-step nudge must reach the gate reviewer mechanically, not depend on the
+            # lead remembering it: a silently skipped smoke means the DoD never launched the thing.
+            print(
+                f"\n  ! The DoD ran WITHOUT: {', '.join(skipped)} (no command configured). If the deliverable "
+                "is runnable, fill `run` (and set `required: true`) in .agentloop/config.yaml."
+            )
         print(
             "\nNext steps (human approval needed):\n"
             f"  1. Security review: {security_note}\n"
