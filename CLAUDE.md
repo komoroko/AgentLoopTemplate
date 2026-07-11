@@ -2,8 +2,8 @@
 
 The operating rules live in `AGENTS.md` (the canonical, agent-neutral rules file) — imported below.
 This file only maps AGENTS.md's capability vocabulary onto Claude Code's mechanisms.
-(If your Claude Code version reads `AGENTS.md` natively and you see the rules twice, drop the
-import line — keep the mapping table.)
+(Claude Code reads CLAUDE.md, not AGENTS.md; the `@` import below loads the rules exactly once —
+the pattern the Claude Code docs recommend for AGENTS.md repos.)
 
 @AGENTS.md
 
