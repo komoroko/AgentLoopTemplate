@@ -146,7 +146,7 @@ Three layers: **gitleaks** at commit stage (in `make check`; false positives →
 ## Directories
 
 - `.agentloop/` — SSOT (`state.md`, `tasks.yaml`, `config.yaml`) + the structured event log (`events.ndjson`)
-- `scripts/agentloop/` — deterministic orchestration (`dag.py`, `build_loop.py`, `events.py`, `doctor.py`, `gate_guard.py`, `issue_sync.py`, `revise.py`, `init.py`, `adopt.py`, `cycle.py`, `feedback.py`, `template_lint.py`). **Product scripts go directly under `scripts/`, not mixed in here.**
+- `scripts/agentloop/` — deterministic orchestration (`dag.py`, `build_loop.py`, `events.py`, `doctor.py`, `gate_guard.py`, `issue_sync.py`, `pr_draft.py`, `revise.py`, `init.py`, `adopt.py`, `cycle.py`, `feedback.py`, `template_lint.py`). **Product scripts go directly under `scripts/`, not mixed in here.**
 - `docs/` — phase deliverables; `docs/retrospective.md` holds the retrospective at `done`
 - `.claude/commands/` — per-phase entry points (the procedure detail lives here)
 - `.claude/agents/` — specialized subagents

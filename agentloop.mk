@@ -10,7 +10,7 @@
 
 AGENTLOOP_PY := uv run --no-project --with pyyaml python
 
-.PHONY: init adopt agentloop-upgrade agentloop-uninstall cycle-close build-loop issue-sync feedback revise events doctor test-tools
+.PHONY: init adopt agentloop-upgrade agentloop-uninstall cycle-close build-loop issue-sync feedback revise events doctor pr-draft test-tools
 
 # Turn the copied template into a product (idempotent): fills the pyproject / state.md placeholders,
 # snapshots the pristine docs scaffolds, records the adopt-manifest (FROM = the template's git URL,
@@ -95,6 +95,13 @@ revise:
 #   make doctor
 doctor:
 	uv run --no-project --with pyyaml --with jsonschema python scripts/agentloop/doctor.py $(ARGS)
+
+# Assemble a PR body from the SSOT (gates, tasks, requirement coverage, security-review binding,
+# commit list) into .agentloop/pr-draft.md. Read-only and never calls gh — creating the PR stays
+# a human action; the tool prints the `gh pr create --body-file` line to run after review.
+#   make pr-draft [ARGS='--base develop' | ARGS=--stdout]
+pr-draft:
+	$(AGENTLOOP_PY) scripts/agentloop/pr_draft.py $(ARGS)
 
 # Self-tests for the template's foundational tools (scripts/agentloop/). Unit tests of the
 # deterministic orchestrator, DAG, gate hook, and the init/adopt/cycle helpers.
