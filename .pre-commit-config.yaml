@@ -58,11 +58,10 @@
         language: python
         args: [--config-file=pyproject.toml]
         require_serial: true
-        # Add types package list
+        # Type stubs for the isolated hook env. Add your product's typed deps (e.g. pydantic)
+        # here when the product uses them — mypy runs in its own venv and can't see .venv.
         additional_dependencies:
-          - "pydantic>=2.13.4"
           - "mypy-extensions>=1.1.0"
-          - "annotated-types>=0.7.0"
           - "types-PyYAML>=6.0.12.20260518"
           # Treat the tests' @pytest.fixture as typed (without pytest types in the isolated env,
           # strict's disallow_untyped_decorators raises an untyped-decorator error).

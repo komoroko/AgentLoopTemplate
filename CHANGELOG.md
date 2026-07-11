@@ -39,6 +39,10 @@ copied by `make adopt` — the manifest's `template.version` is the identity rec
   tree/worktree is kept and the loop escalates instead of continuing.
 
 ### Changed / migration notes (for repos upgrading the machinery)
+- **Dev dependencies trimmed to what the template exercises**: `mkdocs`,
+  `mkdocs-material`, `mkdocstrings`, `filetype`, and `pydantic` (plus the mypy hook's
+  pydantic stubs) are no longer preinstalled — nothing in the template imported them.
+  Products that use them add them back to their own `dev` group.
 - `requires-python` relaxed from `>=3.13,<3.14` to the measured floor `>=3.10`
   (ruff `target-version` / mypy `python_version` follow). Products may re-pin freely.
 - `make doctor` / `make test-tools` now launch with `--with jsonschema` in addition to
