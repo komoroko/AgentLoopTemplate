@@ -24,7 +24,9 @@ copied by `make adopt` — the manifest's `template.version` is the identity rec
   panel (requirement → design → task coverage, reusing `dag.trace`), the **speculative-work
   and roll-back logs** parsed from state.md, per-task detail on click, and is **theme-aware**
   (auto dark/light with a toggle) with a live "updated Ns ago" / connection indicator, manual
-  refresh, and action toasts.
+  refresh, and action toasts. Visual identity is a "control console": a teal/amber signal
+  palette, machine-computed values in monospace, and the lifecycle rendered as an illuminated
+  **loop rail with gate locks** (the live phase glows amber at the gate awaiting the human).
 - **Commit-stage gate enforcement (agent-agnostic)**: `gate_guard.py --check-diff`
   fails when the diff vs HEAD (worktree + index + untracked) touches a gate-guarded
   path whose prerequisite gate is unapproved. Registered as a local pre-commit hook,
