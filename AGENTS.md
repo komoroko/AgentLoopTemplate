@@ -52,7 +52,10 @@ brief → requirements → design → tasks → build → verify → done
 | build        | `/build`  | implementation code + tests | ④ implementation review |
 | verify       | `/verify` | `docs/test/test-plan.md` execution results | ⑤ release decision |
 
-Check progress anytime with `/status`. At `done`, `/verify` records `docs/retrospective.md`
+Check progress anytime with `/status`, or `make ui` for a local browser dashboard of the same
+board (phase/gates/tasks plus the next recommended command, computed in code; read-only by
+default, with a fixed whitelist of safe operations and gate-approval recording available from
+the page — never phase execution). At `done`, `/verify` records `docs/retrospective.md`
 and closes open logs. An upstream defect rolls back via `/revise` (see "Roll back").
 
 **Cycles**: an ongoing repo repeats this lifecycle as **delta cycles** — each cycle's docs

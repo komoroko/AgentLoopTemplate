@@ -10,7 +10,7 @@
 
 AGENTLOOP_PY := uv run --no-project --with pyyaml python
 
-.PHONY: init adopt agentloop-upgrade agentloop-uninstall cycle-close build-loop issue-sync revise events doctor pr-draft test-tools
+.PHONY: init adopt agentloop-upgrade agentloop-uninstall cycle-close build-loop issue-sync revise events doctor pr-draft test-tools ui
 
 # Turn the copied template into a product (idempotent): fills the pyproject / state.md placeholders,
 # snapshots the pristine docs scaffolds, records the adopt-manifest (FROM = the template's git URL,
@@ -97,6 +97,17 @@ doctor:
 #   make pr-draft [ARGS='--base develop' | ARGS=--stdout]
 pr-draft:
 	$(AGENTLOOP_PY) scripts/agentloop/pr_draft.py $(ARGS)
+
+# Local browser dashboard over the SSOT: current phase/gates, the task DAG, open escalations, and
+# the deterministically computed next command (the same "what next" logic /status describes, in code).
+# Guidance-first and read-only by default for reads; a fixed whitelist of safe operations (gate-approval
+# recording, doctor, events --resolve, revise, cycle-close) can also be run from the page — the client
+# sends an action id, never a command string. Binds 127.0.0.1 with a per-start token. Ctrl+C to stop.
+#   make ui                    # serve on 127.0.0.1:8765 and open the browser
+#   make ui PORT=9000 ARGS=--no-open
+#   make ui ARGS=--read-only   # disable the action endpoints (view only)
+ui:
+	$(AGENTLOOP_PY) scripts/agentloop/ui.py $(if $(PORT),--port $(PORT)) $(ARGS)
 
 # Self-tests for the template's foundational tools (scripts/agentloop/). Unit tests of the
 # deterministic orchestrator, DAG, gate hook, and the init/adopt/cycle helpers.
