@@ -2,7 +2,8 @@
 
 It runs the scheduling control flow (which tasks, at what parallelism, in what merge order, and when to stop)
 deterministically **in code, not a prompt**. Each task's implementation code content itself is non-deterministic
-because an LLM writes it (the implementer launched headless with `claude -p`), but
+because an LLM writes it (the implementer launched via the configured headless agent CLI,
+`build.headless.cmd` — `claude -p` by default), but
 
   - frontier computation / consumption order / max parallelism / worktree isolation / merge order
   - the pass/fail decision of each quality-gate step (config `quality_gate.steps`) by exit code
@@ -21,7 +22,7 @@ After all tasks are done it prints a summary and stops, leaving it to the human'
 
 Usage:
   uv run python scripts/agentloop/build_loop.py            # run
-  uv run python scripts/agentloop/build_loop.py --dry-run  # check just the control flow without calling claude/git
+  uv run python scripts/agentloop/build_loop.py --dry-run  # check the control flow without calling the agent CLI/git
 
 --dry-run is strictly read-only: task statuses advance only in an in-memory overlay, and no SSOT
 file, event log, or lock file is written — running it never changes what a later real run sees.
@@ -43,6 +44,7 @@ from typing import Any
 
 import dag
 import events
+import gate_guard
 import yaml
 
 STATE_PATH = ".agentloop/state.md"
@@ -68,7 +70,8 @@ class GateStep:
 
     kind="cmd"   — run `run` and decide deterministically by exit code. `retries` is that step's
                    own budget for sending a failure back to the implementer (empty `run` = skip).
-    kind="agent" — a headless review+simplify pass (`claude -p`) that fixes findings in place.
+    kind="agent" — a headless review+simplify pass (the configured headless CLI,
+                   build.headless.cmd) that fixes findings in place.
                    Its content is non-deterministic, so the pipeline re-runs the cmd steps that
                    already passed whenever it changed the tree.
 
@@ -125,6 +128,20 @@ def _timeout_sec(value: Any, default: int) -> float | None:
     return sec if sec > 0 else None
 
 
+def _parse_headless(build: Any) -> tuple[str, ...]:
+    """build.headless.cmd — the headless agent CLI; the prompt is appended as the last argument.
+
+    Mode A is agent-CLI-pluggable through this one knob: ["claude", "-p"] (the default),
+    ["codex", "exec"], ["gemini", "-p"], … all launch the same prompts.
+    """
+    raw = (build.get("headless") or {}).get("cmd")
+    if raw is None:
+        return ("claude", "-p")
+    if not isinstance(raw, list) or not raw or not all(isinstance(x, str) and x.strip() for x in raw):
+        raise ValueError('build.headless.cmd must be a non-empty list of strings, e.g. ["claude", "-p"]')
+    return tuple(x.strip() for x in raw)
+
+
 @dataclass
 class Config:
     max_parallel: int
@@ -137,6 +154,7 @@ class Config:
     security_review: bool = True
     timeout_cmd: float | None = 1800.0
     timeout_agent: float | None = 3600.0
+    headless_cmd: tuple[str, ...] = ("claude", "-p")
 
     @property
     def gate_cmds(self) -> list[str]:
@@ -164,6 +182,7 @@ class Config:
             security_review=bool(pb.get("security_review", True)),
             timeout_cmd=_timeout_sec(tm.get("cmd_sec"), 1800),
             timeout_agent=_timeout_sec(tm.get("agent_sec"), 3600),
+            headless_cmd=_parse_headless(build),
         )
 
 
@@ -383,10 +402,9 @@ def plan_batch(graph: dag.Graph, max_parallel: int) -> tuple[str, list[dag.Task]
 
 
 class Orchestrator:
-    def __init__(self, config: Config, dry_run: bool, claude_bin: str = "claude") -> None:
+    def __init__(self, config: Config, dry_run: bool) -> None:
         self.config = config
         self.dry_run = dry_run
-        self.claude_bin = claude_bin
         self.front = read_frontmatter()
         self.branch = work_branch(self.front)
         # Dry-run status overlay: the simulated statuses live here instead of tasks.yaml, so the
@@ -461,7 +479,7 @@ class Orchestrator:
             print(f"    [dry-run] launch implementer (cwd={cwd}) task={task.id}")
             return
         rc, out = _run(
-            [self.claude_bin, "-p", self._implementer_prompt(task, failure_log)],
+            [*self.config.headless_cmd, self._implementer_prompt(task, failure_log)],
             cwd=cwd,
             timeout=self.config.timeout_agent,
         )
@@ -510,7 +528,9 @@ class Orchestrator:
     def _run_agent_step(self, task: dag.Task, cwd: str) -> bool:
         """Run the review+simplify agent step headless. Returns True if it changed the tree."""
         before = self._tree_state(cwd)
-        rc, out = _run([self.claude_bin, "-p", self._review_prompt(task)], cwd=cwd, timeout=self.config.timeout_agent)
+        rc, out = _run(
+            [*self.config.headless_cmd, self._review_prompt(task)], cwd=cwd, timeout=self.config.timeout_agent
+        )
         if rc != 0:
             raise StopLoop(f"{task.id}: failed to launch the review agent step (rc={rc})\n{out[-1000:]}")
         return self._tree_state(cwd) != before
@@ -594,7 +614,7 @@ class Orchestrator:
 
     def _invoke_integration_fixer(self, ids: str, failure_log: str) -> None:
         rc, out = _run(
-            [self.claude_bin, "-p", self._integration_fix_prompt(ids, failure_log)],
+            [*self.config.headless_cmd, self._integration_fix_prompt(ids, failure_log)],
             cwd=".",
             timeout=self.config.timeout_agent,
         )
@@ -696,8 +716,10 @@ class Orchestrator:
         failure rather than "nothing to commit". The commit runs --no-verify: this is a
         preservation commit, not a quality decision (the quality gate already ran), and a hook
         rejection that silently drops the WIP would defeat its purpose. That also bypasses the
-        commit-stage gate guard — acceptable, because this path only finalizes build-phase
-        implementation work, which the loop already code-checked gates.tasks for.
+        commit-stage gate guard — covered instead by the loop's own merge/finalize-stage check
+        (_gate_violations): everything a task changed is re-evaluated against the gate rules
+        before it merges into the work branch (leaf) or is marked done (serial), so a stray
+        out-of-scope edit escalates instead of landing silently in HEAD.
         """
         if self.dry_run:
             return True
@@ -720,6 +742,49 @@ class Orchestrator:
             )
             return False
         return True
+
+    def _gate_violations(self, paths: list[str]) -> list[tuple[str, str]]:
+        """Gate-guard verdict for each path; [(path, deny reason)] for the denied ones.
+
+        The merge/finalize-stage twin of gate_guard's edit-time and commit-stage checkpoints.
+        Preservation commits run --no-verify and an implementer may commit with hooks absent or
+        bypassed, and once a commit reaches the work branch the commit-stage `--check-diff`
+        (a diff vs HEAD) can never see it again — so what a task actually changed is re-checked
+        in code here, before it lands. template_mode / enforce_hook short-circuit inside
+        evaluate() exactly as they do for the other checkpoints.
+        """
+        return [(p, reason) for p in paths for ok, reason in [gate_guard.evaluate(p)] if not ok]
+
+    def _branch_changed_paths(self, branch: str) -> list[str]:
+        """Paths a leaf branch changed since it forked off the work branch (merge-base diff)."""
+        rc, out = _run(["git", "diff", "--name-only", f"{self.branch}...{branch}"], cwd=".")
+        return [p for p in out.splitlines() if p.strip()] if rc == 0 else []
+
+    def _changed_since(self, base: str) -> list[str]:
+        """Paths a serial task changed on the work branch: commits since `base` plus the dirty tree."""
+        paths: set[str] = set()
+        rc, out = _run(["git", "diff", "--name-only", f"{base}..HEAD"], cwd=".")
+        if rc == 0:
+            paths.update(p for p in out.splitlines() if p.strip())
+        rc, out = _run(["git", "status", "--porcelain", "-uall", "--", ".", ":(exclude).agentloop"], cwd=".")
+        if rc == 0:
+            for line in out.splitlines():
+                if len(line) < 4:
+                    continue
+                path = line[3:]
+                if " -> " in path:
+                    path = path.split(" -> ", 1)[1]
+                paths.add(path.strip('"'))
+        return sorted(paths)
+
+    def _escalate_gate_violation(self, task_id: str, where: str, violations: list[tuple[str, str]]) -> None:
+        listing = "\n".join(f"  {p} — {reason}" for p, reason in violations)
+        self._escalate(
+            "gate_violation",
+            f"{task_id}: {where} touches gate-guarded paths whose prerequisite gate is pending — "
+            f"the task is blocked for human review (gate rule 3: never land next-phase edits silently).\n{listing}",
+            task=task_id,
+        )
 
     def _cleanup_worktree(self, task: dag.Task) -> None:
         """Remove a leaf's worktree without merging (blocked / merge conflict).
@@ -873,6 +938,7 @@ class Orchestrator:
         for task in tasks:
             self._set_status(task.id, "in_progress")
             print(f"  [serial] {task.id} {task.title}")
+            pre_head = "" if self.dry_run else _run(["git", "rev-parse", "HEAD"], cwd=".")[1].strip()
             ok, log = self._run_task_to_done(task, cwd=".")
             if not ok:
                 self._set_status(task.id, "blocked")
@@ -882,6 +948,20 @@ class Orchestrator:
                     task=task.id,
                 )
                 raise StopLoop(f"{task.id} is blocked. Human intervention needed.", code=1)
+            # A serial task lands directly on the work branch (its own commits plus the finalize
+            # below), where --no-verify and already-in-HEAD commits both escape the commit-stage
+            # guard — so re-check everything the task changed before accepting it as done.
+            if not self.dry_run and pre_head:
+                violations = self._gate_violations(self._changed_since(pre_head))
+                if violations:
+                    self._set_status(task.id, "blocked")
+                    self._escalate_gate_violation(task.id, "its work-branch changes", violations)
+                    raise StopLoop(
+                        f"{task.id}: changed gate-guarded paths while their gate is pending "
+                        f"(commits since {pre_head[:12]} stay on the branch for review). "
+                        "Human intervention needed.",
+                        code=1,
+                    )
             # Finalize the task diff only. The .agentloop/ orchestration state (tasks.yaml status, etc.)
             # is not included in the per-task commit (keeping one commit = one task). If the
             # implementer has not committed, this finalizes the diff (no-op otherwise).
@@ -931,6 +1011,17 @@ class Orchestrator:
                 self._set_status(task.id, "blocked")
                 blocked_any = True
                 continue
+            # The leaf's commits were made in its worktree, where --no-verify (finalize) or a
+            # bypassed hook can carry a gate violation; merging would bury it in the work branch's
+            # HEAD where --check-diff never looks again. Check the branch's full diff first.
+            if not self.dry_run:
+                violations = self._gate_violations(self._branch_changed_paths(branches[task.id]))
+                if violations:
+                    self._set_status(task.id, "blocked")
+                    self._escalate_gate_violation(task.id, f"leaf branch {branches[task.id]}", violations)
+                    self._cleanup_worktree(task)  # not merged; the branch keeps the diff for review
+                    blocked_any = True
+                    continue
             if self.merge_leaf(task, branches[task.id]):
                 merged.append(task)  # done is decided after the integration gate below
             else:
@@ -1012,7 +1103,7 @@ class Orchestrator:
         if head and self._reviewed_head() == head:
             return f"already reviewed at current HEAD — report: {SECURITY_REVIEW_PATH} (Reviewed-HEAD {head[:12]})"
         rc, out = _run(
-            [self.claude_bin, "-p", self._security_review_prompt(head)], cwd=".", timeout=self.config.timeout_agent
+            [*self.config.headless_cmd, self._security_review_prompt(head)], cwd=".", timeout=self.config.timeout_agent
         )
         if rc != 0:
             return (
@@ -1050,15 +1141,16 @@ class Orchestrator:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="the deterministic orchestrator for the implementation phase")
-    parser.add_argument("--dry-run", action="store_true", help="run only the control flow without calling claude/git")
-    parser.add_argument("--claude-bin", default="claude", help="the claude CLI for headless launch (default: claude)")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="run only the control flow without calling the agent CLI/git"
+    )
     args = parser.parse_args(argv)
     try:
         config = Config.load()
     except (OSError, yaml.YAMLError, ValueError) as exc:
         print(f"config load error: {exc}", file=sys.stderr)
         return 1
-    return Orchestrator(config, dry_run=args.dry_run, claude_bin=args.claude_bin).run()
+    return Orchestrator(config, dry_run=args.dry_run).run()
 
 
 if __name__ == "__main__":

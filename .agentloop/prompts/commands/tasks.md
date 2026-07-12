@@ -8,9 +8,9 @@ If unapproved, do not work; say "please approve `/design` first" and stop.
 
 ## Re-run after a roll back (reconcile, when tasks already exist)
 On a re-run after rolling back upstream with `/revise`, if `tasks.yaml` already has tasks, **do not rebuild from scratch**. Reconcile the revised design against the existing tasks:
-- Identify the tasks **directly affected** by the upstream change and fully expand their **transitive dependents (downstream)** with `uv run --no-project --with pyyaml python scripts/agentloop/dag.py --impacted T-00x,T-00y`.
-- Classify each task: **keep** (unaffected, status preserved) / **modify** (needs fixing → `needs-revision`) / **obsolete** (no longer needed → mark in notes, do not delete) / **new** (added).
-- A task that is **`done` but invalidated** reverts to `todo` (needs reimplementation). The implemented code stays on the branch but is back in scope plan-wise.
+- The `/revise` step normally already marked the impact closure `needs-revision` in code (`make revise ARGS="--impacted T-00x,T-00y"` — seeds plus transitive dependents). If it did not, mark it now (the read-only enumeration is `uv run --no-project --with pyyaml python scripts/agentloop/dag.py --impacted T-00x,T-00y`).
+- Reclassify each marked task: **keep** (unaffected — restore its former status, stating why) / **modify** (needs fixing → stays `needs-revision`) / **obsolete** (no longer needed → mark in notes, do not delete) / **new** (added). "Keep" is a deliberate reclassification presented at gate ③, never a silent default.
+- A task that was **`done` but invalidated** reverts to `todo` (needs reimplementation; `/revise`'s mark output lists former statuses). The implemented code stays on the branch but is back in scope plan-wise.
 - After reconciling, re-run `dag.py --trace --require-design` and confirm the **task thread is reconnected to the revised requirements/design** (no new requirement left uncovered, no dangling reference to a deleted requirement) (confirm exit 0; 1=missing, 2=cannot check).
 - At gate ③, in addition to the usual plan, present the **impact (the impacted list and the keep/modify/obsolete/new classification)** and the **consistency trace** to get re-approval.
 
@@ -48,7 +48,8 @@ Write the deliverables (`docs/tasks/T-NNN.md`) in the user's language.
 ## While waiting for approval (minimizing the bottleneck)
 After presenting gate ③, while waiting you may proceed with the following (**outcome-independent, throwaway-by-default**). Record in the "speculative work log" of `state.md`.
 - `notify-and-wait`: tell the human the approval is pending.
-- Preparing test fixtures/harness/scaffolding that are clearly needed from the approved design.
+- Preparing test fixtures/harness/scaffolding that are clearly needed from the approved design
+  (`tests/` is deliberately unguarded for exactly this; code paths in `gates.guard_paths` wait for gate ③).
 - **Forbidden**: real implementation of each feature that pre-empts the task plan.
 
 ## Once approved

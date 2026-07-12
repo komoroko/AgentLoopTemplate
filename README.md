@@ -83,7 +83,7 @@ This template is itself a multi-agent orchestration, and its own machinery follo
 
 ## Setup (new repository / greenfield)
 
-Prerequisites: WSL / Linux / macOS and `make` (not Windows-native). The deterministic build loop (`make build-loop`, mode A) additionally needs the `claude` CLI installed and authenticated — its implementer and review steps run headless `claude -p`. Any agent (or the human in a terminal) can invoke it; without the CLI use the interactive mode B — see "Agent support".
+Prerequisites: WSL / Linux / macOS and `make` (not Windows-native). The deterministic build loop (`make build-loop`, mode A) additionally needs a **headless agent CLI** installed and authenticated — `claude -p` by default; swap it via `build.headless.cmd` in `.agentloop/config.yaml` (e.g. `codex exec`, `gemini -p`; the prompt is appended as the last argument). Any agent (or the human in a terminal) can invoke it; without such a CLI use the interactive mode B — see "Agent support".
 
 1. **Copy this template** into a new product repository:
    ```bash
@@ -197,7 +197,7 @@ Then, inside the adopted repo:
    | implementation | `/build`  | autonomous implementation in a loop (test-green condition) | ④ review and approve implementation completion |
    | verification | `/verify` | run functional + non-functional tests | ⑤ decide on release |
 
-3. If an upstream (requirements/design) defect comes to light during implementation, you can roll back with **`/revise <phase>`** (resets the gates from the target onward to `pending` in a chain, and reconciles task impact with `dag.py --impacted`) — or directly via `make revise ARGS="--to <phase> --reason '...'"`. Rewinding approval is also at the human's discretion.
+3. If an upstream (requirements/design) defect comes to light during implementation, you can roll back with **`/revise <phase>`** (resets the gates from the target onward to `pending` in a chain, and marks task impact deterministically — `make revise ARGS="--impacted T-00x,T-00y"` sets the seeds **and their transitive dependents** to `needs-revision`; `dag.py --impacted` is the read-only enumeration) — or directly via `make revise ARGS="--to <phase> --reason '...'"`. Rewinding approval is also at the human's discretion.
 4. Check the current phase, gate approval status, and task progress anytime with `/status`. Generate the **big picture (dependency diagram)** of tasks with `uv run --no-project --with pyyaml python scripts/agentloop/dag.py --mermaid`, which renders directly in GitHub/VS Code/Markdown (status color-coding, critical-path emphasis).
 5. Shipping the cycle as a PR? `make pr-draft` assembles the PR body from the SSOT (gate approvals, task table, requirement coverage, security-review binding, commit list) into `.agentloop/pr-draft.md` — read-only; it prints the `gh pr create --body-file` line and creating/pushing the PR stays yours.
 6. After the release decision (gate ⑤), close the cycle with `make cycle-close NAME=<slug>`: it archives this cycle's docs to `docs/archive/<date>-<slug>/`, restores fresh scaffolds, and resets gates/phase for the next cycle. This applies to greenfield and brownfield repos alike (`docs/00-product-brief.md` and the `docs/05-current-state.md` baseline persist). Closing a cycle is a human operation, like opening a gate.
@@ -216,14 +216,14 @@ An orchestrator that drives scheduling deterministically in code (`scripts/agent
 
 ```
 make build-loop                  # run
-make build-loop ARGS=--dry-run   # check just the control flow without calling claude/git
+make build-loop ARGS=--dry-run   # check just the control flow without calling the agent CLI/git
 ```
 
 **B. Interactive loop — the lead re-enacts mode A in conversation**
-An alternative that runs the loop without the orchestrator (and the only mode available without the `claude` CLI). Claude Code drives it with `/loop /build`; VS Code Copilot re-invokes the `/build` prompt per iteration; Codex re-runs the `/build` procedure.
+An alternative that runs the loop without the orchestrator (and the only mode available without a headless CLI). Claude Code drives it with `/loop /build`; VS Code Copilot re-invokes the `/build` prompt per iteration; Codex re-runs the `/build` procedure.
 
 - A task is complete only after **passing the quality-gate pipeline** — `quality_gate.steps` in `.agentloop/config.yaml` is the **single definition of the DoD** (default: `make test` green → `make check` clean → a review step applying the `/code-review`+`/simplify` disciplines → a real-launch smoke test for runnable deliverables). A task's own `test` command from `tasks.yaml` runs first as a focused step when it differs from the configured ones. Each cmd step has its own retry budget; a failure is sent back to the implementer until the budget runs out (→ `blocked`). Mark the smoke step `required: true` once the deliverable is runnable — an empty command then refuses to build instead of silently skipping the launch check.
-- **Parallel tasks run in isolation**: independent leaf tasks are implemented in their own branch/working directory with `git worktree`, **up to 3 in parallel** (`max_parallel` in `config.yaml`), and merged into the work branch sequentially in ascending id order when done. Foundation tasks are finalized first on the work branch. After a batch merges **2 or more** leaves, the cmd steps run once more on the **merged** work branch (the integration gate — each leaf was green only in isolation); a red goes to a headless fixer within the retry budget, else the batch blocks. Uncommitted worktree changes are finalized onto the leaf branch before merge/cleanup, so nothing is lost with the worktree.
+- **Parallel tasks run in isolation**: independent leaf tasks are implemented in their own branch/working directory with `git worktree`, **up to 3 in parallel** (`max_parallel` in `config.yaml`), and merged into the work branch sequentially in ascending id order when done. Foundation tasks are finalized first on the work branch. After a batch merges **2 or more** leaves, the cmd steps run once more on the **merged** work branch (the integration gate — each leaf was green only in isolation); a red goes to a headless fixer within the retry budget, else the batch blocks. Uncommitted worktree changes are finalized onto the leaf branch before merge/cleanup, so nothing is lost with the worktree. Before a leaf merges (and before a serial task is marked done), every path the task changed is re-checked against the gate rules — a violation escalates (`gate_violation`), the task blocks, and the branch is kept unmerged for human review instead of landing silently.
 - An unsolvable task becomes `blocked`; an upstream defect becomes `needs-revision`, **escalated to the human**, and the loop stops.
 - **The determinism boundary**: control flow, parallelism, merge, cmd-step gate decisions, and stopping are deterministic in code. Each task's implementation code and the review step's fixes are LLM-derived and non-deterministic, absorbed by "re-verify the already-passed steps after a review change; retry until green, else blocked". **The orchestrator does not touch `gates.build`** (only the human opens a gate).
 
@@ -231,7 +231,7 @@ An alternative that runs the loop without the orchestrator (and the only mode av
 
 ### Security review
 
-Ensured in three layers: **gitleaks** (mechanically prevents committing secrets at pre-commit; exclude false positives with `.gitleaksignore`) / a **security review** mandatory at implementation completion — in deterministic mode A, `build_loop.py` auto-runs Claude Code's `/security-review` headless when all tasks are done and binds the report to the reviewed HEAD in `.agentloop/security-review.md` (config `build.post_build.security_review`; re-runs at the same HEAD skip) / a **security review + `make audit`** (dependency vulnerability audit) mandatory in `/verify`. An agent without the `/security-review` command performs an equivalent security-focused review pass and records it the same way.
+Ensured in three layers: **gitleaks** (mechanically prevents committing secrets at pre-commit; exclude false positives with `.gitleaksignore`) / a **security review** mandatory at implementation completion — in deterministic mode A, `build_loop.py` auto-runs a headless security review (the `/security-review` discipline, via `build.headless.cmd`) when all tasks are done and binds the report to the reviewed HEAD in `.agentloop/security-review.md` (config `build.post_build.security_review`; re-runs at the same HEAD skip) / a **security review + `make audit`** (dependency vulnerability audit) mandatory in `/verify`. An agent without the `/security-review` command performs an equivalent security-focused review pass and records it the same way.
 
 ### GitHub Issues integration (optional)
 
@@ -289,11 +289,13 @@ to realize it. What each agent gets:
 | approval presentation | plan mode + ExitPlanMode | Plan mode / explicit "approve" in chat | explicit "approve" in chat |
 | role delegation (context isolation) | subagents, worktree-parallel | custom agents `@architect` … (`.github/agents/`) | inline role adoption (serial) |
 | autonomous build (mode B) | `/loop /build` | re-invoke `/build` per iteration | re-run the `/build` procedure |
-| headless build orchestrator (mode A) | `make build-loop` (`claude -p`) | `make build-loop` when the `claude` CLI is installed; else mode B | `make build-loop` when the `claude` CLI is installed; else mode B |
+| headless build orchestrator (mode A) | `make build-loop` (default `claude -p`) | `make build-loop` with any headless CLI in `build.headless.cmd` (`claude -p`, `codex exec`, `gemini -p`, …); else mode B | same — swap `build.headless.cmd`; else mode B |
 | pending-gate notification | PushNotification | end of turn ("waiting on gate N") | end of turn |
 
 Also used everywhere: **git worktree** (isolated parallel tasks) and the **deterministic
-orchestrator** (`make build-loop` — scheduling, parallelism, merge, and gate decisions in code).
+orchestrator** (`make build-loop` — scheduling, parallelism, merge, and gate decisions in code,
+including a merge-stage gate check: what a task changed is re-evaluated against the gate rules
+before it lands on the work branch).
 
 **VS Code Copilot notes** — open the repo and the pieces load themselves: the prompts appear as
 `/req` … in chat, `@requirements-analyst`/`@architect`/`@implementer` resolve as custom agents,

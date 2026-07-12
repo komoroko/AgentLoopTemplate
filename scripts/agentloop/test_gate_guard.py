@@ -64,6 +64,9 @@ def test_required_gate_mapping(in_tmp: Path) -> None:
     assert gate_guard.required_gate("docs/20-design.md") == "requirements"
     assert gate_guard.required_gate("docs/decisions/ADR-001.md") == "requirements"
     assert gate_guard.required_gate("docs/tasks/T-001.md") == "design"
+    assert gate_guard.required_gate("src/pkg/main.py") == "tasks"
+    assert gate_guard.required_gate("lib/util.py") == "tasks"
+    assert gate_guard.required_gate("app/views.py") == "tasks"
     assert gate_guard.required_gate("backend/app/main.py") == "tasks"
     assert gate_guard.required_gate("frontend/src/index.ts") == "tasks"
     assert gate_guard.required_gate("scripts/my_product_tool.py") == "tasks"  # product script
@@ -72,6 +75,8 @@ def test_required_gate_mapping(in_tmp: Path) -> None:
     assert gate_guard.required_gate("scripts/agentloop/dag.py") is None  # foundational tools are excluded
     assert gate_guard.required_gate("docs/10-requirements.md") is None
     assert gate_guard.required_gate("README.md") is None
+    assert gate_guard.required_gate("tests/test_main.py") is None  # deliberate: speculative fixtures may flow
+    assert gate_guard.required_gate("app.py") is None  # prefix rules match directories, not lookalike files
 
 
 def test_blocks_impl_when_tasks_pending(in_tmp: Path) -> None:

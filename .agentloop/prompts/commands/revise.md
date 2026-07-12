@@ -18,10 +18,14 @@ Symmetric with the human opening a gate, **rewinding approval is also the human'
    make revise ARGS="--to <phase> --reason '<reason>'"
    ```
    `scripts/agentloop/revise.py` resets every gate from the target onward to `pending` **in a chain**, moves `current_phase` back, and records it in the roll-back log. This prevents the stale-approval inconsistency of "upstream pending while downstream approved". The editing order from then on is mechanically enforced by `gate_guard` (e.g. while design is pending, edits to `docs/tasks/**` and implementation code are denied). Use `--dry-run` to check just the plan.
-4. **Task impact analysis (reconcile, do not discard)**: before fixing upstream, deterministically enumerate the ripple to existing tasks.
-   - Identify the tasks **directly affected** by the upstream change and fully expand their **transitive dependents (downstream)** with `uv run --no-project --with pyyaml python scripts/agentloop/dag.py --impacted T-00x,T-00y`.
-   - Classify each task: **keep** (unaffected) / **modify** (needs fixing → `needs-revision`) / **obsolete** (no longer needed → mark, do not delete) / **new** (added).
-   - A task that is **`done` but invalidated** reverts to `todo` (needs reimplementation). The implemented code stays on the branch but is back in scope plan-wise.
+4. **Task impact analysis (deterministic mark, then reconcile — do not discard)**: before fixing upstream, mark the ripple to existing tasks in code.
+   - Identify the tasks **directly affected** by the upstream change, then mark them **and their transitive dependents (downstream)** as `needs-revision` deterministically:
+     ```
+     make revise ARGS="--impacted T-00x,T-00y"
+     ```
+     (combinable with `--to` in one invocation; `--dry-run` previews; `dag.py --impacted` enumerates the same set read-only). Missing an impacted task is the dangerous direction, so the **whole closure is marked mechanically** — nothing in it runs until reconciled.
+   - Classify each marked task in the `/tasks` reconcile: **keep** (unaffected — restore its former status, with the justification stated) / **modify** (needs fixing → stays `needs-revision`) / **obsolete** (no longer needed → mark, do not delete) / **new** (added). "Keep" is a deliberate, human-presented reclassification, never a silent default.
+   - A task that was **`done` but invalidated** reverts to `todo` (needs reimplementation; the mark output lists former statuses). The implemented code stays on the branch but is back in scope plan-wise.
 5. **Guide to rebuilding**: "next is `/<phase>`". Reflect the above reconcile inside the re-run of `/design`/`/tasks`, and present the **impact (the impacted list and classification)** to the human at gate ③ for re-approval.
 
 ## Principles

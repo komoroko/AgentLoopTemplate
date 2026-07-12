@@ -17,7 +17,7 @@ the pattern the Claude Code docs recommend for AGENTS.md repos.)
 | `approval-presentation` | plan mode + `ExitPlanMode`; outside plan mode, present the summary and ask for an explicit "approve" |
 | `session-compaction` | `/compact` (human-run; the agent only suggests it) |
 | `role-delegation` | subagents in `.claude/agents/` (`requirements-analyst`, `architect`, `implementer`); parallel leaves use `isolation: "worktree"` |
-| `autonomous-build-iteration` | `/loop /build` (mode B) — and headless mode A, `make build-loop`, which drives `claude -p` (requires the `claude` CLI) |
+| `autonomous-build-iteration` | `/loop /build` (mode B) — and headless mode A, `make build-loop`, which drives the CLI in `build.headless.cmd` (default `claude -p`) |
 | `command-preauthorization` | `permissions.allow` in `.claude/settings.json` |
 
 Claude Code also carries the **mechanism layer** of the gates: the PreToolUse hook in

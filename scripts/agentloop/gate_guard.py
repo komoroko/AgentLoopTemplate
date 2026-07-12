@@ -10,10 +10,11 @@ and **denies** unless the prerequisite is approved.
 Decision (the built-in default rules; override per repo with gates.guard_paths in config):
   docs/20-design.md, docs/decisions/**           → requirements must be approved
   docs/tasks/**                                  → design       must be approved
-  backend/**, frontend/**, scripts/** (impl code) → tasks        must be approved
+  src/**, lib/**, app/**, backend/**, frontend/**, scripts/** (impl code) → tasks must be approved
   docs/test/** (filling in test results)          → build        must be approved
 However, scripts/agentloop/** (the template's foundational tools) is **always allowed** (so as not to block
-the hook's own maintenance / speculative work). Any path not matched is also allowed unconditionally.
+the hook's own maintenance / speculative work). Any path not matched is also allowed unconditionally —
+tests/** is deliberately unguarded so approval-wait speculative work (fixtures, harness prep) keeps flowing.
 A brownfield repo (adopted into via adopt.py) typically scopes guard_paths to the docs deliverables
 only — so existing code keeps flowing — and adds its own code paths (e.g. src/) when ready.
 
@@ -64,7 +65,10 @@ _UNGUARDED_PREFIXES: tuple[str, ...] = ("scripts/agentloop/",)
 
 # Built-in guard rules: path → prerequisite gate. A key ending in "/" guards the whole prefix;
 # any other key guards that exact file. Overridable per repo via gates.guard_paths in config
-# (a brownfield repo scopes this to the docs deliverables, or maps its own layout, e.g. src/).
+# (a brownfield repo scopes this to the docs deliverables, or maps its own layout).
+# The code prefixes cover the common layouts (src/lib/app/backend/frontend/scripts); tests/ is
+# deliberately NOT guarded — preparing fixtures/harness while a gate is pending is sanctioned
+# speculative work (AGENTS.md "Minimizing the approval-wait bottleneck").
 # scripts/ requires tasks approval as product-script implementation code
 # (scripts/agentloop/ is filtered out earlier by the exclusion above).
 _DEFAULT_GUARD_PATHS: dict[str, str] = {
@@ -72,6 +76,9 @@ _DEFAULT_GUARD_PATHS: dict[str, str] = {
     "docs/decisions/": "requirements",
     "docs/tasks/": "design",
     "docs/test/": "build",
+    "src/": "tasks",
+    "lib/": "tasks",
+    "app/": "tasks",
     "backend/": "tasks",
     "frontend/": "tasks",
     "scripts/": "tasks",

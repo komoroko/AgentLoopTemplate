@@ -11,6 +11,18 @@
       "required": ["quality_gate"],
       "properties": {
         "max_parallel": { "type": "integer", "minimum": 1 },
+        "headless": {
+          "type": "object",
+          "properties": {
+            "cmd": {
+              "type": "array",
+              "description": "Headless agent CLI for mode A; the prompt is appended as the last argument (default [\"claude\", \"-p\"]).",
+              "items": { "type": "string", "minLength": 1 },
+              "minItems": 1
+            }
+          },
+          "additionalProperties": true
+        },
         "worktree": {
           "type": "object",
           "properties": {

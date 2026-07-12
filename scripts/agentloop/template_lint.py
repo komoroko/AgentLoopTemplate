@@ -26,6 +26,7 @@ from pathlib import Path
 
 import adopt
 import dag
+import gate_guard
 import yaml
 
 AGENTS_MD = "AGENTS.md"
@@ -201,6 +202,31 @@ def check_readme_parity(en: str, ja: str) -> list[str]:
     return failures
 
 
+def check_guard_defaults(config_text: str) -> list[str]:
+    """The template config.yaml's gates.guard_paths must mirror gate_guard's built-in defaults.
+
+    The block exists in two hand-maintained places on purpose (the code default applies when the
+    key is omitted; the shipped config spells it out for the human editing it) — this canary is
+    what keeps the pair from drifting when a path rule is added to only one of them.
+    """
+    config = yaml.safe_load(config_text) or {}
+    shipped = (config.get("gates") or {}).get("guard_paths")
+    if not isinstance(shipped, dict):
+        return [f"{CONFIG_PATH}: gates.guard_paths block is missing (the template config must spell out the defaults)"]
+    failures: list[str] = []
+    defaults = gate_guard._DEFAULT_GUARD_PATHS
+    for key in sorted(set(defaults) - set(shipped)):
+        failures.append(f"{CONFIG_PATH}: guard_paths is missing `{key}` (in gate_guard._DEFAULT_GUARD_PATHS)")
+    for key in sorted(set(shipped) - set(defaults)):
+        failures.append(f"gate_guard.py: _DEFAULT_GUARD_PATHS is missing `{key}` (in {CONFIG_PATH} guard_paths)")
+    for key in sorted(set(defaults) & set(shipped)):
+        if str(shipped[key]) != defaults[key]:
+            failures.append(
+                f"guard_paths `{key}`: {CONFIG_PATH} says {shipped[key]} but gate_guard.py defaults say {defaults[key]}"
+            )
+    return failures
+
+
 def check_version_changelog(version: str, changelog: str) -> list[str]:
     """VERSION and CHANGELOG.md's newest `## [x.y.z]` heading must agree.
 
@@ -237,6 +263,7 @@ def main(argv: list[str] | None = None) -> int:
             files[AGENTS_MD],
         )
         failures += check_neutral_vocabulary(neutral_texts(Path()))
+        failures += check_guard_defaults(files[CONFIG_PATH])
         failures += check_readme_parity(files["README.md"], files["README.ja.md"])
         failures += check_version_changelog(
             adopt.read_version(Path()), Path("CHANGELOG.md").read_text(encoding="utf-8")
