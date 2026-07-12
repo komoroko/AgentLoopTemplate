@@ -71,7 +71,7 @@ Only the human opens each gate. Rewinding approval (`/revise`) is also at the hu
 | Already set up — starting the next change | Write the change into `docs/00-product-brief.md` and run `/req` (if the previous cycle is still open, run `make cycle-close NAME=<slug>` first) |
 | The release decision (gate ⑤) is made | `make cycle-close NAME=<slug>` — archive this cycle's docs and reset for the next |
 | Refreshing / retracting the template tooling | `make -f agentloop.mk agentloop-upgrade` / `agentloop-uninstall` |
-| Lost, or resuming after an interruption | `/status` — it also tells you the next command to run |
+| Lost, or resuming after an interruption | `/status` — it also tells you the next command to run; or `make ui` for a local browser dashboard of the same board |
 
 ## Design principles
 
@@ -198,7 +198,7 @@ Then, inside the adopted repo:
    | verification | `/verify` | run functional + non-functional tests | ⑤ decide on release |
 
 3. If an upstream (requirements/design) defect comes to light during implementation, you can roll back with **`/revise <phase>`** (resets the gates from the target onward to `pending` in a chain, and marks task impact deterministically — `make revise ARGS="--impacted T-00x,T-00y"` sets the seeds **and their transitive dependents** to `needs-revision`; `dag.py --impacted` is the read-only enumeration) — or directly via `make revise ARGS="--to <phase> --reason '...'"`. Rewinding approval is also at the human's discretion.
-4. Check the current phase, gate approval status, and task progress anytime with `/status`. Generate the **big picture (dependency diagram)** of tasks with `uv run --no-project --with pyyaml python scripts/agentloop/dag.py --mermaid`, which renders directly in GitHub/VS Code/Markdown (status color-coding, critical-path emphasis).
+4. Check the current phase, gate approval status, and task progress anytime with `/status`, or open the same board in a browser with `make ui` — a local, read-only-by-default dashboard (phase stepper, gate marks, the task DAG, open escalations, and the **next recommended command** computed in code by `scripts/agentloop/status_api.py`; a fixed whitelist of safe operations and gate-approval recording can also be run from the page, `ARGS=--read-only` disables them). Generate the **big picture (dependency diagram)** of tasks with `uv run --no-project --with pyyaml python scripts/agentloop/dag.py --mermaid`, which renders directly in GitHub/VS Code/Markdown (status color-coding, critical-path emphasis).
 5. Shipping the cycle as a PR? `make pr-draft` assembles the PR body from the SSOT (gate approvals, task table, requirement coverage, security-review binding, commit list) into `.agentloop/pr-draft.md` — read-only; it prints the `gh pr create --body-file` line and creating/pushing the PR stays yours.
 6. After the release decision (gate ⑤), close the cycle with `make cycle-close NAME=<slug>`: it archives this cycle's docs to `docs/archive/<date>-<slug>/`, restores fresh scaffolds, and resets gates/phase for the next cycle. This applies to greenfield and brownfield repos alike (`docs/00-product-brief.md` and the `docs/05-current-state.md` baseline persist). Closing a cycle is a human operation, like opening a gate.
 
@@ -264,7 +264,7 @@ If you want to make tasks visible to the team/stakeholders, you can **one-way-mi
 | `.agentloop/events.ndjson` | structured orchestration events — the escalation log's machine-readable truth (`make events`); state.md embeds the generated view |
 | `.agentloop/config.yaml` | source of knobs for deterministic execution (parallelism, worktree, gate enforcement) and the single definition of the DoD (`quality_gate.steps`) |
 | `.agentloop/schema/` | JSON Schemas for `config.yaml` / `tasks.yaml` — editor completion/validation via the `yaml-language-server` modelines; `make doctor` validates against them |
-| `scripts/agentloop/` | deterministic orchestration (`dag.py` / `build_loop.py` / `events.py` / `doctor.py` / `gate_guard.py` / `pr_draft.py` / `revise.py` / `issue_sync.py` / `init.py` / `adopt.py` / `cycle.py`). Product scripts go directly under `scripts/` |
+| `scripts/agentloop/` | deterministic orchestration (`dag.py` / `build_loop.py` / `events.py` / `doctor.py` / `gate_guard.py` / `pr_draft.py` / `revise.py` / `issue_sync.py` / `init.py` / `adopt.py` / `cycle.py`) plus the dashboard (`status_api.py` aggregator + `ui.py` server, `make ui`). Product scripts go directly under `scripts/` |
 | `VERSION` / `CHANGELOG.md` | the template's release identity; `agentloop-upgrade` shows the changelog between the installed and new versions |
 | `agentloop.mk` | the AgentLoop make targets, self-contained (uv only) — an existing repo takes just this file |
 | `AGENTS.md` | the canonical, agent-neutral operating rules (capability vocabulary + gate rules) |

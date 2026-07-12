@@ -12,3 +12,5 @@ Read `.agentloop/state.md` (phase/gates/logs) and `.agentloop/tasks.yaml` (task 
 6. **(Only with GitHub integration)** If `github.enabled: true` in `.agentloop/config.yaml`, give a one-line note that `make issue-sync` can bring Issues into line with this dashboard (tasks.yaml) (Issues are a one-way mirror, not the SSOT).
 
 End with 1–2 lines on "what you (the human) should do now".
+
+For a live browser view of the same board, `make ui` serves a local read-only-by-default dashboard (phase/gates/tasks and the deterministically computed next command; safe operations and gate-approval recording can be run from it — `make ui ARGS=--read-only` disables those).

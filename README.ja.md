@@ -71,7 +71,7 @@ flowchart TD
 | 導入・初期化済みで、次の変更を始める | `docs/00-product-brief.md` に変更を書いて `/req`（前サイクルが未クローズなら先に `make cycle-close NAME=<slug>`） |
 | リリース判断（ゲート⑤）が出た | `make cycle-close NAME=<slug>` — このサイクルの docs を退避し、次サイクル用にリセット |
 | テンプレートのツール群を更新/撤去したい | `make -f agentloop.mk agentloop-upgrade` / `agentloop-uninstall` |
-| 現在地が分からない・中断から再開する | `/status` — 次に打つコマンドまで表示される |
+| 現在地が分からない・中断から再開する | `/status` — 次に打つコマンドまで表示される。同じ内容をブラウザで見るなら `make ui`（ローカルダッシュボード） |
 
 ## 設計原則
 
@@ -170,7 +170,7 @@ make adopt TARGET=../myrepo NAME=myrepo TEST_CMD="npm test" CHECK_CMD="npm run l
    | 検証 | `/verify` | 機能＋非機能テストを実行 | ⑤ リリース可否を判断 |
 
 3. 実装中に上流（要件/設計）の不備が判明したら **`/revise <phase>`** で差し戻せる（戻し先以降のゲートを連鎖して `pending` に戻し、影響タスクは機械的にマークする — `make revise ARGS="--impacted T-00x,T-00y"` が種タスク**とその推移的下流**を `needs-revision` に設定する。読み取り専用の列挙は `dag.py --impacted`）。`make revise ARGS="--to <phase> --reason '...'"` の直接実行でもよい。承認の巻き戻しも人の判断で行う。
-4. いつでも `/status` で現在フェーズ・ゲート承認状況・タスク進捗を確認できる。タスクの**全体像（依存図）**は `uv run --no-project --with pyyaml python scripts/agentloop/dag.py --mermaid` で Mermaid を生成でき、GitHub/VS Code/Markdown にそのまま描画される（status 色分け・クリティカルパス強調）。
+4. いつでも `/status` で現在フェーズ・ゲート承認状況・タスク進捗を確認できる。同じ内容は `make ui` でブラウザからも見られる — ローカルの、既定で読み取り専用のダッシュボード（フェーズステッパー・ゲート印・タスク DAG・未解消のエスカレーション、そして `scripts/agentloop/status_api.py` がコードで算出する**次に打つべきコマンド**を表示。安全な操作の固定ホワイトリストとゲート承認の記録もページから実行でき、`ARGS=--read-only` で無効化できる）。タスクの**全体像（依存図）**は `uv run --no-project --with pyyaml python scripts/agentloop/dag.py --mermaid` で Mermaid を生成でき、GitHub/VS Code/Markdown にそのまま描画される（status 色分け・クリティカルパス強調）。
 5. サイクルを PR として出すなら `make pr-draft` — SSOT（ゲート承認・タスク表・要件カバレッジ・セキュリティレビューの束縛・コミット一覧）から PR 本文を `.agentloop/pr-draft.md` に組み立てる。読み取り専用で、`gh pr create --body-file` の実行行を表示するだけ — PR の作成/push は従来どおり人間の操作。
 6. リリース判断（ゲート⑤）のあとは `make cycle-close NAME=<slug>` でサイクルを閉じる: このサイクルの docs を `docs/archive/<日付>-<slug>/` へ退避し、新しいスキャフォールドを復元、ゲート/フェーズを次サイクル用にリセットする。greenfield / brownfield 共通の操作（`docs/00-product-brief.md` とベースライン `docs/05-current-state.md` は残る）。サイクルを閉じるのはゲートを開くのと同じく人間の操作。
 
@@ -236,7 +236,7 @@ make build-loop ARGS=--dry-run   # エージェント CLI/git を呼ばず制御
 | `.agentloop/events.ndjson` | 構造化オーケストレーション・イベント — エスカレーションログの機械可読の真実（`make events`）。state.md には生成ビューを埋め込む |
 | `.agentloop/config.yaml` | 確定実行のノブ源（並列・worktree・ゲート強制）と DoD の唯一の定義（`quality_gate.steps`） |
 | `.agentloop/schema/` | `config.yaml`／`tasks.yaml` の JSON Schema — `yaml-language-server` モードライン経由でエディタ補完・検証、`make doctor` もこれで検証する |
-| `scripts/agentloop/` | 確定オーケストレーション（`dag.py`／`build_loop.py`／`events.py`／`doctor.py`／`gate_guard.py`／`pr_draft.py`／`revise.py`／`issue_sync.py`／`init.py`／`adopt.py`／`cycle.py`）。プロダクト用は `scripts/` 直下 |
+| `scripts/agentloop/` | 確定オーケストレーション（`dag.py`／`build_loop.py`／`events.py`／`doctor.py`／`gate_guard.py`／`pr_draft.py`／`revise.py`／`issue_sync.py`／`init.py`／`adopt.py`／`cycle.py`）とダッシュボード（集約層 `status_api.py` ＋ サーバ `ui.py`、`make ui`）。プロダクト用は `scripts/` 直下 |
 | `VERSION` / `CHANGELOG.md` | テンプレートのリリース識別。`agentloop-upgrade` が導入時→今の間の changelog を表示する |
 | `agentloop.mk` | AgentLoop の make ターゲット。自己完結（uv のみ）で、既存リポジトリはこの1ファイルだけ持っていける |
 | `AGENTS.md` | エージェント中立な運用規約の正本（能力ボキャブラリ＋ゲート規則） |

@@ -8,6 +8,16 @@ copied by `make adopt` — the manifest's `template.version` is the identity rec
 ## [0.5.0] - 2026-07-12
 
 ### Added
+- **Local dashboard UI (`make ui`)**: a stdlib-only (`http.server`, no new dependency) web
+  page that visualizes the SSOT — phase stepper with gate marks, the task DAG as
+  status-colored layer chips, open escalations — and shows the **next recommended command**,
+  computed deterministically in `status_api.py` (the "what next" logic that previously lived
+  only as prose in the `/status` prompt). Guidance-first and read-only for reads; a fixed
+  whitelist of safe operations (gate-approval recording, `make doctor`, `events --resolve`,
+  `revise`, `cycle-close`) can be run from the page — the client sends an action id, never a
+  command string, so command lines are built server-side. Binds `127.0.0.1` with a per-start
+  token; `make ui ARGS=--read-only` disables the action endpoints. Phase execution (`/req`…
+  `/verify`) stays in the agent chat.
 - **Commit-stage gate enforcement (agent-agnostic)**: `gate_guard.py --check-diff`
   fails when the diff vs HEAD (worktree + index + untracked) touches a gate-guarded
   path whose prerequisite gate is unapproved. Registered as a local pre-commit hook,
