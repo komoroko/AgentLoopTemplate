@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import secrets
 import shlex
@@ -218,12 +219,28 @@ class DashboardHandler(BaseHTTPRequestHandler):
         )
 
 
+def open_mode(no_open: bool, term_program: str | None) -> str:
+    """Decide how to surface the URL at startup (kept pure so the choice is unit-testable).
+
+    Inside VS Code's integrated terminal (`TERM_PROGRAM=vscode`) opening the system browser is the
+    wrong target — under WSL it launches the Windows browser, away from the editor — so we point the
+    user at the built-in Simple Browser / Ports preview instead. `--no-open` overrides both.
+    """
+    if no_open:
+        return "none"
+    if term_program == "vscode":
+        return "vscode"
+    return "browser"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="local dashboard for the AgentLoop SSOT")
     parser.add_argument("--host", default="127.0.0.1", help="bind address (default 127.0.0.1)")
     parser.add_argument("--port", type=int, default=8765, help="port (default 8765; 0 = ephemeral)")
     parser.add_argument("--root", default=".", help="repository root holding .agentloop/ (default: cwd)")
-    parser.add_argument("--no-open", action="store_true", help="do not open the browser automatically")
+    parser.add_argument(
+        "--no-open", action="store_true", help="do not open the browser automatically (VS Code: use Simple Browser)"
+    )
     parser.add_argument("--read-only", action="store_true", help="disable the action endpoints (view only)")
     parser.add_argument("--once", action="store_true", help="print the status JSON and exit (no server)")
     args = parser.parse_args(argv)
@@ -237,7 +254,10 @@ def main(argv: list[str] | None = None) -> int:
     url = f"http://{args.host}:{server.server_address[1]}/"
     mode = " (read-only)" if args.read_only else ""
     print(f"AgentLoop dashboard{mode}: {url}  — Ctrl+C to stop")
-    if not args.no_open:
+    if open_mode(args.no_open, os.environ.get("TERM_PROGRAM")) == "vscode":
+        print("  VS Code detected — open it inside the editor: Ctrl+Shift+P → 'Simple Browser: Show'")
+        print("  and paste the URL above (or use the PORTS panel's 'Preview in Editor').")
+    elif open_mode(args.no_open, os.environ.get("TERM_PROGRAM")) == "browser":
         webbrowser.open(url)  # best-effort; under WSL the printed URL is the fallback
     try:
         server.serve_forever()

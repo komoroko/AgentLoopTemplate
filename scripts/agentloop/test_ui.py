@@ -198,3 +198,10 @@ def test_main_once_prints_parseable_json(repo: Path, capsys: pytest.CaptureFixtu
     assert ui.main(["--once", "--root", str(repo)]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["next"]["command"] == "/req"
+
+
+def test_open_mode_targets_vscode_over_external_browser() -> None:
+    assert ui.open_mode(no_open=False, term_program="vscode") == "vscode"
+    assert ui.open_mode(no_open=False, term_program=None) == "browser"
+    assert ui.open_mode(no_open=False, term_program="Apple_Terminal") == "browser"
+    assert ui.open_mode(no_open=True, term_program="vscode") == "none"  # --no-open overrides detection
