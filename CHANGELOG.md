@@ -19,7 +19,12 @@ copied by `make adopt` — the manifest's `template.version` is the identity rec
   token; `make ui ARGS=--read-only` disables the action endpoints. Phase execution (`/req`…
   `/verify`) stays in the agent chat. Opens inside VS Code too (Simple Browser / PORTS
   preview): `make ui` detects a VS Code terminal (`TERM_PROGRAM=vscode`) and prints the
-  Simple Browser hint instead of launching an external browser.
+  Simple Browser hint instead of launching an external browser. The page renders the task
+  graph as an inline **dependency-graph SVG** (offline-safe, no CDN), a **traceability**
+  panel (requirement → design → task coverage, reusing `dag.trace`), the **speculative-work
+  and roll-back logs** parsed from state.md, per-task detail on click, and is **theme-aware**
+  (auto dark/light with a toggle) with a live "updated Ns ago" / connection indicator, manual
+  refresh, and action toasts.
 - **Commit-stage gate enforcement (agent-agnostic)**: `gate_guard.py --check-diff`
   fails when the diff vs HEAD (worktree + index + untracked) touches a gate-guarded
   path whose prerequisite gate is unapproved. Registered as a local pre-commit hook,

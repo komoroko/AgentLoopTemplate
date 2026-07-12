@@ -152,6 +152,9 @@ def test_collect_status_full_repo(repo: Path) -> None:
     assert tasks["counts"]["done"] == 1 and tasks["total"] == 2
     assert [f["id"] for f in tasks["frontier"]] == ["T-002"]
     assert tasks["layers"] == [["T-001"], ["T-002"]]
+    assert tasks["tasks"][0]["test"] == "make test"  # test command exposed for the detail panel
+    assert status["trace"] is None  # no docs/10-requirements.md in this fixture
+    assert status["logs"] == {"speculative": [], "rollback": []}  # no log tables in this state.md
     next_rec = status["next"]
     assert isinstance(next_rec, dict) and next_rec["command"] == "/build"
     assert status["warnings"] == []
@@ -199,3 +202,92 @@ def test_main_prints_json(repo: Path, capsys: pytest.CaptureFixture[str]) -> Non
     assert status_api.main(["--root", str(repo), "--json"]) == 0
     parsed = json.loads(capsys.readouterr().out)
     assert parsed["next"]["command"] == "/build"
+
+
+# --- trace block (requirement → design → task coverage, reusing dag.trace) ----
+
+_REQ_DOC = "# Requirements\n### R-1: base\n### R-2: leaf\n### NFR-1: perf\n"
+_DESIGN_DOC = "# Design\n## R-1 approach\n## R-2 approach\n"
+
+
+def test_trace_block_reports_coverage_and_findings(repo: Path) -> None:
+    docs = repo / "docs"
+    docs.mkdir()
+    (docs / "10-requirements.md").write_text(_REQ_DOC, encoding="utf-8")
+    (docs / "20-design.md").write_text(_DESIGN_DOC, encoding="utf-8")
+    # Give the two tasks a covered requirement each so R-1/R-2 are green.
+    (repo / ".agentloop" / "tasks.yaml").write_text(
+        "tasks:\n"
+        "  - {id: T-001, title: base, kind: foundation, blockedBy: [], status: done, req: 'R-1', phase: build}\n"
+        "  - {id: T-002, title: leaf, kind: parallel, blockedBy: [T-001], status: todo, req: 'R-2', phase: build}\n",
+        encoding="utf-8",
+    )
+    trace = status_api.collect_status(repo)["trace"]
+    assert isinstance(trace, dict)
+    by_id = {r["id"]: r for r in trace["requirements"]}
+    assert by_id["R-1"]["tasks"] == ["T-001"] and by_id["R-1"]["design"] is True and by_id["R-1"]["nfr"] is False
+    assert (
+        by_id["NFR-1"]["nfr"] is True and by_id["NFR-1"]["tasks"] == []
+    )  # NFR without a task is a WARN, not a finding
+    assert trace["ok"] is True and trace["findings"] == []
+
+
+def test_trace_block_surfaces_uncovered_requirement(repo: Path) -> None:
+    docs = repo / "docs"
+    docs.mkdir()
+    (docs / "10-requirements.md").write_text("# Requirements\n### R-1: base\n### R-9: orphan\n", encoding="utf-8")
+    trace = status_api.collect_status(repo)["trace"]
+    assert isinstance(trace, dict)
+    assert trace["ok"] is False
+    assert any("R-9" in f for f in trace["findings"])  # R-9 has no covering task
+
+
+def test_trace_none_without_requirements_doc(repo: Path) -> None:
+    assert status_api.collect_status(repo)["trace"] is None  # no docs/ dir at all
+
+
+# --- logs block (speculative work + roll-back tables parsed from state.md body) ----
+
+_STATE_WITH_LOGS = """---
+project: "demo"
+branch: "build/demo"
+current_phase: build
+gates:
+  requirements: approved
+  design: approved
+  tasks: approved
+  build: pending
+  release: pending
+updated_at: "2026-07-05"
+---
+# board
+
+## Speculative work log
+| Date | Gate awaited | Content | Deliverable/location | Adopt? (human) |
+|------|------------------|------|-------------|----------|
+| 2026-07-04 | tasks | CI config | .github/ci.yml | undecided |
+
+## Roll-back (revision) log
+| Date | Target (phase) | Gates reset to pending in chain | Reason |
+|------|---------------|-------------------------------|------|
+| 2026-07-03 | design | design, tasks, build, release | rethink auth |
+<!-- REVISE-LOG -->
+"""
+
+
+def test_logs_parses_both_tables(repo: Path) -> None:
+    (repo / ".agentloop" / "state.md").write_text(_STATE_WITH_LOGS, encoding="utf-8")
+    logs = status_api.collect_status(repo)["logs"]
+    assert isinstance(logs, dict)
+    assert logs["speculative"] == [["2026-07-04", "tasks", "CI config", ".github/ci.yml", "undecided"]]
+    assert logs["rollback"] == [["2026-07-03", "design", "design, tasks, build, release", "rethink auth"]]
+
+
+def test_logs_skips_placeholder_and_missing(repo: Path) -> None:
+    # repo fixture's state.md has no log tables at all → both empty.
+    assert status_api._state_body_logs(repo) == {"speculative": [], "rollback": []}
+    # header + separator + `_(…)_` placeholder row → nothing.
+    section = status_api._section_table(
+        "## Speculative work log\n| Date | X |\n|---|---|\n| _(append as needed)_ |\n", "Speculative work log"
+    )
+    assert section == []

@@ -152,9 +152,21 @@ def test_get_status_returns_next_command(server: ui.DashboardServer) -> None:
 def test_get_page_is_offline_self_contained(server: ui.DashboardServer) -> None:
     status, data = _request(server, "GET", "/")
     page = data.decode("utf-8")
-    assert status == 200 and "AgentLoop dashboard" in page
+    assert status == 200 and "AgentLoop" in page
     assert "http://" not in page and "https://" not in page  # no external fetches (offline canary)
+    assert "src=" not in page and "//cdn" not in page  # no external scripts/assets either
     assert server.token in page  # the POST token is delivered only via the page
+    # the redesigned sections and their client renderers are all present
+    for marker in (
+        'id="stepper"',
+        'id="trace"',
+        'id="logs"',
+        'id="toasts"',
+        "buildDag",
+        "showTaskDetail",
+        "data-theme",
+    ):
+        assert marker in page, marker
 
 
 def test_get_unknown_path_is_404(server: ui.DashboardServer) -> None:

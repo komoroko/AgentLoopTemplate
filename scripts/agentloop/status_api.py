@@ -183,9 +183,101 @@ def _tasks_block(graph: dag.Graph) -> dict[str, object]:
                 "kind": t.kind,
                 "blocked_by": list(t.blocked_by),
                 "req": t.req,
+                "test": t.test,
             }
             for t in sorted(graph.tasks, key=lambda t: t.id)
         ],
+    }
+
+
+def _read_optional(path: Path) -> str | None:
+    """Return the file text, or None for any unreadable case (absent/dir/permission) — used to skip a panel."""
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+
+def _trace_block(root: Path, graph: dag.Graph) -> dict[str, object] | None:
+    """Requirement → design → task coverage for the dashboard, reusing dag.trace (no new logic).
+
+    Reads docs/10-requirements.md (and docs/20-design.md when present) tolerantly. Returns None when the
+    requirements document is absent or carries no R-N/NFR-N ids (nothing to show yet). The compact shape
+    keeps the deterministic TraceReport but drops what a glance doesn't need.
+    """
+    req_text = _read_optional(root / "docs" / "10-requirements.md")
+    if req_text is None:
+        return None
+    requirement_ids = dag.parse_requirement_ids(req_text)
+    if not requirement_ids:
+        return None
+    design_text = _read_optional(root / "docs" / "20-design.md")
+    design_ids = dag.parse_requirement_ids(design_text) if design_text is not None else None
+    report = dag.trace(graph, requirement_ids, design_ids, None)
+
+    missing_design = set(report.requirements_missing_design) | set(report.nfrs_missing_design)
+    coverage = {**report.req_to_tasks, **report.nfr_to_tasks}
+    requirements = [
+        {
+            "id": rid,
+            "nfr": dag.is_nfr(rid),
+            "design": (None if not report.design_checked else (rid not in missing_design)),
+            "tasks": coverage.get(rid, []),
+        }
+        for rid in requirement_ids
+    ]
+    findings = [f"{r}: no task covering it" for r in report.uncovered_requirements]
+    findings += [f"{r}: no design section" for r in report.requirements_missing_design]
+    findings += [f"design references unknown {d}" for d in report.unknown_in_design]
+    findings += [f"{tid}: references unknown {r}" for tid, r in report.unknown_in_tasks]
+    return {
+        "requirements": requirements,
+        "design_checked": report.design_checked,
+        "findings": findings,
+        "ok": report.ok,
+    }
+
+
+def _section_table(text: str, heading: str) -> list[list[str]]:
+    """Extract the data rows of the first Markdown table under `## <heading>` (tolerant, best-effort).
+
+    Drops the header row, the `|---|` separator, and placeholder rows (`_(…)_`). Cells are trimmed.
+    Any structural surprise yields fewer rows, never an exception — the dashboard tolerates a hand-edited
+    state.md the same way the escalation view does.
+    """
+    lines = text.splitlines()
+    try:
+        start = next(i for i, ln in enumerate(lines) if ln.strip().startswith("## ") and heading in ln)
+    except StopIteration:
+        return []
+    rows: list[list[str]] = []
+    seen_header = False
+    for ln in lines[start + 1 :]:
+        stripped = ln.strip()
+        if stripped.startswith("## "):
+            break  # next section
+        if not (stripped.startswith("|") and stripped.endswith("|")):
+            continue
+        cells = [c.strip() for c in stripped.strip("|").split("|")]
+        if not seen_header:  # the first table row is the column header
+            seen_header = True
+            continue
+        if all(set(c) <= {"-", ":"} for c in cells):
+            continue  # the |---|---| separator
+        if any("_(" in c for c in cells):
+            continue  # scaffold placeholder row
+        rows.append(cells)
+    return rows
+
+
+def _state_body_logs(root: Path) -> dict[str, list[list[str]]]:
+    """The two hand-maintained state.md tables the dashboard mirrors: speculative work + roll-back history."""
+    text = _read_optional(root / ".agentloop" / "state.md")
+    if text is None:
+        return {"speculative": [], "rollback": []}
+    return {
+        "speculative": _section_table(text, "Speculative work log"),
+        "rollback": _section_table(text, "Roll-back (revision) log"),
     }
 
 
@@ -214,10 +306,12 @@ def collect_status(root: str | Path = ".") -> dict[str, object]:
 
     tasks: dict[str, object] | None = None
     counts: dict[str, int] | None = None
+    trace: dict[str, object] | None = None
     try:
         graph = dag.load(root / ".agentloop" / "tasks.yaml")
         tasks = _tasks_block(graph)
         counts = graph.counts()
+        trace = _trace_block(root, graph)
     except OSError:
         pass  # no tasks.yaml yet (normal before /tasks)
     except (dag.DagError, yaml.YAMLError) as exc:
@@ -249,6 +343,8 @@ def collect_status(root: str | Path = ".") -> dict[str, object]:
         "template_mode": template_mode,
         "github_enabled": github_enabled,
         "tasks": tasks,
+        "trace": trace,
+        "logs": _state_body_logs(root),
         "escalations": {
             "open": [
                 {"id": e.id, "date": e.date, "event": e.event, "task": e.task, "step": e.step, "detail": e.detail}
