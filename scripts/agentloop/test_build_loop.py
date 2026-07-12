@@ -1118,3 +1118,112 @@ def test_implementer_prompt_falls_back_to_whole_design_when_no_req(project: Path
     task = dag.Task(id="T-002", title="leaf A", kind="parallel", blocked_by=("T-001",))  # req defaults to ""
     prompt = orch._implementer_prompt(task, failure_log="")
     assert "docs/tasks/T-002.md, docs/20-design.md, and the existing code" in prompt
+
+
+# --- headless CLI configurability (build.headless.cmd) -----------------------
+
+
+def _headless_config(cmd_yaml: str) -> str:
+    return _CONFIG.replace("build:\n", f"build:\n  headless: {{cmd: {cmd_yaml}}}\n")
+
+
+def test_config_headless_cmd_default_and_custom(project: Path) -> None:
+    assert build_loop.Config.load().headless_cmd == ("claude", "-p")
+    (project / ".agentloop" / "config.yaml").write_text(_headless_config('["codex", "exec"]'), encoding="utf-8")
+    assert build_loop.Config.load().headless_cmd == ("codex", "exec")
+
+
+def test_config_rejects_invalid_headless_cmd(project: Path) -> None:
+    for bad in ("[]", '"claude -p"', "[claude, 3]", '["claude", ""]'):
+        (project / ".agentloop" / "config.yaml").write_text(_headless_config(bad), encoding="utf-8")
+        with pytest.raises(ValueError, match="headless.cmd"):
+            build_loop.Config.load()
+
+
+def test_invoke_implementer_launches_configured_headless_cmd(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    (project / ".agentloop" / "config.yaml").write_text(_headless_config('["codex", "exec"]'), encoding="utf-8")
+    _provision(project)
+    seen: list[list[str]] = []
+
+    def fake_run(cmd: list[str], cwd: str, timeout: float | None = None) -> tuple[int, str]:
+        seen.append(cmd)
+        return 0, ""
+
+    monkeypatch.setattr(build_loop, "_run", fake_run)
+    orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
+    orch._invoke_implementer(_leaf("T-002", "leaf A"), cwd=".", failure_log="")
+    assert seen and seen[0][:2] == ["codex", "exec"]
+    assert "T-002" in seen[0][-1]  # the prompt is appended as the last argument
+
+
+# --- merge/finalize-stage gate check (out-of-scope edits must not land) ------
+
+
+def test_parallel_gate_violation_blocks_leaf_and_skips_merge(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A leaf branch touching a pending-gate path (docs/test/** needs gates.build) must not merge:
+    # in-worktree commits and the --no-verify finalize escape the commit-stage guard, and once
+    # merged into work's HEAD the diff-vs-HEAD check could never see the violation again.
+    _provision(project)
+    calls: list[tuple[list[str], str]] = []
+
+    def fake_run(cmd: list[str], cwd: str, timeout: float | None = None) -> tuple[int, str]:
+        calls.append((cmd, cwd))
+        if cmd[:3] == ["git", "diff", "--name-only"]:
+            return (0, "docs/test/results.md\n") if cmd[3].endswith("T-003") else (0, "unguarded.py\n")
+        return 0, ""
+
+    monkeypatch.setattr(build_loop, "_run", fake_run)
+    orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
+    monkeypatch.setattr(orch, "_run_task_to_done", lambda task, cwd: (True, ""))
+    with pytest.raises(build_loop.StopLoop):
+        orch._consume_parallel([_leaf("T-002", "leaf A"), _leaf("T-003", "leaf B")])
+    statuses = {t.id: t.status for t in dag.load(".agentloop/tasks.yaml").tasks}
+    assert statuses["T-002"] == "done" and statuses["T-003"] == "blocked"
+    merges = [c for c, _ in calls if c[:2] == ["git", "merge"]]
+    assert merges == [["git", "merge", "--no-ff", "--no-edit", "build/demo-T-002"]]  # violator never merged
+    violations = [e for e in events.load_events() if e.event == "gate_violation"]
+    assert violations and "docs/test/results.md" in violations[0].detail
+    # The cleanup keeps the branch for human review: no `git branch -D` after the violation
+    # (the only -D is _add_worktree's pre-clean at batch start).
+    fail_at = calls.index((["git", "diff", "--name-only", "build/demo...build/demo-T-003"], "."))
+    assert not [c for c, _ in calls[fail_at:] if c[:3] == ["git", "branch", "-D"]]
+
+
+def test_serial_gate_violation_blocks_task_and_stops(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A serial task commits straight to the work branch, where a commit already in HEAD escapes
+    # the commit-stage guard — the loop itself must re-check what the task changed and stop loudly.
+    _provision(project)
+
+    def fake_run(cmd: list[str], cwd: str, timeout: float | None = None) -> tuple[int, str]:
+        if cmd[:2] == ["git", "rev-parse"]:
+            return 0, "abc1234\n"
+        if cmd[:3] == ["git", "diff", "--name-only"]:
+            return 0, "docs/test/results.md\n"
+        return 0, ""
+
+    monkeypatch.setattr(build_loop, "_run", fake_run)
+    orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
+    monkeypatch.setattr(orch, "_run_task_to_done", lambda task, cwd: (True, ""))
+    with pytest.raises(build_loop.StopLoop, match="gate-guarded"):
+        orch._consume_serial([dag.Task(id="T-001", title="base", kind="foundation")])
+    assert {t.id: t.status for t in dag.load(".agentloop/tasks.yaml").tasks}["T-001"] == "blocked"
+    violations = [e for e in events.load_events() if e.event == "gate_violation"]
+    assert violations and "docs/test/results.md" in violations[0].detail
+
+
+def test_serial_unguarded_changes_pass_the_gate_check(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The check must not false-positive on ordinary implementation paths.
+    _provision(project)
+
+    def fake_run(cmd: list[str], cwd: str, timeout: float | None = None) -> tuple[int, str]:
+        if cmd[:2] == ["git", "rev-parse"]:
+            return 0, "abc1234\n"
+        if cmd[:3] == ["git", "diff", "--name-only"]:
+            return 0, "unguarded.py\n"
+        return 0, ""
+
+    monkeypatch.setattr(build_loop, "_run", fake_run)
+    orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
+    monkeypatch.setattr(orch, "_run_task_to_done", lambda task, cwd: (True, ""))
+    orch._consume_serial([dag.Task(id="T-001", title="base", kind="foundation")])
+    assert {t.id: t.status for t in dag.load(".agentloop/tasks.yaml").tasks}["T-001"] == "done"

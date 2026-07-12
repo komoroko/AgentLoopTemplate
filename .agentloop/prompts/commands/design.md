@@ -22,7 +22,9 @@ Write the deliverables (`docs/20-design.md`, `docs/decisions/ADR-*.md`) in the u
 ## While waiting for approval (minimizing the bottleneck)
 After presenting gate ②, while waiting you may proceed with the following (**outcome-independent, throwaway-by-default**). Record in the "speculative work log" of `state.md`.
 - `notify-and-wait`: tell the human the approval is pending.
-- Setting up the skeleton of the dev environment / test harness / CI, lint/static-analysis config.
+- Setting up the skeleton of the dev environment / test harness / CI, lint/static-analysis config —
+  **outside `gates.guard_paths`** (e.g. CI config, `tests/`, tooling); a path the guard denies waits
+  for its gate instead.
 - **Read-only investigation** of candidate libraries (install only after finalizing).
 - **Forbidden**: finalizing tasks or doing real implementation that pre-empts the design/technical choices.
 

@@ -113,3 +113,61 @@ def test_main_errors_when_state_missing(project: Path, capsys: pytest.CaptureFix
     (project / ".agentloop" / "state.md").unlink()
     assert revise.main(["--to", "design"]) == 1
     assert "cannot read state.md" in capsys.readouterr().err
+
+
+# --- --impacted: deterministic impact marking in tasks.yaml -------------------
+
+_TASKS = """tasks:
+  - {id: T-001, title: base, kind: foundation, blockedBy: [], status: done, test: make test}
+  - {id: T-002, title: leaf A, kind: parallel, blockedBy: [T-001], status: done, test: make test}
+  - {id: T-003, title: leaf B, kind: parallel, blockedBy: [T-001], status: todo, test: make test}
+  - {id: T-004, title: join, kind: integration, blockedBy: [T-002, T-003], status: todo, test: make test}
+"""
+
+
+def _statuses() -> dict[str, str]:
+    import dag
+
+    return {t.id: t.status for t in dag.load(".agentloop/tasks.yaml").tasks}
+
+
+def test_main_impacted_marks_seed_and_transitive_dependents(project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    # Missing an impacted task is the dangerous direction: the whole closure is marked in code;
+    # "keep" is a deliberate reclassification at the /tasks reconcile, never a silent default.
+    (project / ".agentloop" / "tasks.yaml").write_text(_TASKS, encoding="utf-8")
+    assert revise.main(["--impacted", "T-002"]) == 0
+    statuses = _statuses()
+    assert statuses["T-002"] == "needs-revision"  # seed
+    assert statuses["T-004"] == "needs-revision"  # transitive dependent
+    assert statuses["T-001"] == "done" and statuses["T-003"] == "todo"  # outside the closure: untouched
+    out = capsys.readouterr().out
+    assert "T-002 → needs-revision (was done)" in out  # former statuses feed the reconcile
+    assert "1 seed(s) + 1 transitive dependent(s)" in out
+
+
+def test_main_impacted_dry_run_lists_without_writing(project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    (project / ".agentloop" / "tasks.yaml").write_text(_TASKS, encoding="utf-8")
+    assert revise.main(["--impacted", "T-002", "--dry-run"]) == 0
+    assert _statuses()["T-002"] == "done"  # untouched
+    assert "[dry-run] would mark T-002" in capsys.readouterr().out
+
+
+def test_main_impacted_unknown_id_errors(project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    (project / ".agentloop" / "tasks.yaml").write_text(_TASKS, encoding="utf-8")
+    assert revise.main(["--impacted", "T-999"]) == 1
+    assert "unknown task id" in capsys.readouterr().err
+    assert _statuses() == {"T-001": "done", "T-002": "done", "T-003": "todo", "T-004": "todo"}
+
+
+def test_main_combines_to_and_impacted(project: Path) -> None:
+    (project / ".agentloop" / "tasks.yaml").write_text(_TASKS, encoding="utf-8")
+    assert revise.main(["--to", "design", "--impacted", "T-002,T-003"]) == 0
+    state = (project / ".agentloop" / "state.md").read_text(encoding="utf-8")
+    assert re.search(r"design: pending\s+# c2", state)  # gates reset...
+    statuses = _statuses()
+    assert statuses["T-002"] == statuses["T-003"] == statuses["T-004"] == "needs-revision"  # ...and impact marked
+
+
+def test_main_requires_to_or_impacted(project: Path) -> None:
+    with pytest.raises(SystemExit):
+        revise.main([])

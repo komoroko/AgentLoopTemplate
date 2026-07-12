@@ -408,3 +408,13 @@ def test_version_prefers_manifest_over_version_file(project: Path) -> None:
     assert any("template repo, VERSION 0.2.0" in m for m in _messages(doctor.run_checks(), "INFO"))
     (project / ".agentloop" / "adopt-manifest.yaml").write_text("template:\n  version: 0.1.0\n", encoding="utf-8")
     assert any("template version 0.1.0" in m for m in _messages(doctor.run_checks(), "INFO"))
+
+
+def test_headless_binary_check_follows_config(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The mode-A binary probe must track build.headless.cmd, not a hardcoded "claude".
+    config = _CONFIG.replace("build:\n", 'build:\n  headless: {cmd: ["codex", "exec"]}\n')
+    (project / ".agentloop" / "config.yaml").write_text(config, encoding="utf-8")
+    monkeypatch.setattr(shutil, "which", lambda name: None if name == "codex" else f"/usr/bin/{name}")
+    findings = doctor.run_checks()
+    assert any("codex not found" in m for m in _messages(findings, "WARN"))
+    assert doctor.main([]) == 0  # a missing headless CLI degrades mode A, it does not break the repo

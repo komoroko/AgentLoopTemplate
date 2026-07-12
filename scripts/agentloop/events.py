@@ -9,7 +9,7 @@ the truth and state.md embeds only a **generated view** (between the ESCALATION-
 One JSON object per line: `{id, ts, event, task, step, detail, commit, ref}` (empty fields are
 omitted). `id` is a monotonically increasing integer; a `resolve` event closes the escalation
 whose id its `ref` names. Escalation kinds (`blocked` / `merge_conflict` / `integration_red` /
-`no_runnable`) stay **open** until resolved — /verify closes them before gate ⑤.
+`no_runnable` / `gate_violation`) stay **open** until resolved — /verify closes them before gate ⑤.
 
 Writers: build_loop.py appends automatically; a human or the interactive-mode agent appends via
 `make events ARGS='--add blocked --task T-003 --detail "..."'` and resolves via
@@ -40,7 +40,7 @@ VIEW_BEGIN = "<!-- ESCALATION-VIEW:BEGIN -->"
 VIEW_END = "<!-- ESCALATION-VIEW:END -->"
 
 # Events that need a human decision; open until a `resolve` event's ref names their id.
-ESCALATION_EVENTS = frozenset({"blocked", "merge_conflict", "integration_red", "no_runnable"})
+ESCALATION_EVENTS = frozenset({"blocked", "merge_conflict", "integration_red", "no_runnable", "gate_violation"})
 # Display order of the full vocabulary (validated on append so a typo cannot create an
 # unaggregatable kind; the set is this tuple, kept in one place).
 EVENT_ORDER = (
@@ -48,6 +48,7 @@ EVENT_ORDER = (
     "merge_conflict",
     "integration_red",
     "no_runnable",
+    "gate_violation",
     "step_fail",
     "task_done",
     "security_review",

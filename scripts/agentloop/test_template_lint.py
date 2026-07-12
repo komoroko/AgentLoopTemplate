@@ -215,6 +215,22 @@ def test_check_readme_parity_ignores_prose_make_mentions() -> None:
 # --- version ↔ changelog -----------------------------------------------------------
 
 
+def test_check_guard_defaults_green_and_drifts() -> None:
+    import gate_guard
+
+    lines = "".join(f"    {k}: {v}\n" for k, v in gate_guard._DEFAULT_GUARD_PATHS.items())
+    green = f"gates:\n  guard_paths:\n{lines}"
+    assert template_lint.check_guard_defaults(green) == []
+    # A rule present in only one of the pair (config vs code default) is the drift.
+    missing = template_lint.check_guard_defaults("gates:\n  guard_paths:\n    src/: tasks\n")
+    assert any("guard_paths is missing" in f for f in missing)
+    extra = template_lint.check_guard_defaults(green + "    extra/: tasks\n")
+    assert any("_DEFAULT_GUARD_PATHS is missing `extra/`" in f for f in extra)
+    mismatch = template_lint.check_guard_defaults(green.replace("src/: tasks", "src/: design"))
+    assert any("`src/`" in f and "design" in f for f in mismatch)
+    assert "guard_paths block is missing" in template_lint.check_guard_defaults("gates: {}")[0]
+
+
 def test_check_version_changelog_green_and_drifts() -> None:
     log = "# Changelog\n\n## [0.2.0] - 2026-07-08\n\n## [0.1.0] - 2026-07-01\n"
     assert template_lint.check_version_changelog("0.2.0", log) == []
@@ -252,6 +268,7 @@ def test_live_repo_has_no_drift() -> None:
         files[template_lint.AGENTS_MD],
     )
     failures += template_lint.check_neutral_vocabulary(template_lint.neutral_texts(_REPO_ROOT))
+    failures += template_lint.check_guard_defaults(files[template_lint.CONFIG_PATH])
     failures += template_lint.check_readme_parity(files["README.md"], files["README.ja.md"])
     import adopt
 

@@ -10,6 +10,15 @@ build:
   # How many independent leaf tasks within the frontier to launch concurrently (the worktree-isolation cap).
   max_parallel: 3
 
+  # The headless agent CLI mode A launches (implementer / review step / integration fixer /
+  # post-build security review). The prompt is appended as the last argument — swap the command
+  # to run mode A on another agent's CLI:
+  #   claude:  ["claude", "-p"]
+  #   codex:   ["codex", "exec"]
+  #   gemini:  ["gemini", "-p"]
+  headless:
+    cmd: ["claude", "-p"]
+
   worktree:
     enabled: true            # set false to run serially on the work branch without isolation
     dir: .worktrees          # the directory to create worktrees in (already .gitignore'd)
@@ -28,8 +37,8 @@ build:
   #                 implementer; when it runs out the task becomes blocked (escalated to the human).
   #                 An empty `run` skips the step. `run` is shlex-split (quoted arguments work);
   #                 there is no shell, so wrap pipes/redirects in a make target or script.
-  #   kind: agent — a headless `claude -p` review+simplify pass that fixes findings in place (mode A, Claude Code only;
-  #     in interactive mode B the lead applies the same review disciplines itself).
+  #   kind: agent — a headless review+simplify pass (launched via headless.cmd above) that fixes
+  #     findings in place (mode A; in interactive mode B the lead applies the same review disciplines itself).
   #                 If it changes code, the cmd steps that already passed are re-run (re-verified).
   # If copied into a project without make, substitute the commands with that project's own.
   quality_gate:
@@ -68,16 +77,16 @@ build:
     # HEAD skip, so a re-invoked loop never pays twice; the run is recorded as a security_review
     # event). Report-only: findings are triaged by the human/lead and fixed via the implementer,
     # and /verify still runs its own full /security-review + make audit later.
-    # Cost: one claude -p per completed build (mode A, Claude Code only). false = run the security
+    # Cost: one headless.cmd launch per completed build (mode A). false = run the security
     # review yourself before gate ④ (Claude Code: /security-review; other agents: an equivalent pass).
     security_review: true
 
   # Hard timeouts for the external processes the loop runs, in seconds (0 = no timeout).
-  # A hung `claude -p` or test run would otherwise stall the autonomous loop forever; on expiry the
-  # process is killed and the step fails like a normal red step (retry budget / escalation).
+  # A hung headless launch or test run would otherwise stall the autonomous loop forever; on expiry
+  # the process is killed and the step fails like a normal red step (retry budget / escalation).
   timeouts:
     cmd_sec: 1800            # quality-gate cmd steps (make test / make check / smoke)
-    agent_sec: 3600          # headless claude -p launches (implementer, review agent step)
+    agent_sec: 3600          # headless.cmd launches (implementer, review agent step)
 
   # (merge order is deliberately NOT a knob: leaf branches always merge into work deterministically
   #  in ascending task-id order — build_loop.py hardcodes it so every run joins the same way.)
@@ -94,11 +103,16 @@ gates:
   # prefix; any other key guards that exact file. Exact wins over prefixes; longest prefix wins.
   # Omit this key to use these same built-in defaults. In an existing (brownfield) repo, scope this
   # to the docs deliverables first and add your own code paths (e.g. "src/": tasks) when ready.
+  # tests/ is deliberately NOT guarded: fixture/harness prep while a gate is pending is sanctioned
+  # speculative work (AGENTS.md "Minimizing the approval-wait bottleneck").
   guard_paths:
     docs/20-design.md: requirements
     docs/decisions/: requirements
     docs/tasks/: design
     docs/test/: build
+    src/: tasks
+    lib/: tasks
+    app/: tasks
     backend/: tasks
     frontend/: tasks
     scripts/: tasks        # product scripts (scripts/agentloop/ is always allowed)

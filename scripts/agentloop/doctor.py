@@ -56,12 +56,16 @@ def _read_yaml(path: str) -> dict[str, object] | None:
 
 
 def check_binaries() -> list[Finding]:
-    """The binaries the loop shells out to. uv/git are load-bearing; claude/gh degrade features."""
+    """The binaries the loop shells out to. uv/git are load-bearing; the headless CLI/gh degrade features."""
+    try:
+        headless = build_loop.Config.load().headless_cmd[0]
+    except (OSError, yaml.YAMLError, ValueError, IndexError):
+        headless = "claude"  # config problems are reported by check_config; probe the default here
     out: list[Finding] = []
     for name, level, why in (
         ("uv", "FAIL", "every agentloop.mk target launches through it"),
         ("git", "FAIL", "worktrees/merges/commits are git operations"),
-        ("claude", "WARN", "headless mode A (build-loop) needs it; interactive mode B does not"),
+        (headless, "WARN", "headless mode A (build-loop) launches it (build.headless.cmd); mode B does not"),
         ("gh", "INFO", "only needed when github.enabled is turned on"),
     ):
         if shutil.which(name):

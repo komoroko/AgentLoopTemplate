@@ -103,17 +103,21 @@ The truth is split across three files with distinct roles — do not conflate th
    affected task to `needs-revision`, record it in the escalation log, and raise it to the
    human.
 
-**Enforcement is two-layered.** Convention: rule 1, checked by each command. Mechanism:
-`scripts/agentloop/gate_guard.py` denies in code at two checkpoints — **edit-time**, an editor
-hook denying Write/Edit to a next-phase deliverable path while its gate is unapproved
-(registration host is per-agent — see your capability mapping), and **commit-stage**,
+**Enforcement is layered.** Convention: rule 1, checked by each command. Mechanism:
+`scripts/agentloop/gate_guard.py`'s rules deny in code at three checkpoints — **edit-time**, an
+editor hook denying Write/Edit to a next-phase deliverable path while its gate is unapproved
+(registration host is per-agent — see your capability mapping); **commit-stage**,
 agent-agnostic: the guard's `--check-diff` mode, run by pre-commit and `make check`, fails on
 any pending-gate path in the diff vs HEAD — also catching agents with no edit hook and edits
-that bypass one. Guarded paths: `gates.guard_paths`; `scripts/agentloop/**` is always allowed;
-unreadable gates **fail closed**. `/build` additionally code-checks `gates.tasks==approved` at
-start. Escape hatches: `gates.enforce_hook: false`; `gates.template_mode: true` while the repo
-IS the template (`make init` flips it off). Detail: `gate_guard.py`'s docstring and the config
-comments.
+that bypass one; and **merge-stage** (mode A): `build_loop.py` re-evaluates every path a task
+changed before merging its leaf branch or marking a serial task done — preservation commits run
+`--no-verify` and a commit already on the work branch escapes the diff-vs-HEAD check, so what
+actually lands is re-checked in code and a violation escalates (`gate_violation`, task blocked)
+instead of merging silently. Guarded paths: `gates.guard_paths`; `scripts/agentloop/**` is
+always allowed; unreadable gates **fail closed**. `/build` additionally code-checks
+`gates.tasks==approved` at start. Escape hatches: `gates.enforce_hook: false`;
+`gates.template_mode: true` while the repo IS the template (`make init` flips it off). Detail:
+`gate_guard.py`'s docstring and the config comments.
 
 ## Roll back (returning upstream)
 
@@ -155,6 +159,9 @@ Do not sit idle while a gate is `pending` — but **never compromise the gate**:
   the rest as "Open questions" in the self-assessment.
 - Pull forward **only outcome-independent work** (scaffolding, dev-env/CI setup, read-only
   investigation, fixtures) — **never** deliverables premised on the pending decision.
+  Speculative work stays **outside `gates.guard_paths`** (e.g. CI config, `tests/` fixtures,
+  tooling — `tests/` is deliberately unguarded for this): a gate_guard denial marks the boundary
+  of what may be pulled forward — never disable the guard to push through it.
   Speculative work is throwaway-by-default, recorded in the "speculative work log" of
   `state.md` (per-phase specifics: each procedure file's "While waiting for approval" section).
 - **Never set a gate to `approved` on the grounds of speculative work.**

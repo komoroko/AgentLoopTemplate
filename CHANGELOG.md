@@ -21,8 +21,34 @@ copied by `make adopt` — the manifest's `template.version` is the identity rec
   the implementer protocol, the quality-gate `review` step prompt, and the /build
   procedure now state explicitly that implementation stays at the minimum the
   ticket's acceptance criteria require — no speculative generality. No new gate step.
+- **Merge-stage gate enforcement (mode A)**: `build_loop.py` re-evaluates every path a
+  task changed against the gate rules before a leaf branch merges into work (and before
+  a serial task is marked done). Preservation commits run `--no-verify` and a commit
+  already in the work branch's HEAD escapes the commit-stage diff check, so a stray
+  next-phase edit used to be able to land silently; it now escalates as a
+  `gate_violation` event, blocks the task, and keeps the branch unmerged for human
+  review. `template_mode` / `enforce_hook: false` short-circuit it as everywhere else.
+- **Pluggable headless CLI for mode A** (`build.headless.cmd` in `.agentloop/config.yaml`):
+  the deterministic build loop launches its implementer / review step / integration fixer /
+  security review through a configurable command — default `["claude", "-p"]`; `codex exec`,
+  `gemini -p`, etc. also work (the prompt is appended as the last argument). `make doctor`'s
+  binary probe follows the knob. **Breaking**: `build_loop.py --claude-bin` is removed —
+  set `build.headless.cmd` instead.
+- **Deterministic roll-back impact marking**: `revise.py --impacted T-00x,T-00y` marks the
+  directly-affected seeds **and their transitive dependents** `needs-revision` in tasks.yaml
+  in code (combinable with `--to`; `--dry-run` previews; former statuses are printed for the
+  /tasks reconcile). Missing an impacted task was previously prompt-discipline only; now the
+  whole closure is parked mechanically and "keep" is a deliberate reclassification at gate ③.
+- **template_lint canary for the guard_paths pair**: the shipped config.yaml's
+  `gates.guard_paths` block must mirror `gate_guard._DEFAULT_GUARD_PATHS` exactly, so the
+  hand-maintained duplicate can no longer drift from the code default.
 
 ### Changed
+- **Default guard paths widened to the common code layouts**: `src/`, `lib/`, and `app/`
+  now require the tasks gate (alongside `backend/`, `frontend/`, `scripts/`); `tests/`
+  stays deliberately unguarded so approval-wait speculative work (fixtures, harness prep)
+  keeps flowing — AGENTS.md and the /design·/tasks "While waiting" sections now state that
+  speculative work must stay outside `gates.guard_paths`.
 - **Agent-specific text pruned from the neutral files; AGENTS.md compacted ~15%**: the
   `AskUserQuestion` dialect leak in the docs scaffolds is fixed and template_lint's dialect
   canary now scans the docs scaffolds too (`docs/notes/` and `docs/archive/` are records and
