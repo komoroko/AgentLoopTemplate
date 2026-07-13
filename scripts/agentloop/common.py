@@ -154,6 +154,22 @@ def rewrite_gate_line(text: str, gate: str, old: str, new: str, *, keep_trailer:
     return f"---{new_front}---{parts[2]}", n
 
 
+def set_current_phase(text: str, value: str) -> str:
+    """Rewrite the front-matter `current_phase:` value (line surgery, comments preserved).
+
+    Shared by the two phase-moving operations — revise.py (backward) and approve.py (forward) —
+    so the line format is interpreted in exactly one place.
+    """
+    pattern = re.compile(r"^(\s*current_phase:\s*)\S+(\s*(?:#.*)?)$", re.MULTILINE)
+    return pattern.sub(rf"\g<1>{value}\2", text)
+
+
+def set_updated_at(text: str, today: str) -> str:
+    """Rewrite the front-matter `updated_at:` value to a quoted ISO date (line surgery)."""
+    pattern = re.compile(r"^(\s*updated_at:\s*).*$", re.MULTILINE)
+    return pattern.sub(rf'\g<1>"{today}"', text)
+
+
 def read_yaml(path: str) -> dict[str, object] | None:
     """Load a YAML mapping from `path`; None for any unreadable/non-mapping case (tolerant reads)."""
     import yaml  # lazy: keep `import common` stdlib-only (module docstring)

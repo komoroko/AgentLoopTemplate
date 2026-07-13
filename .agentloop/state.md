@@ -3,17 +3,18 @@
 # Every command/agent reads this file first and updates it after working.
 # gates values are one of pending | approved. You cannot advance to the next phase
 # unless the prerequisite gate is approved (see AGENTS.md "Gate rules").
-# When recording an approval, append the date (and approver, if several humans share the repo)
-# as a trailing comment on the gate line, e.g. `tasks: approved   # 2026-07-07 alice`.
+# An approval is recorded with `make approve GATE=<gate> [BY=<name>]` — the operation stamps
+# the date (and approver) on the gate line, e.g. `tasks: approved   # 2026-07-07 alice`, and
+# logs the gate_approved event. gate_guard denies a gate line edited to approved by hand.
 project: "<enter the product name>"
 branch: "<enter the work branch name>"  # e.g. build/<product>. Implement on this branch.
 current_phase: brief          # brief | requirements | design | tasks | build | verify | done
 gates:
-  requirements: pending       # set approved once the human approves the /req result
-  design: pending             # set approved once the human approves the /design technical choices
-  tasks: pending              # set approved once the human approves the /tasks plan
-  build: pending              # set approved once the human approves the /build implementation review
-  release: pending            # set approved once the human approves the /verify release decision
+  requirements: pending       # approved via `make approve GATE=requirements` after the human OKs the /req result
+  design: pending             # approved via `make approve GATE=design` after the human OKs the /design technical choices
+  tasks: pending              # approved via `make approve GATE=tasks` after the human OKs the /tasks plan
+  build: pending              # approved via `make approve GATE=build` after the human OKs the /build implementation review
+  release: pending            # approved via `make approve GATE=release` after the human OKs the /verify release decision
 updated_at: "<YYYY-MM-DD>"
 ---
 

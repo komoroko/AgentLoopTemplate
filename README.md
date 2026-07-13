@@ -167,16 +167,20 @@ Then, inside the adopted repo:
    | implementation | `/build`  | autonomous loop (test-green condition) | ④ review/approve completion |
    | verification | `/verify` | run functional + non-functional tests | ⑤ decide on release |
 
-3. **Roll back** on an upstream defect: `/revise <phase>` resets gates from the target onward and
+3. **Open a gate** with the approval operation `make approve GATE=<gate> [BY=<name>]` — it stamps
+   the date/approver on the gate line, advances the phase, and logs the `gate_approved` event.
+   The agent may run it after your explicit "approve" but must never pre-authorize it (the
+   permission prompt is your confirmation); editing a gate line by hand is denied by the guard.
+4. **Roll back** on an upstream defect: `/revise <phase>` resets gates from the target onward and
    marks task impact (`make revise ARGS="--impacted T-00x"` sets seeds and their transitive
    dependents to `needs-revision`).
-4. **Check progress** anytime with `/status`, or `make ui` for the same board in a browser
+5. **Check progress** anytime with `/status`, or `make ui` for the same board in a browser
    (read-only by default; a fixed whitelist of safe operations and gate-approval recording can run
    from the page). Render the task dependency diagram with
    `uv run --no-project --with pyyaml python scripts/agentloop/dag.py --mermaid`.
-5. **Ship as a PR**: `make pr-draft` assembles the PR body from the SSOT into
+6. **Ship as a PR**: `make pr-draft` assembles the PR body from the SSOT into
    `.agentloop/pr-draft.md` (read-only); creating/pushing the PR stays yours.
-6. **Close the cycle** after gate ⑤: `make cycle-close NAME=<slug>` archives to
+7. **Close the cycle** after gate ⑤: `make cycle-close NAME=<slug>` archives to
    `docs/archive/<date>-<slug>/`, restores fresh scaffolds, and resets gates/phase. A human
    operation, like opening a gate.
 

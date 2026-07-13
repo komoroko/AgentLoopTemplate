@@ -25,8 +25,8 @@ After presenting gate ①, while waiting for approval you may proceed with the f
 - **Forbidden**: writing the design body that pre-empts the requirements.
 
 ## Once approved
-- Set `gates.requirements` to `approved`, `current_phase` to `design`, and update `updated_at` in `state.md`.
+- Record the approval by running `make approve GATE=requirements [BY=<approver>]` — the operation stamps the gate line, advances `current_phase` to `design`, and logs the `gate_approved` event. It is deliberately not pre-authorized: the permission prompt is the human's confirmation. Never edit a gate line in `state.md` yourself (gate_guard denies it).
 - After committing the gate's deliverables, suggest `session-compaction` before starting `/design` — the next command rehydrates from the SSOT, so nothing is lost (pre-compact check: AGENTS.md "Context budget").
 - Point to "next is `/design`".
 
-Until approval is given, the gate stays `pending`. Do not set it to approved on your own.
+Until approval is given, the gate stays `pending`. Do not run the approval operation without an explicit human "approve".

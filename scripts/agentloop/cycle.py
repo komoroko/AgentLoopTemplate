@@ -186,8 +186,8 @@ def reset_state_text(text: str, slug: str, today: str, archive_base: str, pristi
     base = text if pristine is None else _restore_from_pristine(pristine, text)
     for gate in revise.GATE_ORDER:
         base = revise._set_gate_pending(base, gate)
-    base = revise._set_current_phase(base, "brief")
-    base = revise._set_updated_at(base, today)
+    base = common.set_current_phase(base, "brief")
+    base = common.set_updated_at(base, today)
     return revise._insert_log(
         base, f"cycle-close ({slug})", list(revise.GATE_ORDER), f"deliverables archived to {archive_base}", today
     )

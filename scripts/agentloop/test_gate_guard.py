@@ -286,6 +286,137 @@ def test_main_passes_pathless_tools_even_when_state_is_unreadable(
     assert (rc, out) == (0, "")
 
 
+# --- gate-approval write protection (edit-time): only `make approve` may flip ----
+
+
+def _deny_reason(out: str) -> str:
+    return str(json.loads(out)["hookSpecificOutput"]["permissionDecisionReason"])
+
+
+def test_write_flipping_a_gate_to_approved_is_denied(
+    in_tmp: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _setup(in_tmp)
+    flipped = _STATE_TMPL.format(requirements="approved", design="pending", tasks="pending", build="pending")
+    payload = json.dumps({"tool_input": {"file_path": ".agentloop/state.md", "content": flipped}})
+    rc, out = _run_main(payload, monkeypatch, capsys)
+    assert rc == 0
+    reason = _deny_reason(out)
+    assert "gates.requirements" in reason and "make approve" in reason
+
+
+def test_edit_flipping_a_gate_to_approved_is_denied(
+    in_tmp: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _setup(in_tmp)
+    payload = json.dumps(
+        {
+            "tool_input": {
+                "file_path": ".agentloop/state.md",
+                "old_string": "requirements: pending",
+                "new_string": "requirements: approved   # 2026-07-13",
+            }
+        }
+    )
+    rc, out = _run_main(payload, monkeypatch, capsys)
+    assert rc == 0
+    assert "make approve" in _deny_reason(out)
+
+
+def test_multiedit_and_camelcase_flips_are_denied(
+    in_tmp: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _setup(in_tmp)
+    payload = json.dumps(
+        {
+            "tool_input": {
+                "file_path": ".agentloop/state.md",
+                "edits": [
+                    {"old_string": "current_phase: build", "new_string": "current_phase: verify"},
+                    {"old_string": "build: pending", "new_string": "build: approved"},
+                ],
+            }
+        }
+    )
+    rc, out = _run_main(payload, monkeypatch, capsys)
+    assert "gates.build" in _deny_reason(out)
+    # VS Code Copilot spelling (filePath / oldString / newString) is understood too.
+    payload = json.dumps(
+        {
+            "tool_input": {
+                "filePath": ".agentloop/state.md",
+                "oldString": "requirements: pending",
+                "newString": "requirements: approved",
+            }
+        }
+    )
+    rc, out = _run_main(payload, monkeypatch, capsys)
+    assert "gates.requirements" in _deny_reason(out)
+
+
+def test_state_edits_that_do_not_flip_are_allowed(
+    in_tmp: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Ordinary state.md maintenance (progress board, logs, already-approved gate untouched or
+    # reset to pending) must keep flowing — only the pending→approved direction is protected.
+    _setup(in_tmp, requirements="approved")
+    for old, new in (
+        ("# board", "# board\n- note"),
+        ("requirements: approved", "requirements: approved   # 2026-07-13 alice"),
+        ("requirements: approved", "requirements: pending"),
+    ):
+        payload = json.dumps({"tool_input": {"file_path": ".agentloop/state.md", "old_string": old, "new_string": new}})
+        rc, out = _run_main(payload, monkeypatch, capsys)
+        assert (rc, out) == (0, ""), (old, new)
+
+
+def test_creating_state_with_approved_gates_is_denied(
+    in_tmp: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # No on-disk state.md = nothing is approved yet; a Write that starts life approved is a flip.
+    (in_tmp / ".agentloop").mkdir(parents=True, exist_ok=True)
+    (in_tmp / ".agentloop" / "config.yaml").write_text(_CONFIG_ON, encoding="utf-8")
+    content = _STATE_TMPL.format(requirements="approved", design="pending", tasks="pending", build="pending")
+    payload = json.dumps({"tool_input": {"file_path": ".agentloop/state.md", "content": content}})
+    rc, out = _run_main(payload, monkeypatch, capsys)
+    assert "gates.requirements" in _deny_reason(out)
+
+
+def test_flip_denial_ignores_template_mode_but_respects_enforce_hook(
+    in_tmp: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # template_mode relaxes the deliverable-path rules, not gate rule 2 (the scaffold state.md
+    # has no legitimate approved-flip either); enforce_hook: false stays the global escape hatch.
+    payload = json.dumps(
+        {
+            "tool_input": {
+                "file_path": ".agentloop/state.md",
+                "old_string": "requirements: pending",
+                "new_string": "requirements: approved",
+            }
+        }
+    )
+    _setup(in_tmp, config=_CONFIG_TEMPLATE)
+    rc, out = _run_main(payload, monkeypatch, capsys)
+    assert "make approve" in _deny_reason(out)
+    _setup(in_tmp, config=_CONFIG_OFF)
+    rc, out = _run_main(payload, monkeypatch, capsys)
+    assert (rc, out) == (0, "")
+
+
+def test_unrecognized_state_write_shape_is_allowed_with_a_trace(
+    in_tmp: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A host tool shape we cannot simulate must not block path-carrying non-edits; the
+    # commit-stage flip check still covers whatever it wrote.
+    _setup(in_tmp)
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"tool_input": {"file_path": ".agentloop/state.md"}})))
+    rc = gate_guard.main()
+    captured = capsys.readouterr()
+    assert (rc, captured.out) == (0, "")
+    assert "unrecognized payload shape" in captured.err
+
+
 # --- --check-diff: the agent-agnostic commit-stage mode --------------------------
 
 
@@ -354,3 +485,49 @@ def test_check_diff_skips_outside_a_git_repo(
     _setup(in_tmp, design="pending")
     assert gate_guard.main(["--check-diff"]) == 0
     assert "skipping" in capsys.readouterr().err
+
+
+# --- --check-diff: the commit-stage gate-flip check -------------------------------
+
+
+def _commit_all(path: Path) -> None:
+    subprocess.run(["git", "add", "-A"], cwd=path, check=True)
+    subprocess.run(
+        ["git", "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-qm", "seed"],
+        cwd=path,
+        check=True,
+    )
+
+
+def test_check_diff_denies_gate_flip_without_event(in_tmp: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    # A flip smuggled past the tool hook (shell redirect / sed) has no gate_approved event.
+    _git_init(in_tmp)
+    _setup(in_tmp)
+    _commit_all(in_tmp)
+    flipped = _STATE_TMPL.format(requirements="approved", design="pending", tasks="pending", build="pending")
+    (in_tmp / ".agentloop" / "state.md").write_text(flipped, encoding="utf-8")
+    assert gate_guard.main(["--check-diff"]) == 1
+    err = capsys.readouterr().err
+    assert "gates.requirements" in err and "make approve" in err
+
+
+def test_check_diff_passes_gate_flip_with_event(in_tmp: Path) -> None:
+    # approve.py writes the flip and the event in one operation — the sanctioned path passes.
+    import approve
+
+    _git_init(in_tmp)
+    _setup(in_tmp)
+    _commit_all(in_tmp)
+    approve.record_approval("requirements", "alice")
+    assert gate_guard.main(["--check-diff"]) == 0
+
+
+def test_check_diff_flip_check_ignores_template_mode(in_tmp: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    # The deliverable-path rules relax under template_mode; gate rule 2's protection does not.
+    _git_init(in_tmp)
+    _setup(in_tmp, config=_CONFIG_TEMPLATE)
+    _commit_all(in_tmp)
+    flipped = _STATE_TMPL.format(requirements="approved", design="pending", tasks="pending", build="pending")
+    (in_tmp / ".agentloop" / "state.md").write_text(flipped, encoding="utf-8")
+    assert gate_guard.main(["--check-diff"]) == 1
+    assert "gates.requirements" in capsys.readouterr().err

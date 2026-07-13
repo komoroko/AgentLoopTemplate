@@ -166,15 +166,19 @@ make adopt TARGET=../myrepo NAME=myrepo TEST_CMD="npm test" CHECK_CMD="npm run l
    | 実装 | `/build`  | loop で自律実装（test green 条件） | ④ 実装完了をレビュー承認 |
    | 検証 | `/verify` | 機能＋非機能テストを実行 | ⑤ リリース可否を判断 |
 
-3. **差し戻し**: 上流（要件/設計）の不備が判明したら `/revise <phase>` で戻し先以降のゲートを連鎖して
+3. **ゲートを開く**: 承認は操作として記録する — `make approve GATE=<gate> [BY=<name>]` がゲート行に
+   日付・承認者を刻印し、フェーズを進め、`gate_approved` イベントを記録する。エージェントはあなたの
+   明示的な「承認」の後にこれを実行してよいが、事前許可（pre-authorize）は決してしない（権限プロンプト
+   こそがあなたの確認）。ゲート行の手編集はガードが拒否する。
+4. **差し戻し**: 上流（要件/設計）の不備が判明したら `/revise <phase>` で戻し先以降のゲートを連鎖して
    `pending` に戻し、影響タスクをマークする（`make revise ARGS="--impacted T-00x"` が種タスクとその
    推移的下流を `needs-revision` に設定）。承認の巻き戻しも人の判断で行う。
-4. **進捗確認**: いつでも `/status`、または `make ui` で同じ内容をブラウザから見られる（既定で
+5. **進捗確認**: いつでも `/status`、または `make ui` で同じ内容をブラウザから見られる（既定で
    読み取り専用。安全な操作の固定ホワイトリストとゲート承認の記録もページから実行できる）。タスクの
    依存図は `uv run --no-project --with pyyaml python scripts/agentloop/dag.py --mermaid` で生成できる。
-5. **PR として出す**: `make pr-draft` が SSOT から PR 本文を `.agentloop/pr-draft.md` に組み立てる
+6. **PR として出す**: `make pr-draft` が SSOT から PR 本文を `.agentloop/pr-draft.md` に組み立てる
    （読み取り専用）。PR の作成/push は従来どおり人間の操作。
-6. **サイクルを閉じる**: ゲート⑤のあと `make cycle-close NAME=<slug>` が docs を
+7. **サイクルを閉じる**: ゲート⑤のあと `make cycle-close NAME=<slug>` が docs を
    `docs/archive/<日付>-<slug>/` へ退避し、新しいスキャフォールドを復元、ゲート/フェーズをリセット
    する。ゲートを開くのと同じく人間の操作。
 

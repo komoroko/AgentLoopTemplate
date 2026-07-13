@@ -10,7 +10,7 @@
 
 AGENTLOOP_PY := uv run --no-project --with pyyaml python
 
-.PHONY: init adopt agentloop-upgrade agentloop-uninstall cycle-close build-loop issue-sync revise events doctor pr-draft template-lint test-tools ui
+.PHONY: init adopt agentloop-upgrade agentloop-uninstall cycle-close build-loop issue-sync approve revise events doctor pr-draft template-lint test-tools ui
 
 # Turn the copied template into a product (idempotent): fills the pyproject / state.md placeholders,
 # snapshots the pristine docs scaffolds, records the adopt-manifest (FROM = the template's git URL,
@@ -72,6 +72,15 @@ issue-sync:
 #   make events ARGS=--summary                                       # aggregates (per task / per step)
 events:
 	$(AGENTLOOP_PY) scripts/agentloop/events.py $(ARGS)
+
+# Record a human gate approval (the first-class operation for opening a gate — the forward twin
+# of revise). Stamps `gates.<GATE>: approved   # <date> [BY]`, advances current_phase, and appends
+# the gate_approved event the commit-stage gate guard cross-checks. The agent may run this after
+# an explicit human "approve" — but NEVER pre-authorize it (the permission prompt is the human's
+# confirmation); direct state.md gate edits are denied by gate_guard.
+#   make approve GATE=design [BY=alice]
+approve:
+	$(AGENTLOOP_PY) scripts/agentloop/approve.py "$(GATE)" $(if $(BY),--by "$(BY)")
 
 # Roll back (returning upstream). Resets every gate from the target phase onward to pending in a
 # chain and updates current_phase and the roll-back log (the first-class operation for a human
