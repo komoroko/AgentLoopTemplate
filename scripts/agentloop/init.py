@@ -37,12 +37,13 @@ from pathlib import Path
 # Circular with adopt.py (which imports init for shared text surgery) — safe: neither module
 # touches the other's attributes at import time, so the partially initialized module binds fine.
 import adopt
+import common
 import cycle
 import yaml
 
 PYPROJECT_PATH = "pyproject.toml"
-STATE_PATH = ".agentloop/state.md"
-CONFIG_PATH = ".agentloop/config.yaml"
+STATE_PATH = common.STATE_PATH
+CONFIG_PATH = common.CONFIG_PATH
 
 
 # --- pure text surgery (under test) ------------------------------------------

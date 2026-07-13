@@ -54,10 +54,11 @@ import subprocess
 import sys
 from pathlib import Path, PurePosixPath
 
+import common
 import yaml
 
-STATE_PATH = ".agentloop/state.md"
-CONFIG_PATH = ".agentloop/config.yaml"
+STATE_PATH = common.STATE_PATH
+CONFIG_PATH = common.CONFIG_PATH
 
 # Not guarded (always allowed regardless of gates). The template's foundational tools are where
 # the hook itself runs, and the build gate must not block their maintenance.
@@ -127,10 +128,8 @@ def required_gate(file_path: str, rules: dict[str, str] | None = None) -> str | 
 
 
 def _gates_config() -> dict[str, object]:
-    try:
-        data = yaml.safe_load(Path(CONFIG_PATH).read_text(encoding="utf-8")) or {}
-    except (OSError, yaml.YAMLError):
-        return {}  # absent config = enabled defaults (fail-secure; fail-open only when state is absent)
+    # absent config = enabled defaults (fail-secure; fail-open only when state is absent)
+    data = common.read_yaml(CONFIG_PATH) or {}
     gates = data.get("gates")
     return gates if isinstance(gates, dict) else {}
 
@@ -154,22 +153,10 @@ def _guard_paths() -> dict[str, str]:
 def _read_gates() -> dict[str, str] | None:
     """Read the gates from state.md front-matter. None if unreadable (the caller fails closed)."""
     try:
-        text = Path(STATE_PATH).read_text(encoding="utf-8")
-    except OSError:
+        front = common.parse_frontmatter(Path(STATE_PATH).read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
         return None
-    if not text.startswith("---"):
-        return None
-    parts = text.split("---", 2)
-    if len(parts) < 3:
-        return None
-    try:
-        front = yaml.safe_load(parts[1]) or {}
-    except yaml.YAMLError:
-        return None
-    gates = front.get("gates")
-    if not isinstance(gates, dict):
-        return None
-    return {str(k): str(v) for k, v in gates.items()}
+    return common.gates_of(front)
 
 
 def evaluate(file_path: str) -> tuple[bool, str]:

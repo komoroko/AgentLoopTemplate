@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import build_loop
+import common
 import dag
 import events
 import revise
@@ -47,12 +48,8 @@ class Finding:
     message: str
 
 
-def _read_yaml(path: str) -> dict[str, object] | None:
-    try:
-        data = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError):
-        return None
-    return data if isinstance(data, dict) else None
+# Tolerant YAML reading is shared (None for unreadable/non-mapping — see common.py).
+_read_yaml = common.read_yaml
 
 
 def check_binaries() -> list[Finding]:

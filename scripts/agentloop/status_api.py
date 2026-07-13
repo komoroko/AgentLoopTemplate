@@ -1,6 +1,6 @@
 """Deterministic status aggregation for the AgentLoop SSOT — one JSON object, one next action.
 
-Composes the existing derivation pieces (build_loop.read_frontmatter, dag.Graph, events.open_escalations,
+Composes the existing derivation pieces (common.read_frontmatter, dag.Graph, events.open_escalations,
 revise.GATE_ORDER) into a single machine-readable status object, and — the part that previously lived only
 as natural language in .agentloop/prompts/commands/status.md — computes the **next recommended command**
 deterministically from the phase/gate/task state (first-match decision table in `next_action`).
@@ -21,7 +21,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 
-import build_loop
+import common
 import dag
 import events as events_mod
 import revise
@@ -288,11 +288,10 @@ def collect_status(root: str | Path = ".") -> dict[str, object]:
 
     front: dict[str, object] = {}
     try:
-        front = build_loop.read_frontmatter(str(root / ".agentloop" / "state.md"))
+        front = common.read_frontmatter(str(root / ".agentloop" / "state.md"))
     except (OSError, yaml.YAMLError) as exc:
         warnings.append(f"cannot read state.md front-matter: {exc}")
-    raw_gates = front.get("gates")
-    gates = {str(k): str(v) for k, v in raw_gates.items()} if isinstance(raw_gates, dict) else {}
+    gates = common.gates_of(front) or {}
     current_phase = str(front.get("current_phase", ""))
 
     template_mode = False

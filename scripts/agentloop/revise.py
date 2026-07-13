@@ -29,7 +29,9 @@ import sys
 from datetime import date
 from pathlib import Path
 
-STATE_PATH = ".agentloop/state.md"
+import common
+
+STATE_PATH = common.STATE_PATH
 # The forward gate order. Reset the target onward to pending in a chain.
 GATE_ORDER = ("requirements", "design", "tasks", "build", "release")
 # Roll-back target phase -> the gate the chain starts at (verify precedes the release gate, so it is not a target).

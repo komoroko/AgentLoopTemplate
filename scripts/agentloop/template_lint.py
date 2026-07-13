@@ -25,14 +25,15 @@ import sys
 from pathlib import Path
 
 import adopt
+import common
 import dag
 import gate_guard
 import yaml
 
 AGENTS_MD = "AGENTS.md"
 TASKS_CMD = ".agentloop/prompts/commands/tasks.md"
-STATE_PATH = ".agentloop/state.md"
-CONFIG_PATH = ".agentloop/config.yaml"
+STATE_PATH = common.STATE_PATH
+CONFIG_PATH = common.CONFIG_PATH
 CLAUDE_MAPPING = "CLAUDE.md"
 COPILOT_MAPPING = ".github/instructions/agentloop.instructions.md"
 
@@ -61,10 +62,7 @@ def _require(text: str, path: str, terms: list[str], what: str) -> list[str]:
 
 def gate_names(state_text: str) -> list[str]:
     """The gate keys from state.md's front matter — the canonical gate list the docs must echo."""
-    parts = state_text.split("---")
-    front = yaml.safe_load(parts[1]) if len(parts) > 2 else None
-    gates = (front or {}).get("gates") or {}
-    return sorted(gates)
+    return sorted(common.gates_of(common.parse_frontmatter(state_text)) or {})
 
 
 def quality_gate_steps(config_text: str) -> list[str]:

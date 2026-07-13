@@ -42,14 +42,16 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+import common
 import dag
 import events
 import gate_guard
 import yaml
 
-STATE_PATH = ".agentloop/state.md"
-CONFIG_PATH = ".agentloop/config.yaml"
-TASKS_PATH = ".agentloop/tasks.yaml"
+# Single definitions live in common.py; the old names stay importable from here.
+STATE_PATH = common.STATE_PATH
+CONFIG_PATH = common.CONFIG_PATH
+TASKS_PATH = common.TASKS_PATH
 LOCK_PATH = ".agentloop/build-loop.lock"
 # The post-build security-review report. Under .agentloop/ (not docs/test/) deliberately: the
 # review runs BEFORE gate ④ is approved, and gate_guard denies docs/test/** writes until then.
@@ -189,15 +191,8 @@ class Config:
 # --- reading/writing state.md / tasks.yaml ---------------------------------
 
 
-def read_frontmatter(path: str = STATE_PATH) -> dict[str, object]:
-    text = Path(path).read_text(encoding="utf-8")
-    if not text.startswith("---"):
-        return {}
-    parts = text.split("---", 2)
-    if len(parts) < 3:
-        return {}
-    loaded = yaml.safe_load(parts[1]) or {}
-    return loaded if isinstance(loaded, dict) else {}
+# The single parser lives in common.py (fail-open posture: {} on a structurally absent block).
+read_frontmatter = common.read_frontmatter
 
 
 def work_branch(front: dict[str, object]) -> str:
