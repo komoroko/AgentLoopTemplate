@@ -30,11 +30,11 @@ mechanism.
 
 ## Language
 
-Write conversation and deliverables (`docs/**`) in **the user's language — the project's
-primary language**. The template files (this file, the capability mappings, the wrappers,
-`.agentloop/prompts/**`, the `docs/**` scaffolds) stay in English as the canonical source;
-deliverable **headings** may be localized when filling a scaffold in. Machine-read vocabulary
-(`pending`/`approved`, task `status` and `kind` values) stays as-is in every language.
+Write conversation and deliverables (`docs/**`) in **the user's language**. The template files
+(this file, the capability mappings, the wrappers, `.agentloop/prompts/**`, the `docs/**`
+scaffolds) stay in English as the canonical source; deliverable **headings** may be localized.
+Machine-read vocabulary (`pending`/`approved`, task `status` and `kind` values) stays as-is in
+every language.
 
 ## Development lifecycle
 
@@ -52,154 +52,119 @@ brief → requirements → design → tasks → build → verify → done
 | build        | `/build`  | implementation code + tests | ④ implementation review |
 | verify       | `/verify` | `docs/test/test-plan.md` execution results | ⑤ release decision |
 
-Check progress anytime with `/status`, or `make ui` for a local browser dashboard of the same
-board (phase/gates/tasks plus the next recommended command, computed in code; read-only by
-default, with a fixed whitelist of safe operations and gate-approval recording available from
-the page — never phase execution). At `done`, `/verify` records `docs/retrospective.md`
-and closes open logs. An upstream defect rolls back via `/revise` (see "Roll back").
+Check progress anytime with `/status`, or `make ui` for the same board in a local browser
+(next command computed in code; a fixed whitelist of safe operations, never phase execution).
+At `done`, `/verify` records `docs/retrospective.md` and closes open logs. An upstream defect
+rolls back via `/revise` (see "Roll back").
 
 **Cycles**: an ongoing repo repeats this lifecycle as **delta cycles** — each cycle's docs
 describe one change. After `done`, the human runs `make cycle-close NAME=<slug>`: deliverables
 archive to `docs/archive/`, gates/phase reset; `docs/00-product-brief.md` and the baseline
-`docs/05-current-state.md` persist. In an adopted (brownfield) repo the latter is the baseline
-of the existing codebase — `/req`/`/design` read it first; traceability (R-N / NFR-N) covers
-the cycle's delta only, never reverse-generated from existing behavior.
+`docs/05-current-state.md` persist (in a brownfield repo the latter is the existing codebase's
+baseline — `/req`/`/design` read it first; traceability R-N / NFR-N covers the delta only).
 
-**Mid-cycle scope change / hotfix / abandonment** (each a human decision):
-- **Non-defect scope addition**: defer to the next cycle, or reopen gate ① via `/revise` and
-  re-approve — never widen approved requirements silently.
-- **Emergency hotfix**: a *minimal* delta cycle (gates in order, one-paragraph deliverables);
-  if even that is too slow, the human fixes/approves outside the loop — log the escalation,
-  fold it into `docs/05-current-state.md` at the next `/verify`.
-- **Abandonment**: `make cycle-close NAME=abandoned-<slug>` archives the partials and resets
-  gates/phase; handle the work branch by hand.
+**Mid-cycle scope change / hotfix / abandonment** (each a human decision): a non-defect scope
+addition defers to the next cycle or reopens gate ① via `/revise` — never widen approved
+requirements silently. An emergency hotfix is a *minimal* delta cycle (gates in order,
+one-paragraph deliverables); if even that is too slow the human fixes outside the loop — log
+the escalation, fold it into `docs/05-current-state.md` at the next `/verify`. Abandonment is
+`make cycle-close NAME=abandoned-<slug>` (archives partials, resets gates/phase).
 
 ## Single Source of Truth (SSOT)
 
 The truth is split across three files with distinct roles — do not conflate them:
 
-- **`.agentloop/state.md`** — phase, gate approvals, and the logs (speculative / escalation /
-  roll-back). **Read it when starting work; update it after.** `gates.<name>` is `pending` |
-  `approved` — **never set `approved` without human approval.** The escalation log's machine
-  truth is **`.agentloop/events.ndjson`** (`make events`; `build_loop.py` appends); state.md
-  embeds only the generated view between its `ESCALATION-VIEW` markers.
-- **`.agentloop/tasks.yaml`** — the machine-readable truth of the task DAG. `/tasks` generates
-  it (schema: the tasks.md procedure); `build_loop.py`/`dag.py` read it. `req` threads
-  traceability requirements → design → tasks (`R-N` functional / `NFR-N` non-functional),
-  cross-checked by `dag.py --trace` and into the test plan at `/verify`. Derived values
-  (fan-out, frontier, layers, critical path) are **not stored** — the state.md task table is a
-  generated view. GitHub Issues, when enabled, are a one-way mirror, never read back.
-- **`.agentloop/config.yaml`** — deterministic-execution knobs (parallelism, worktree, gate
-  enforcement) **and the single DoD definition (`quality_gate.steps`)**.
+- **`.agentloop/state.md`** — phase, gate approvals, and the logs. **Read it when starting
+  work; update it after.** `gates.<name>` is `pending` | `approved` — **never set `approved`
+  without human approval.** The escalation log's machine truth is `.agentloop/events.ndjson`
+  (`make events`; created on first event); state.md embeds only the generated view.
+- **`.agentloop/tasks.yaml`** — the machine-readable truth of the task DAG (`/tasks` generates
+  it; `build_loop.py`/`dag.py` read it). `req` threads traceability requirements → design →
+  tasks (`R-N` / `NFR-N`), cross-checked by `dag.py --trace`. Derived values (fan-out,
+  frontier, layers, critical path) are **never stored**. GitHub Issues, when enabled, are a
+  one-way mirror, never read back.
+- **`.agentloop/config.yaml`** — deterministic-execution knobs **and the single DoD definition
+  (`quality_gate.steps`)**.
 
 ## Gate rules (strict)
 
 1. **Do not work on the next phase while its prerequisite gate is unapproved.** Each command
-   checks its prerequisite up front (`/design`←requirements, `/tasks`←design, `/build`←tasks,
-   `/verify`←build); if unapproved, stop and tell the human what is needed.
+   checks its prerequisite up front; if unapproved, stop and tell the human what is needed.
 2. **Only humans open a gate.** Go only as far as an `approval-presentation`; set the gate to
-   `approved` in `state.md` only after a human acknowledges it or says an explicit "approve".
-   **Invoking the next-phase command is not itself approval** — stop and ask. Record the date
-   (and approver, when several humans share the repo) as a YAML comment on the gate line
-   (e.g. `tasks: approved   # 2026-07-07 alice`).
+   `approved` only after a human acknowledges it or says an explicit "approve". **Invoking the
+   next-phase command is not itself approval.** Record the date (and approver) as a YAML
+   comment on the gate line (e.g. `tasks: approved   # 2026-07-07 alice`).
 3. **Do not silently fix problems in requirements/design.** On an upstream defect, set the
    affected task to `needs-revision`, record it in the escalation log, and raise it to the
    human.
 
 **Enforcement is layered.** Convention: rule 1, checked by each command. Mechanism:
-`scripts/agentloop/gate_guard.py`'s rules deny in code at three checkpoints — **edit-time**, an
-editor hook denying Write/Edit to a next-phase deliverable path while its gate is unapproved
-(registration host is per-agent — see your capability mapping); **commit-stage**,
-agent-agnostic: the guard's `--check-diff` mode, run by pre-commit and `make check`, fails on
-any pending-gate path in the diff vs HEAD — also catching agents with no edit hook and edits
-that bypass one; and **merge-stage** (mode A): `build_loop.py` re-evaluates every path a task
-changed before merging its leaf branch or marking a serial task done — preservation commits run
-`--no-verify` and a commit already on the work branch escapes the diff-vs-HEAD check, so what
-actually lands is re-checked in code and a violation escalates (`gate_violation`, task blocked)
-instead of merging silently. Guarded paths: `gates.guard_paths`; `scripts/agentloop/**` is
-always allowed; unreadable gates **fail closed**. `/build` additionally code-checks
-`gates.tasks==approved` at start. Escape hatches: `gates.enforce_hook: false`;
-`gates.template_mode: true` while the repo IS the template (`make init` flips it off). Detail:
-`gate_guard.py`'s docstring and the config comments.
+`scripts/agentloop/gate_guard.py` denies in code at three checkpoints — **edit-time** (editor
+hook on deliverable writes), **commit-stage** (`--check-diff` in pre-commit / `make check`),
+and **merge-stage** (`build_loop.py` re-checks every path a task changed before it lands;
+violations escalate as `gate_violation`). Guarded paths: `gates.guard_paths`;
+`scripts/agentloop/**` is always allowed; unreadable gates **fail closed**. Escape hatches:
+`gates.enforce_hook: false`; `gates.template_mode: true` while the repo IS the template.
+Detail: `gate_guard.py`'s docstring and the config comments.
 
 ## Roll back (returning upstream)
 
-When an upstream (requirements/design) defect is confirmed — or `/verify` reopens the build
-(`--to build`) — roll back at the human's discretion with `/revise` (`make revise`):
-
-- **Gates reset in a chain** (`revise.py`): the target phase's gate and everything downstream
-  return to `pending`. Invariant: an upstream `pending` never leaves a downstream gate
-  `approved`; the editing order from then on is enforced by `gate_guard`.
-- **Rewinding approval is a human privilege** — the agent never rolls back on its own; the
-  trigger is a `needs-revision` raised during implementation (gate rule 3).
-- **Upstream fixes always entail task impact analysis**: expand the affected set with
-  `dag.py --impacted` and reclassify each task instead of discarding tasks (procedure: the
-  revise.md and tasks.md procedure files).
+When an upstream defect is confirmed — or `/verify` reopens the build (`--to build`) — roll
+back at the human's discretion with `/revise` (`make revise`): **gates reset in a chain**
+(the target phase's gate and everything downstream return to `pending`; an upstream `pending`
+never leaves a downstream gate `approved`). **Rewinding approval is a human privilege** — the
+agent never rolls back on its own. **Upstream fixes always entail task impact analysis**:
+expand the affected set with `dag.py --impacted` and reclassify each task instead of
+discarding tasks (procedure: the revise.md and tasks.md procedure files).
 
 ## Gate self-assessment (required)
 
 At every gate (①–⑤), present a **self-assessment block** alongside the deliverable — surfacing
-the system's own uncertainty is what lightens the human's review:
-
-- **Assumptions made** (points where, if wrong, the deliverable breaks).
-- **Confidence**: high / medium / low, split by area — **always with a reason for low spots**.
-- **Open questions / points for the human to decide** (most important).
-- **Anticipated risks and trade-offs.**
-- **Context-bloat signal** (when relevant): if a deliverable or log risks *Context Rot* /
-  *Lost in the Middle*, propose trimming (link detail out to an ADR; archive resolved log
-  rows).
-
-Do not pretend to high confidence to let the human skip verification. For
-requirements/design/task tickets, put the self-assessment in the deliverable itself (each
-scaffold's "Self-assessment" section), not just spoken.
+the system's own uncertainty is what lightens the human's review: **assumptions made**;
+**confidence** (high / medium / low by area, always with a reason for low spots); **open
+questions / points for the human to decide** (most important); **anticipated risks and
+trade-offs**; and, when relevant, a **context-bloat signal** (propose trimming an outgrowing
+deliverable or log). Do not pretend to high confidence to let the human skip verification.
+For requirements/design/task tickets, put it in the deliverable itself (each scaffold's
+"Self-assessment" section), not just spoken.
 
 ## Minimizing the approval-wait bottleneck
 
-Do not sit idle while a gate is `pending` — but **never compromise the gate**:
-
-- Notify the human immediately (`notify-and-wait`); batch questions into a single
-  `structured-question`. Past its practical limits, ask only the blocking decisions and leave
-  the rest as "Open questions" in the self-assessment.
-- Pull forward **only outcome-independent work** (scaffolding, dev-env/CI setup, read-only
-  investigation, fixtures) — **never** deliverables premised on the pending decision.
-  Speculative work stays **outside `gates.guard_paths`** (e.g. CI config, `tests/` fixtures,
-  tooling — `tests/` is deliberately unguarded for this): a gate_guard denial marks the boundary
-  of what may be pulled forward — never disable the guard to push through it.
-  Speculative work is throwaway-by-default, recorded in the "speculative work log" of
-  `state.md` (per-phase specifics: each procedure file's "While waiting for approval" section).
-- **Never set a gate to `approved` on the grounds of speculative work.**
+Do not sit idle while a gate is `pending` — but **never compromise the gate**. Notify the
+human immediately (`notify-and-wait`); batch questions into a single `structured-question`.
+Pull forward **only outcome-independent work** (scaffolding, dev-env/CI setup, read-only
+investigation, fixtures) — never deliverables premised on the pending decision. Speculative
+work stays **outside `gates.guard_paths`** (`tests/` is deliberately unguarded for this); a
+gate_guard denial marks the boundary — never disable the guard to push through it. It is
+throwaway-by-default, recorded in the "speculative work log" of `state.md` (per-phase
+specifics: each procedure file's "While waiting for approval" section). **Never set a gate to
+`approved` on the grounds of speculative work.**
 
 ## Task dependency graph
 
 Tasks form a **DAG**, not a flat list: kind = **foundation** (shared base) / **parallel**
 (independent leaves) / **integration** (join); execution layers and the critical path derive
 from `blockedBy`. Consumption order, parallelism (max 3, worktree-isolated), deterministic
-ascending-id merge, and stopping run **in code** (`build_loop.py`, derivation unified in
-`dag.py`) — not by LLM discretion — and the chain is reassembled after every completed task.
-Procedure detail: the build.md and tasks.md procedure files.
+ascending-id merge, and stopping run **in code** (`build_loop.py` / `dag.py`) — not by LLM
+discretion. Procedure detail: the build.md and tasks.md procedure files.
 
 ## Principles
 
 - **Reusing existing implementation comes first — and build only the minimum the acceptance
-  criteria require (YAGNI).** Look for existing functions, utilities, and patterns before
-  writing new code; then implement no more than the ticket asks for. Speculative generality
-  (config knobs, hooks, abstractions no requirement names) is scope creep, not foresight —
-  raise a genuine need instead of building it unasked.
+  criteria require (YAGNI).** Speculative generality (config knobs, hooks, abstractions no
+  requirement names) is scope creep, not foresight — raise a genuine need instead.
 - **Move forward only after passing the quality gate.** The DoD is defined **once**, as
-  `quality_gate.steps` in `.agentloop/config.yaml`; a task is `done` only when every step
-  passes. **For runnable deliverables, fill in the `smoke` step's command and set
-  `required: true`** — a forgotten launch check must refuse to build, not silently skip. In
-  interactive `/build` the lead **re-runs each `cmd` step itself and reads its exit status**
-  before marking `done` — a delegated agent's textual "green" is never evidence. Pipeline
-  detail: the build.md procedure.
-- **Durable lessons are promoted into the template, not archived away.**
-  `docs/retrospective.md` is per-cycle; at gate ⑤ lift each keeper into the always-loaded
-  files (this file, `.agentloop/prompts/**`, the capability mappings).
+  `quality_gate.steps` in `.agentloop/config.yaml` (default: `test` → `check` → `review` →
+  `smoke`); a task is `done` only when every step passes. **For runnable deliverables, fill in
+  the `smoke` step's command and set `required: true`.** In interactive `/build` the lead
+  **re-runs each `cmd` step itself and reads its exit status** — a delegated agent's textual
+  "green" is never evidence. Pipeline detail: the build.md procedure.
+- **Durable lessons are promoted into the template, not archived away.** At gate ⑤ lift each
+  keeper from `docs/retrospective.md` into the always-loaded files.
 - **Small and sure.** One commit = one concern. Get approval before destructive or
   outward-facing operations.
 - **Context isolation.** Delegate requirements/design/implementation to their role agents
-  (`role-delegation`; definitions in `.agentloop/prompts/agents/`) so the main context stays
-  clean.
+  (`role-delegation`) so the main context stays clean.
 - Write deliverable documents in the user's language (see "Language").
 
 ## Context budget (context hygiene)
@@ -214,31 +179,20 @@ three tiers, each with its own refresh cycle and exit** — no tier grows withou
 | **Mid** — cycle | phase deliverables (`docs/**`), `state.md`, retrospective | written per phase, committed at each gate; logs closed at `/verify` | archived by `make cycle-close`; durable lessons promoted to the long tier |
 | **Long** — permanent | `AGENTS.md`, the capability mappings, `.agentloop/prompts/**`, `docs/00-product-brief.md`, `docs/05-current-state.md`, `docs/archive/` | promotions at gate ⑤; `05-current-state.md` updated at `/verify`; archive appended at `cycle-close` | none — always loaded, keep it leanest |
 
-Rules:
+Rules: **keep deliverables lean; push detail out to linked files** (e.g. an `ADR-*.md`).
+**Compress and rotate the append-only logs** at each checkpoint — summarize resolved state.md
+log rows, keep the decision, drop the transcript (`events.ndjson` rotates itself). **Failures
+are summarized, not dumped.** **Prefer fetch-on-demand over holding everything** — read the
+slice you need.
 
-- **Keep deliverables lean; push detail out to linked files** (e.g. an `ADR-*.md`).
-- **Compress and rotate the append-only logs**: at the checkpoint below, summarize or archive
-  **resolved** state.md log rows — keep the decision, drop the transcript. (`events.ndjson`
-  rotates itself, carrying open escalations forward.)
-- **Failures are summarized, not dumped** (`summarize_failure()` keeps the salient lines) —
-  same discipline when you surface a failure yourself.
-- **Prefer fetch-on-demand over holding everything**: read the slice of a file you need;
-  consult a doc when the task needs it.
-- **Compact the session at clean checkpoints, not mid-flight.** `session-compaction` is
-  human-run; the agent suggests it — only at a phase boundary (gate approval recorded,
-  deliverables committed) or a build-layer boundary, where the next command rehydrates from
-  the SSOT, and only when the **pre-compact check** passes in full:
-  1. The gate decision is recorded and the deliverables committed.
-  2. Every instruction/decision the human gave this phase is reflected in a deliverable or
-     the SSOT — an observation with no home yet goes into a `state.md` log row first.
-  3. No unanswered question or gate presentation is in flight.
-  4. (Interactive build) no task is `in_progress`; completed tasks are merged and marked
-     `done`.
-  5. **Checkpoint GC** — apply "Compress and rotate" above to the resolved log rows now.
-
-  If any item fails — or a gate is pending decision — do not suggest it. Compacting never
-  touches gate truth (`state.md`); `/status` and each command's SSOT re-read rehydrate
-  afterwards.
+**Compact the session at clean checkpoints, not mid-flight.** `session-compaction` is
+human-run; the agent suggests it — only at a phase or build-layer boundary, and only when the
+**pre-compact check** passes in full: (1) the gate decision is recorded and the deliverables
+committed; (2) every instruction the human gave this phase is reflected in a deliverable or
+the SSOT; (3) no unanswered question or gate presentation is in flight; (4) no task is
+`in_progress`, completed tasks merged and `done`; (5) checkpoint GC applied to the resolved
+log rows. If any item fails, do not suggest it. Compacting never touches gate truth; `/status`
+rehydrates afterwards.
 
 ## Quality-check commands
 
@@ -251,47 +205,37 @@ when anything behaves oddly). In a project without `make`, substitute its comman
 
 ## Security gate
 
-Three layers: **gitleaks** at commit stage (in `make check`; false positives →
-`.gitleaksignore`) / a **security review** mandatory before gate ④ — deterministic mode A
-auto-runs it headless and binds the report to the reviewed HEAD in
-`.agentloop/security-review.md` (config `build.post_build.security_review`); otherwise run
-your agent's security-review command (see your capability mapping) or an equivalent
-security-focused pass, recorded the same way / a **security review + `make audit`** mandatory
-in `/verify`, recorded in `docs/test/test-plan.md`.
+Three layers: **gitleaks** at commit stage (in `make check`) / a **security review** mandatory
+before gate ④ — mode A auto-runs it headless and binds the report to the reviewed HEAD in
+`.agentloop/security-review.md`; otherwise run your agent's security-review command or an
+equivalent pass, recorded the same way / a **security review + `make audit`** mandatory in
+`/verify`, recorded in `docs/test/test-plan.md`.
 
 ## Branch / commit conventions
 
-- Implement **on a work branch** (recorded in `branch` of `state.md`; created by
-  `make init`), never directly on main. Parallel leaves use worktree-derived branches
-  (`<branch>-T-NNN`) merged back on completion.
-- Per-task commits: **`T-NNN: <summary>`**, one commit = one task. Approving `/build` covers
-  that loop's local commits.
-- **Commit each phase's deliverables at its gate approval** (ADRs, tickets,
-  `state.md`/`tasks.yaml` updates) with a `docs: gate ③ tasks`-style message — not left
-  uncommitted across the whole build.
+- Implement **on a work branch** (recorded in `branch` of `state.md`), never directly on main.
+  Parallel leaves use worktree-derived branches (`<branch>-T-NNN`) merged back on completion.
+- Per-task commits: **`T-NNN: <summary>`**, one commit = one task. **Commit each phase's
+  deliverables at its gate approval** with a `docs: gate ③ tasks`-style message.
 - **Push / PR creation / merging to main are outward-facing** — only after separate human
-  approval. Writing to GitHub Issues likewise: only with the `github.enabled: true` opt-in;
-  `make issue-sync` mirrors one-way and never reads Issues back.
+  approval. Writing to GitHub Issues likewise (`github.enabled: true` opt-in; one-way mirror).
 
 ## Tool-execution permissions (distinct from gate approvals)
 
 **Gate approvals** (①–⑤) are the Human-on-the-Loop essence — never reduce them.
 **Tool-execution permission prompts** are separate: `command-preauthorization` of known-safe
-commands (in your agent's permission settings — see your capability mapping) cuts repeated
-prompts without touching the gates. Template-owned settings hold only **generic AgentLoop
-commands**; **product-specific** ones (run/smoke, the product's tests) go in the product's own
-committed settings, keeping the additive-merge upgrade path clean. Destructive /
-outward-facing actions (push, PR, merge, `make cycle-close`) stay human-run — never
-pre-authorize them.
+commands cuts repeated prompts without touching the gates. Template-owned settings hold only
+**generic AgentLoop commands**; **product-specific** ones go in the product's own committed
+settings. Destructive / outward-facing actions (push, PR, merge, `make cycle-close`) stay
+human-run — never pre-authorize them.
 
 ## Directories
 
-- `.agentloop/` — SSOT (`state.md`, `tasks.yaml`, `config.yaml`) + the event log
-  (`events.ndjson`) + **`prompts/`** (the shared phase procedures and role definitions every
-  agent reads)
+- `.agentloop/` — SSOT (`state.md`, `tasks.yaml`, `config.yaml`), the event log
+  (`events.ndjson`, created on first event), and **`prompts/`** (shared phase procedures and
+  role definitions)
 - `scripts/agentloop/` — deterministic orchestration (`dag.py`, `build_loop.py`,
-  `gate_guard.py`, `events.py`, `doctor.py`, `revise.py`, `adopt.py`, …). **Product scripts
-  go directly under `scripts/`, not mixed in here.**
+  `gate_guard.py`, …). **Product scripts go directly under `scripts/`, not mixed in here.**
 - `docs/` — phase deliverables; `docs/retrospective.md` holds the retrospective at `done`
 - `.claude/commands/`, `.github/prompts/` — per-agent entry points (thin wrappers over
   `.agentloop/prompts/commands/`)
