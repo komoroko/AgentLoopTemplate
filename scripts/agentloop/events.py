@@ -32,8 +32,10 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 
+import common
+
 EVENTS_PATH = ".agentloop/events.ndjson"
-STATE_PATH = ".agentloop/state.md"
+STATE_PATH = common.STATE_PATH
 EVENTS_MAX_BYTES = 256 * 1024  # rotate past this (context hygiene; open escalations are carried over)
 
 VIEW_BEGIN = "<!-- ESCALATION-VIEW:BEGIN -->"

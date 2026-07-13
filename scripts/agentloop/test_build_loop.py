@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import sys
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -583,21 +582,6 @@ def test_update_state_view_noop_without_markers(project: Path) -> None:
     before = (project / ".agentloop" / "state.md").read_text(encoding="utf-8")
     assert build_loop.update_state_view(_graph()) is False
     assert (project / ".agentloop" / "state.md").read_text(encoding="utf-8") == before
-
-
-# --- subprocess timeouts (a hung process must not stall the loop forever) ----
-
-
-def test_run_kills_hung_process_with_rc_124() -> None:
-    rc, out = build_loop._run([sys.executable, "-c", "import time; time.sleep(30)"], cwd=".", timeout=0.2)
-    assert rc == 124  # the coreutils timeout convention
-    assert "timed out after 0s (process killed)" in out
-
-
-def test_run_no_timeout_by_default() -> None:
-    rc, out = build_loop._run([sys.executable, "-c", "print('ok')"], cwd=".")
-    assert rc == 0
-    assert "ok" in out
 
 
 def test_config_parses_timeouts_and_zero_disables(project: Path) -> None:

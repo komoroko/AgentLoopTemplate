@@ -31,12 +31,16 @@ _CONFIG = """build:
 
 _AGENTS = "kinds: foundation / parallel / integration. gates: requirements, design, release. steps: test, review.\n"
 _TASKS_CMD = "kind: foundation | parallel | integration. status: todo in_progress blocked needs-revision done.\n"
+_DOD_PROSE = "the pipeline runs test then review.\n"  # every prose copy of the DoD must echo the step names
 
 
 def _files(**overrides: str) -> dict[str, str]:
     files = {
         template_lint.AGENTS_MD: _AGENTS,
         template_lint.TASKS_CMD: _TASKS_CMD,
+        template_lint.BUILD_CMD: _DOD_PROSE,
+        "README.md": _DOD_PROSE,
+        "README.ja.md": _DOD_PROSE,
         template_lint.STATE_PATH: _STATE,
         template_lint.CONFIG_PATH: _CONFIG,
     }
@@ -71,6 +75,13 @@ def test_check_vocabulary_trips_on_a_missing_quality_gate_step() -> None:
     files = _files(**{template_lint.AGENTS_MD: _AGENTS.replace("review", "critique")})
     failures = template_lint.check_vocabulary(files)
     assert any("AGENTS.md" in f and "`review`" in f for f in failures)
+
+
+def test_check_vocabulary_trips_on_a_dod_copy_gone_stale() -> None:
+    """The README/build.md prose copies of the DoD must echo the step names too."""
+    files = _files(**{"README.ja.md": "the pipeline runs test then critique.\n"})
+    failures = template_lint.check_vocabulary(files)
+    assert any("README.ja.md" in f and "`review`" in f for f in failures)
 
 
 # --- wrapper parity ----------------------------------------------------------------
@@ -254,6 +265,7 @@ def test_live_repo_has_no_drift() -> None:
         for path in (
             template_lint.AGENTS_MD,
             template_lint.TASKS_CMD,
+            template_lint.BUILD_CMD,
             template_lint.STATE_PATH,
             template_lint.CONFIG_PATH,
             "README.md",

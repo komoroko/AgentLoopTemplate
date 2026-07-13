@@ -22,12 +22,12 @@ import argparse
 import json
 import re
 import shutil
-import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import common
 import dag
 import yaml
 
@@ -187,8 +187,6 @@ _STATUS_COLORS = {
     "needs-revision": "e16f24",
     "done": "1a7f37",
 }
-# The phase vocabulary (default build). requirements/design catch the case of filing "work on requirements/design".
-_PHASE_VALUES = ("requirements", "design", "build", "verify")
 _PHASE_COLORS = {"requirements": "8250df", "design": "0969da", "build": "1a7f37", "verify": "cf222e"}
 
 
@@ -206,7 +204,7 @@ def label_specs(graph: dag.Graph, base_label: str) -> list[LabelSpec]:
         specs.append(LabelSpec(f"kind:{kind}", _KIND_COLORS.get(kind, _DEFAULT_COLOR), f"kind: {kind}"))
     for status in sorted(dag.STATUS_VALUES):
         specs.append(LabelSpec(f"status:{status}", _STATUS_COLORS.get(status, _DEFAULT_COLOR), f"status: {status}"))
-    for phase in _PHASE_VALUES:
+    for phase in dag.PHASE_ORDER:
         specs.append(LabelSpec(f"phase:{phase}", _PHASE_COLORS.get(phase, _DEFAULT_COLOR), f"phase: {phase}"))
     reqs: set[str] = set()
     for task in graph.tasks:
@@ -219,9 +217,8 @@ def label_specs(graph: dag.Graph, base_label: str) -> list[LabelSpec]:
 # --- gh execution ----------------------------------------------------------
 
 
-def _run(cmd: list[str]) -> tuple[int, str]:
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    return proc.returncode, proc.stdout + proc.stderr
+# common.run, aliased so the tests can fake the gh/git calls at this seam.
+_run = common.run
 
 
 def preflight(cfg: GithubConfig) -> tuple[bool, str]:

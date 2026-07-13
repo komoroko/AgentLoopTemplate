@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import build_loop
+import common
 import dag
 import events
 import revise
@@ -36,7 +37,6 @@ import yaml
 SETTINGS_PATH = ".claude/settings.json"
 COPILOT_HOOKS_DIR = ".github/hooks"
 MANIFEST_PATH = ".agentloop/adopt-manifest.yaml"
-PHASE_VALUES = ("brief", "requirements", "design", "tasks", "build", "verify", "done")
 GATE_VALUES = ("pending", "approved")
 
 
@@ -47,12 +47,8 @@ class Finding:
     message: str
 
 
-def _read_yaml(path: str) -> dict[str, object] | None:
-    try:
-        data = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError):
-        return None
-    return data if isinstance(data, dict) else None
+# Tolerant YAML reading is shared (None for unreadable/non-mapping — see common.py).
+_read_yaml = common.read_yaml
 
 
 def check_binaries() -> list[Finding]:
@@ -169,19 +165,15 @@ def check_state() -> tuple[list[Finding], dict[str, object]]:
             findings.append(Finding("FAIL", "state", f"gate '{gate}' is missing"))
         elif value not in GATE_VALUES:
             findings.append(Finding("FAIL", "state", f"gate '{gate}' has invalid value {value!r} (pending|approved)"))
-    # Chain invariant (AGENTS.md "Roll back"): if an upstream gate is pending, no downstream
-    # gate may stay approved — a violated chain means an approval survived a roll back.
-    pending_seen: str | None = None
-    for gate in revise.GATE_ORDER:
-        if gates.get(gate) != "approved":
-            pending_seen = pending_seen or str(gate)
-        elif pending_seen is not None:
-            findings.append(
-                Finding("FAIL", "state", f"gate '{gate}' is approved while upstream '{pending_seen}' is pending")
-            )
+    for approved, upstream in common.gate_chain_violations(common.gates_of(front) or {}):
+        findings.append(
+            Finding("FAIL", "state", f"gate '{approved}' is approved while upstream '{upstream}' is pending")
+        )
     phase = front.get("current_phase")
-    if phase not in PHASE_VALUES:
-        findings.append(Finding("FAIL", "state", f"current_phase {phase!r} is not one of {'|'.join(PHASE_VALUES)}"))
+    if phase not in common.PHASE_ORDER:
+        findings.append(
+            Finding("FAIL", "state", f"current_phase {phase!r} is not one of {'|'.join(common.PHASE_ORDER)}")
+        )
     if not findings:
         findings.append(Finding("PASS", "state", f"gates consistent; current_phase: {phase}"))
     return findings, front

@@ -25,14 +25,16 @@ import sys
 from pathlib import Path
 
 import adopt
+import common
 import dag
 import gate_guard
 import yaml
 
 AGENTS_MD = "AGENTS.md"
 TASKS_CMD = ".agentloop/prompts/commands/tasks.md"
-STATE_PATH = ".agentloop/state.md"
-CONFIG_PATH = ".agentloop/config.yaml"
+BUILD_CMD = ".agentloop/prompts/commands/build.md"
+STATE_PATH = common.STATE_PATH
+CONFIG_PATH = common.CONFIG_PATH
 CLAUDE_MAPPING = "CLAUDE.md"
 COPILOT_MAPPING = ".github/instructions/agentloop.instructions.md"
 
@@ -61,10 +63,7 @@ def _require(text: str, path: str, terms: list[str], what: str) -> list[str]:
 
 def gate_names(state_text: str) -> list[str]:
     """The gate keys from state.md's front matter — the canonical gate list the docs must echo."""
-    parts = state_text.split("---")
-    front = yaml.safe_load(parts[1]) if len(parts) > 2 else None
-    gates = (front or {}).get("gates") or {}
-    return sorted(gates)
+    return sorted(common.gates_of(common.parse_frontmatter(state_text)) or {})
 
 
 def quality_gate_steps(config_text: str) -> list[str]:
@@ -88,9 +87,11 @@ def check_vocabulary(files: dict[str, str]) -> list[str]:
     failures += _require(files[TASKS_CMD], TASKS_CMD, kinds, "task kind (dag.KIND_VALUES)")
     failures += _require(files[TASKS_CMD], TASKS_CMD, sorted(dag.STATUS_VALUES), "task status (dag.STATUS_VALUES)")
     failures += _require(files[AGENTS_MD], AGENTS_MD, gate_names(files[STATE_PATH]), "gate (state.md front matter)")
-    failures += _require(
-        files[AGENTS_MD], AGENTS_MD, quality_gate_steps(files[CONFIG_PATH]), "quality-gate step (config.yaml)"
-    )
+    # The DoD step names are defined once (config.yaml) but narrated in several prose homes —
+    # every copy must keep echoing them, or a renamed step teaches stale vocabulary somewhere.
+    steps = quality_gate_steps(files[CONFIG_PATH])
+    for path in (AGENTS_MD, BUILD_CMD, "README.md", "README.ja.md"):
+        failures += _require(files[path], path, steps, "quality-gate step (config.yaml)")
     return failures
 
 
@@ -253,7 +254,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         files = {
             path: Path(path).read_text(encoding="utf-8")
-            for path in (AGENTS_MD, TASKS_CMD, STATE_PATH, CONFIG_PATH, "README.md", "README.ja.md")
+            for path in (AGENTS_MD, TASKS_CMD, BUILD_CMD, STATE_PATH, CONFIG_PATH, "README.md", "README.ja.md")
         }
         failures = check_vocabulary(files)
         failures += check_wrapper_parity(Path())

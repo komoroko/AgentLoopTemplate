@@ -1,6 +1,6 @@
 """Deterministic status aggregation for the AgentLoop SSOT — one JSON object, one next action.
 
-Composes the existing derivation pieces (build_loop.read_frontmatter, dag.Graph, events.open_escalations,
+Composes the existing derivation pieces (common.read_frontmatter, dag.Graph, events.open_escalations,
 revise.GATE_ORDER) into a single machine-readable status object, and — the part that previously lived only
 as natural language in .agentloop/prompts/commands/status.md — computes the **next recommended command**
 deterministically from the phase/gate/task state (first-match decision table in `next_action`).
@@ -21,14 +21,14 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 
-import build_loop
+import common
 import dag
 import events as events_mod
 import revise
 import yaml
 
-GATE_ORDER = revise.GATE_ORDER
-PHASE_ORDER = ("brief", "requirements", "design", "tasks", "build", "verify", "done")
+GATE_ORDER = common.GATE_ORDER
+PHASE_ORDER = common.PHASE_ORDER
 # Phase -> the gate its command's approval-presentation targets (revise._PHASE_GATE stops at build
 # because verify is not a roll-back target; for status purposes verify presents the release gate).
 _PHASE_GATE = {**revise._PHASE_GATE, "verify": "release"}
@@ -60,14 +60,7 @@ def _is_placeholder(value: object) -> bool:
 
 def _gate_chain_broken(gates: dict[str, str]) -> bool:
     """True when a downstream gate is approved while an upstream one is pending (the invariant /revise keeps)."""
-    seen_pending = False
-    for gate in GATE_ORDER:
-        status = gates.get(gate, "pending")
-        if status != "approved":
-            seen_pending = True
-        elif seen_pending:
-            return True
-    return False
+    return bool(common.gate_chain_violations(gates))
 
 
 def next_action(
@@ -288,11 +281,10 @@ def collect_status(root: str | Path = ".") -> dict[str, object]:
 
     front: dict[str, object] = {}
     try:
-        front = build_loop.read_frontmatter(str(root / ".agentloop" / "state.md"))
+        front = common.read_frontmatter(str(root / ".agentloop" / "state.md"))
     except (OSError, yaml.YAMLError) as exc:
         warnings.append(f"cannot read state.md front-matter: {exc}")
-    raw_gates = front.get("gates")
-    gates = {str(k): str(v) for k, v in raw_gates.items()} if isinstance(raw_gates, dict) else {}
+    gates = common.gates_of(front) or {}
     current_phase = str(front.get("current_phase", ""))
 
     template_mode = False

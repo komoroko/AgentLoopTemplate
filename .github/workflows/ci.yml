@@ -31,14 +31,23 @@ jobs:
           path: ~/.cache/pre-commit
           key: pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}
 
-      # `make check` == pre-commit (commit stage) + pre-push stage — the full gate.
+      # `make check` == pre-commit (commit stage) + pre-push stage + template-lint (the drift
+      # canaries across the hand-maintained template files) — the full gate.
       # Frontend hooks (eslint/prettier/tsc) are file-scoped to frontend/ and skip when absent.
-      - name: Run pre-commit
+      - name: Run pre-commit and template-lint
         run: make check
 
   test:
-    name: tests
+    name: tests (py${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The endpoints that matter: the advertised 3.10 floor (pyproject requires-python —
+        # mypy targets it, but only running the suite proves the runtime) and the newest CPython.
+        python-version: ["3.10", "3.13"]
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
     steps:
       - uses: actions/checkout@v4
 
@@ -46,6 +55,9 @@ jobs:
         uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
+
+      - name: Install Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
 
       - name: Sync dependencies
         run: uv sync
@@ -71,3 +83,16 @@ jobs:
         # which we tolerate (real failures exit 1 and still fail). Called directly rather than via
         # `make test` because make collapses a recipe's exit code to 2, hiding the 5.
         run: uv run pytest backend/ || test $? -eq 5
+
+  # Aggregate gate over the python matrix. Branch protection requires the single stable name
+  # "tests" — the matrix jobs are named per version, so this is what reports it. `if: always()`
+  # + the explicit result check make a failed/cancelled matrix FAIL here (a plain `needs` job
+  # would be skipped, and a skipped required check slips through protection as passing).
+  tests:
+    name: tests
+    needs: test
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every matrix job succeeded
+        run: test "${{ needs.test.result }}" = "success"

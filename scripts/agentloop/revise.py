@@ -29,9 +29,11 @@ import sys
 from datetime import date
 from pathlib import Path
 
-STATE_PATH = ".agentloop/state.md"
-# The forward gate order. Reset the target onward to pending in a chain.
-GATE_ORDER = ("requirements", "design", "tasks", "build", "release")
+import common
+
+STATE_PATH = common.STATE_PATH
+# The forward gate order (defined once in common.py). Reset the target onward to pending in a chain.
+GATE_ORDER = common.GATE_ORDER
 # Roll-back target phase -> the gate the chain starts at (verify precedes the release gate, so it is not a target).
 _PHASE_GATE = {"requirements": "requirements", "design": "design", "tasks": "tasks", "build": "build"}
 REVISE_MARKER = "<!-- REVISE-LOG -->"
@@ -51,8 +53,8 @@ def cascade_gates(target_phase: str) -> list[str]:
 
 def _set_gate_pending(text: str, gate: str) -> str:
     """Set just the value of the front-matter "  <gate>: approved   # comment" to pending (preserving the comment)."""
-    pattern = re.compile(rf"^(\s*{re.escape(gate)}:\s*)approved(.*)$", re.MULTILINE)
-    return pattern.sub(r"\1pending\2", text)
+    new, _ = common.rewrite_gate_line(text, gate, "approved", "pending", keep_trailer=True)
+    return new
 
 
 def _set_current_phase(text: str, value: str) -> str:

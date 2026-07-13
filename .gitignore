@@ -18,13 +18,10 @@ frontend/.vite/
 # ---- mkdocs ----
 site/
 
-# ---- logs ----
-backend/logfiles/*.log
-!backend/logfiles/.gitkeep
-
 # ---- AgentLoop runtime artifacts ----
-# (.agentloop/events.ndjson — the structured escalation log — is deliberately TRACKED: it is the
-#  machine-readable truth behind state.md's generated view and is archived at cycle-close.)
+# (.agentloop/events.ndjson — the structured escalation log — is deliberately NOT ignored: created
+#  on the first event, it is the machine-readable truth behind state.md's generated view, meant to
+#  be committed with the cycle's records and archived at cycle-close.)
 .worktrees/                 # temporary worktrees build_loop.py creates for parallel tasks
 .agentloop/build-loop.log   # the pre-events escalation log (legacy; no longer written)
 .agentloop/build-loop.log.1 # its rotated previous generation

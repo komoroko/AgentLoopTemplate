@@ -256,7 +256,7 @@ SSOT). Writing issues is outward-facing, so the opt-in is the consent.
 |------|------|
 | `.agentloop/state.md` | SSOT for phase, gates, logs |
 | `.agentloop/tasks.yaml` | machine-readable SSOT of the task graph (DAG) |
-| `.agentloop/events.ndjson` | orchestration events — the escalation log's machine truth (`make events`) |
+| `.agentloop/events.ndjson` | orchestration events — the escalation log's machine truth (`make events`; created on the first event) |
 | `.agentloop/config.yaml` | deterministic-execution knobs + the single DoD (`quality_gate.steps`) |
 | `.agentloop/schema/` | JSON Schemas for `config.yaml` / `tasks.yaml` (editor validation; `make doctor`) |
 | `.agentloop/prompts/` | the shared phase procedures and role definitions every agent reads |

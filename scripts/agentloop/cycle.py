@@ -31,12 +31,12 @@ from __future__ import annotations
 import argparse
 import re
 import shutil
-import subprocess
 import sys
 from datetime import date
 from pathlib import Path
 
 import build_loop
+import common
 import events
 import revise
 
@@ -105,11 +105,6 @@ def plan_close(slug: str, today: str, docs_dir: str = DOCS_DIR) -> list[tuple[st
     return rows
 
 
-def _run(cmd: list[str]) -> tuple[int, str]:
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    return proc.returncode, proc.stdout + proc.stderr
-
-
 def _archive(rows: list[tuple[str, str, str]]) -> list[str]:
     """Execute the archive plan with `git mv` (falling back to a plain move for untracked files)."""
     moved: list[str] = []
@@ -117,7 +112,7 @@ def _archive(rows: list[tuple[str, str, str]]) -> list[str]:
         if action != "archive":
             continue
         Path(dst).parent.mkdir(parents=True, exist_ok=True)
-        rc, _ = _run(["git", "mv", src, dst])
+        rc, _ = common.run(["git", "mv", src, dst])
         if rc != 0:  # untracked deliverable (never committed): move it all the same
             shutil.move(src, dst)
         moved.append(src)

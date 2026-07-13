@@ -29,7 +29,6 @@ from __future__ import annotations
 import argparse
 import datetime
 import re
-import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -37,12 +36,13 @@ from pathlib import Path
 # Circular with adopt.py (which imports init for shared text surgery) — safe: neither module
 # touches the other's attributes at import time, so the partially initialized module binds fine.
 import adopt
+import common
 import cycle
 import yaml
 
 PYPROJECT_PATH = "pyproject.toml"
-STATE_PATH = ".agentloop/state.md"
-CONFIG_PATH = ".agentloop/config.yaml"
+STATE_PATH = common.STATE_PATH
+CONFIG_PATH = common.CONFIG_PATH
 
 
 # --- pure text surgery (under test) ------------------------------------------
@@ -139,23 +139,18 @@ def _apply(path: str, transform: Callable[[str], str]) -> bool:
 
 def _switch_branch(branch: str) -> str:
     """Create/switch to the work branch (best-effort). Returns a status line for the summary."""
-    rc, out = _run(["git", "rev-parse", "--abbrev-ref", "HEAD"])
+    rc, out = common.run(["git", "rev-parse", "--abbrev-ref", "HEAD"])
     if rc != 0:
         return f"git: not a repository — run `git init && git switch -c {branch}` yourself"
     if out.strip() == branch:
         return f"git: already on {branch}"
-    rc, _ = _run(["git", "switch", "-c", branch])
+    rc, _ = common.run(["git", "switch", "-c", branch])
     if rc == 0:
         return f"git: created and switched to {branch}"
-    rc, out = _run(["git", "switch", branch])
+    rc, out = common.run(["git", "switch", branch])
     if rc == 0:
         return f"git: switched to existing {branch}"
     return f"git: could not switch to {branch} — {out.strip().splitlines()[-1] if out.strip() else 'unknown error'}"
-
-
-def _run(cmd: list[str]) -> tuple[int, str]:
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    return proc.returncode, proc.stdout + proc.stderr
 
 
 def main(argv: list[str] | None = None) -> int:

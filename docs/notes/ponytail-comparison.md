@@ -1,7 +1,9 @@
 # ponytail 比較分析(テンプレート保守メモ)
 
 > **Note**: これはテンプレートリポジトリ自身の保守メモです。greenfield コピーでプロダクトに
-> 混入した場合は削除して構いません(upgrade/uninstall の対象外)。
+> 混入した場合は削除して構いません(upgrade/uninstall の対象外)。記録(record)であって
+> スキャフォールドではないため、意図的に日本語で書かれています(AGENTS.md「Language」の
+> English-canonical 規則の対象外。docs/notes/ は dialect canary からも除外)。
 
 2026-07-08、[DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail) と本テンプレートを
 比較し、「機構として学べる点」と「カテゴリ差として詰めるべきでない点」を切り分けた記録。

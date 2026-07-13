@@ -34,7 +34,6 @@ import argparse
 import os
 import re
 import shlex
-import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
@@ -42,14 +41,16 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+import common
 import dag
 import events
 import gate_guard
 import yaml
 
-STATE_PATH = ".agentloop/state.md"
-CONFIG_PATH = ".agentloop/config.yaml"
-TASKS_PATH = ".agentloop/tasks.yaml"
+# Single definitions live in common.py; the old names stay importable from here.
+STATE_PATH = common.STATE_PATH
+CONFIG_PATH = common.CONFIG_PATH
+TASKS_PATH = common.TASKS_PATH
 LOCK_PATH = ".agentloop/build-loop.lock"
 # The post-build security-review report. Under .agentloop/ (not docs/test/) deliberately: the
 # review runs BEFORE gate ④ is approved, and gate_guard denies docs/test/** writes until then.
@@ -189,15 +190,8 @@ class Config:
 # --- reading/writing state.md / tasks.yaml ---------------------------------
 
 
-def read_frontmatter(path: str = STATE_PATH) -> dict[str, object]:
-    text = Path(path).read_text(encoding="utf-8")
-    if not text.startswith("---"):
-        return {}
-    parts = text.split("---", 2)
-    if len(parts) < 3:
-        return {}
-    loaded = yaml.safe_load(parts[1]) or {}
-    return loaded if isinstance(loaded, dict) else {}
+# The single parser lives in common.py (fail-open posture: {} on a structurally absent block).
+read_frontmatter = common.read_frontmatter
 
 
 def work_branch(front: dict[str, object]) -> str:
@@ -300,22 +294,9 @@ def log_escalation(event: str, message: str, *, task: str = "") -> None:
 # --- subprocess -------------------------------------------------------------
 
 
-def _run(cmd: list[str], cwd: str, timeout: float | None = None) -> tuple[int, str]:
-    """Run a command; a hang past `timeout` kills it and fails with rc 124 (the coreutils convention).
-
-    Without this, a stuck `claude -p` or test run would stall the autonomous loop forever with no
-    escalation. The expiry flows through the normal failure paths (retry budget / StopLoop).
-    """
-    try:
-        proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
-    except subprocess.TimeoutExpired as exc:
-        partial = "".join(
-            part if isinstance(part, str) else part.decode(errors="replace")
-            for part in (exc.stdout, exc.stderr)
-            if part
-        )
-        return 124, f"{partial}\ntimed out after {int(exc.timeout)}s (process killed)"
-    return proc.returncode, proc.stdout + proc.stderr
+# The implementation lives in common.run; the `_run` name stays because doctor/pr_draft call
+# through it and the tests monkeypatch it here to fake git/agent-CLI results.
+_run = common.run
 
 
 # --- failure summarization (retry-friendly, token-lean) ---------------------
@@ -927,8 +908,10 @@ class Orchestrator:
                 if not self.dry_run:
                     try:  # leave the board reflecting the batch's blocked/done statuses before stopping
                         update_state_view(dag.load(TASKS_PATH))
-                    except (OSError, dag.DagError, yaml.YAMLError):
-                        pass
+                    except (OSError, dag.DagError, yaml.YAMLError) as view_exc:
+                        # Cosmetic only (tasks.yaml stays the truth), but say so — a silently
+                        # stale board would misdirect the human the escalation is aimed at.
+                        print(f"[warn] could not refresh the state.md board: {view_exc}", file=sys.stderr)
                 print(str(exc), file=sys.stderr)
                 return exc.code
             # Recompute at the top of the loop after each batch (reassemble the chain).
