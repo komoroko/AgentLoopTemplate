@@ -24,7 +24,9 @@ STATUS_ORDER = ("todo", "in_progress", "blocked", "needs-revision", "done")
 KIND_VALUES = frozenset({"foundation", "parallel", "integration"})
 # The lifecycle phase a task originates from (see .agentloop/prompts/commands/tasks.md). Validated because a
 # typo (e.g. "biuld") would otherwise silently drop the task from --trace's build-coverage check.
-PHASE_VALUES = frozenset({"requirements", "design", "build", "verify"})
+# (Distinct from common.PHASE_ORDER, the current_phase lifecycle: a task never originates in brief/tasks/done.)
+PHASE_ORDER = ("requirements", "design", "build", "verify")
+PHASE_VALUES = frozenset(PHASE_ORDER)
 
 # Requirement IDs are `R-<number>` for functional and `NFR-<number>` for non-functional requirements
 # (R-1, NFR-2, …). Shared vocabulary across requirements/design documents and task `req`. A task's req is

@@ -26,6 +26,13 @@ STATE_PATH = ".agentloop/state.md"
 CONFIG_PATH = ".agentloop/config.yaml"
 TASKS_PATH = ".agentloop/tasks.yaml"
 
+# --- lifecycle vocabulary (AGENTS.md "Development lifecycle") ----------------
+
+# The forward gate order (state.md front-matter keys). Roll-back resets a chain of these.
+GATE_ORDER = ("requirements", "design", "tasks", "build", "release")
+# current_phase values, in lifecycle order (brief precedes gate ①; done follows gate ⑤).
+PHASE_ORDER = ("brief", "requirements", "design", "tasks", "build", "verify", "done")
+
 
 # --- subprocess ---------------------------------------------------------------
 

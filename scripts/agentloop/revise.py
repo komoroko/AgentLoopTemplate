@@ -32,8 +32,8 @@ from pathlib import Path
 import common
 
 STATE_PATH = common.STATE_PATH
-# The forward gate order. Reset the target onward to pending in a chain.
-GATE_ORDER = ("requirements", "design", "tasks", "build", "release")
+# The forward gate order (defined once in common.py). Reset the target onward to pending in a chain.
+GATE_ORDER = common.GATE_ORDER
 # Roll-back target phase -> the gate the chain starts at (verify precedes the release gate, so it is not a target).
 _PHASE_GATE = {"requirements": "requirements", "design": "design", "tasks": "tasks", "build": "build"}
 REVISE_MARKER = "<!-- REVISE-LOG -->"

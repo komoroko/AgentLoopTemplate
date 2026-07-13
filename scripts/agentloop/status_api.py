@@ -27,8 +27,8 @@ import events as events_mod
 import revise
 import yaml
 
-GATE_ORDER = revise.GATE_ORDER
-PHASE_ORDER = ("brief", "requirements", "design", "tasks", "build", "verify", "done")
+GATE_ORDER = common.GATE_ORDER
+PHASE_ORDER = common.PHASE_ORDER
 # Phase -> the gate its command's approval-presentation targets (revise._PHASE_GATE stops at build
 # because verify is not a roll-back target; for status purposes verify presents the release gate).
 _PHASE_GATE = {**revise._PHASE_GATE, "verify": "release"}

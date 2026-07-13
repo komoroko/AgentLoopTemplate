@@ -37,7 +37,6 @@ import yaml
 SETTINGS_PATH = ".claude/settings.json"
 COPILOT_HOOKS_DIR = ".github/hooks"
 MANIFEST_PATH = ".agentloop/adopt-manifest.yaml"
-PHASE_VALUES = ("brief", "requirements", "design", "tasks", "build", "verify", "done")
 GATE_VALUES = ("pending", "approved")
 
 
@@ -177,8 +176,10 @@ def check_state() -> tuple[list[Finding], dict[str, object]]:
                 Finding("FAIL", "state", f"gate '{gate}' is approved while upstream '{pending_seen}' is pending")
             )
     phase = front.get("current_phase")
-    if phase not in PHASE_VALUES:
-        findings.append(Finding("FAIL", "state", f"current_phase {phase!r} is not one of {'|'.join(PHASE_VALUES)}"))
+    if phase not in common.PHASE_ORDER:
+        findings.append(
+            Finding("FAIL", "state", f"current_phase {phase!r} is not one of {'|'.join(common.PHASE_ORDER)}")
+        )
     if not findings:
         findings.append(Finding("PASS", "state", f"gates consistent; current_phase: {phase}"))
     return findings, front
