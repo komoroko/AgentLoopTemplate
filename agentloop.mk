@@ -15,7 +15,7 @@ AGENTLOOP_PY := uv run --no-project --with pyyaml python
 # Turn the copied template into a product (idempotent): fills the pyproject / state.md placeholders,
 # snapshots the pristine docs scaffolds, records the adopt-manifest (FROM = the template's git URL,
 # reused later by agentloop-upgrade), creates the work branch, and flips gates.template_mode off
-# so the gate guard goes live.
+# so the gate guard goes live. Interactive alternative: `./agentloop start` (the setup wizard).
 #   make init NAME=myproduct [BRANCH=build/myproduct] [FROM=https://github.com/you/AgentLoopTemplate.git]
 init:
 	$(AGENTLOOP_PY) scripts/agentloop/init.py --name "$(NAME)" $(if $(BRANCH),--branch "$(BRANCH)") $(if $(FROM),--source "$(FROM)")

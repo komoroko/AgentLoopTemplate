@@ -52,8 +52,9 @@ brief → requirements → design → tasks → build → verify → done
 | build        | `/build`  | implementation code + tests | ④ implementation review |
 | verify       | `/verify` | `docs/test/test-plan.md` execution results | ⑤ release decision |
 
-Check progress anytime with `/status`, or `make ui` for the same board in a local browser
-(next command computed in code; a fixed whitelist of safe operations, never phase execution).
+Check progress anytime with `/status`; humans also have `./agentloop next` (the next command
+only) and `make ui` / `./agentloop ui` for the same board in a local browser (next command
+computed in code; a fixed whitelist of safe operations, never phase execution).
 At `done`, `/verify` records `docs/retrospective.md` and closes open logs. An upstream defect
 rolls back via `/revise` (see "Roll back").
 

@@ -1,0 +1,5 @@
+#!/bin/sh
+# The one human entry point for the daily AgentLoop verbs: ./agentloop start | next | ui | agent
+# (see scripts/agentloop/cli.py). Needs only the uv binary — no project environment.
+cd "$(dirname "$0")" || exit 1
+exec uv run --no-project --with pyyaml python scripts/agentloop/cli.py "$@"

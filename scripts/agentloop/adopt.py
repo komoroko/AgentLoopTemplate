@@ -94,7 +94,7 @@ COPY_ROOTS = (
     ".github/instructions",
     "docs",
 )
-COPY_FILES = ("agentloop.mk",)
+COPY_FILES = ("agentloop.mk", "agentloop")
 # Handled by dedicated logic, not the generic copy loop.
 SPECIAL = {".agentloop/config.yaml", ".agentloop/state.md", "docs/00-product-brief.md"}
 _CACHE_DIR_NAMES = {"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache"}
@@ -114,7 +114,7 @@ _TEMPLATE_OWNED_PREFIXES = (
     ".github/hooks/",
     ".github/instructions/",
 )
-_TEMPLATE_OWNED_FILES = ("agentloop.mk", AGENTLOOP_RULES_PATH)
+_TEMPLATE_OWNED_FILES = ("agentloop.mk", "agentloop", AGENTLOOP_RULES_PATH)
 
 BRIEF_NOTE = (
     "\n> **Adopted into an existing codebase.** Write each cycle's brief as the *change* you want\n"

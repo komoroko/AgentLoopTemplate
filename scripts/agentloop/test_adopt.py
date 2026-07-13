@@ -99,6 +99,7 @@ def test_default_owner_classification() -> None:
     assert adopt.default_owner(".github/hooks/agentloop.json") == "template"
     assert adopt.default_owner(".github/instructions/agentloop.instructions.md") == "template"
     assert adopt.default_owner("agentloop.mk") == "template"
+    assert adopt.default_owner("agentloop") == "template"  # the ./agentloop entry-point wrapper
     assert adopt.default_owner(adopt.AGENTLOOP_RULES_PATH) == "template"
     assert adopt.default_owner(".agentloop/tasks.yaml") == "seeded"
     assert adopt.default_owner("docs/10-requirements.md") == "seeded"
@@ -287,6 +288,7 @@ def template(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     (root / "AGENTS.md").write_text("# AgentLoop rules\n", encoding="utf-8")
     (root / "CLAUDE.md").write_text("# Claude capability mapping\n@AGENTS.md\n", encoding="utf-8")
     (root / "agentloop.mk").write_text("build-loop:\n\ttrue\n", encoding="utf-8")
+    (root / "agentloop").write_text("#!/bin/sh\nexec true\n", encoding="utf-8")
     monkeypatch.setattr(adopt, "TEMPLATE_ROOT", root)
     return root
 
@@ -315,6 +317,7 @@ def test_adopt_installs_without_overwriting(template: Path, target: Path) -> Non
     assert rc == 0
     # New machinery landed.
     assert (target / "agentloop.mk").exists()
+    assert (target / "agentloop").exists()  # the ./agentloop entry-point wrapper travels along
     assert (target / "scripts" / "agentloop" / "dag.py").exists()
     assert (target / ".claude" / "commands" / "req.md").exists()
     assert (target / ".github" / "prompts" / "req.prompt.md").exists()
@@ -388,6 +391,7 @@ def test_adopt_writes_manifest_with_ownership(template: Path, target: Path) -> N
     files = data["files"]
     assert files["scripts/agentloop/dag.py"]["owner"] == "template"
     assert files["agentloop.mk"]["owner"] == "template"
+    assert files["agentloop"]["owner"] == "template"
     assert files[adopt.AGENTLOOP_RULES_PATH]["owner"] == "template"
     assert files[".agentloop/config.yaml"]["owner"] == "seeded"
     assert files["docs/20-design.md"]["owner"] == "seeded"  # live docs belong to the repo once filled
