@@ -27,6 +27,30 @@ CONFIG_PATH = ".agentloop/config.yaml"
 TASKS_PATH = ".agentloop/tasks.yaml"
 
 
+# --- subprocess ---------------------------------------------------------------
+
+
+def run(cmd: list[str], cwd: str | None = None, timeout: float | None = None) -> tuple[int, str]:
+    """Run a command; (returncode, stdout+stderr). A hang past `timeout` kills it, rc 124.
+
+    124 is the coreutils convention; without the kill, a stuck `claude -p` or test run would
+    stall the autonomous loop forever with no escalation. The expiry flows through the normal
+    failure paths (retry budget / StopLoop).
+    """
+    import subprocess  # lazy: keep `import common` light for the hook path (gate_guard on every edit)
+
+    try:
+        proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        partial = "".join(
+            part if isinstance(part, str) else part.decode(errors="replace")
+            for part in (exc.stdout, exc.stderr)
+            if part
+        )
+        return 124, f"{partial}\ntimed out after {int(exc.timeout)}s (process killed)"
+    return proc.returncode, proc.stdout + proc.stderr
+
+
 # --- front-matter / YAML reading ---------------------------------------------
 
 

@@ -22,12 +22,12 @@ import argparse
 import json
 import re
 import shutil
-import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import common
 import dag
 import yaml
 
@@ -219,9 +219,8 @@ def label_specs(graph: dag.Graph, base_label: str) -> list[LabelSpec]:
 # --- gh execution ----------------------------------------------------------
 
 
-def _run(cmd: list[str]) -> tuple[int, str]:
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    return proc.returncode, proc.stdout + proc.stderr
+# common.run, aliased so the tests can fake the gh/git calls at this seam.
+_run = common.run
 
 
 def preflight(cfg: GithubConfig) -> tuple[bool, str]:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import common
@@ -19,6 +20,21 @@ gates:
 
 a stray --- in the body must not confuse the parser
 """
+
+
+# --- run: subprocess with the rc-124 timeout convention -----------------------
+
+
+def test_run_kills_hung_process_with_rc_124() -> None:
+    rc, out = common.run([sys.executable, "-c", "import time; time.sleep(30)"], cwd=".", timeout=0.2)
+    assert rc == 124  # the coreutils timeout convention; a hung process must not stall the loop
+    assert "timed out after 0s (process killed)" in out
+
+
+def test_run_no_timeout_by_default() -> None:
+    rc, out = common.run([sys.executable, "-c", "print('ok')"])
+    assert rc == 0
+    assert "ok" in out
 
 
 # --- parse_frontmatter: one parser, one split rule ---------------------------
