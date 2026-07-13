@@ -159,6 +159,15 @@ def test_main_impacted_unknown_id_errors(project: Path, capsys: pytest.CaptureFi
     assert _statuses() == {"T-001": "done", "T-002": "done", "T-003": "todo", "T-004": "todo"}
 
 
+def test_main_impacted_broken_tasks_yaml_names_the_file_and_next_step(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (project / ".agentloop" / "tasks.yaml").write_text("tasks: [broken\n", encoding="utf-8")
+    assert revise.main(["--impacted", "T-001"]) == 1  # a YAML parse error must not traceback
+    err = capsys.readouterr().err
+    assert ".agentloop/tasks.yaml" in err and "make doctor" in err  # cause + the next step
+
+
 def test_main_combines_to_and_impacted(project: Path) -> None:
     (project / ".agentloop" / "tasks.yaml").write_text(_TASKS, encoding="utf-8")
     assert revise.main(["--to", "design", "--impacted", "T-002,T-003"]) == 0

@@ -90,7 +90,9 @@ def apply_approval(text: str, gate: str, today: str, by: str = "") -> str:
     return new_text
 
 
-def record_approval(gate: str, by: str = "", *, state_path: str = STATE_PATH, events_path: str = events.EVENTS_PATH) -> str:
+def record_approval(
+    gate: str, by: str = "", *, state_path: str = STATE_PATH, events_path: str = events.EVENTS_PATH
+) -> str:
     """Apply the approval to state.md on disk and append the `gate_approved` event.
 
     Returns the date stamped on the gate line. The event is what the commit-stage gate guard
@@ -107,9 +109,15 @@ def record_approval(gate: str, by: str = "", *, state_path: str = STATE_PATH, ev
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="record a human gate approval (the only sanctioned pending→approved write)")
+    parser = argparse.ArgumentParser(
+        description="record a human gate approval (the only sanctioned pending→approved write)"
+    )
     parser.add_argument("gate", choices=GATE_ORDER, help="the gate the human approved")
-    parser.add_argument("--by", default="", help="approver name, stamped on the gate line (recommended when several humans share the repo)")
+    parser.add_argument(
+        "--by",
+        default="",
+        help="approver name, stamped on the gate line (recommended when several humans share the repo)",
+    )
     args = parser.parse_args(argv)
     try:
         today = record_approval(args.gate, args.by)

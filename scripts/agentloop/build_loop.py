@@ -1166,7 +1166,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         config = Config.load()
     except (OSError, yaml.YAMLError, ValueError) as exc:
-        print(f"config load error: {exc}", file=sys.stderr)
+        print(
+            f"cannot load .agentloop/config.yaml: {exc} — fix it (`make doctor` validates it against the schema)",
+            file=sys.stderr,
+        )
         return 1
     return Orchestrator(config, dry_run=args.dry_run).run()
 

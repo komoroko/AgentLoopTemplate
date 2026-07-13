@@ -108,6 +108,13 @@ def test_dry_run_blocks_when_tasks_not_approved(project: Path) -> None:
     assert build_loop.main(["--dry-run"]) == 2
 
 
+def test_main_broken_config_names_the_file_and_next_step(project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    (project / ".agentloop" / "config.yaml").write_text("build: [broken", encoding="utf-8")
+    assert build_loop.main(["--dry-run"]) == 1
+    err = capsys.readouterr().err
+    assert ".agentloop/config.yaml" in err and "make doctor" in err  # cause + the next step
+
+
 def _snapshot(project: Path) -> dict[str, bytes | None]:
     """Byte-level snapshot of every SSOT/log file a run could touch (None = absent)."""
     out: dict[str, bytes | None] = {}

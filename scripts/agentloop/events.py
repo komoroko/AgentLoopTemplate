@@ -288,7 +288,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.add, task=args.task, step=args.step, detail=args.detail, commit=args.commit, path=args.path
             )
         except ValueError as exc:
-            print(f"error: {exc}", file=sys.stderr)
+            print(f"error: {exc} — valid events: {', '.join(EVENT_ORDER)}", file=sys.stderr)
             return 2
         print(f"added #{entry.id} {entry.event}" + (f" ({entry.task})" if entry.task else ""))
         refresh_state_view(args.path, args.state)
@@ -298,7 +298,11 @@ def main(argv: list[str] | None = None) -> int:
         events = load_events(args.path)
         target = next((e for e in events if e.id == args.resolve), None)
         if target is None or target.event not in ESCALATION_EVENTS:
-            print(f"error: no escalation event with id {args.resolve}", file=sys.stderr)
+            print(
+                f"error: no escalation event with id {args.resolve} — list the open ones with"
+                " `make events ARGS=--render`",
+                file=sys.stderr,
+            )
             return 2
         if target.id not in {e.id for e in open_escalations(events)}:
             print(f"error: escalation #{args.resolve} is already resolved", file=sys.stderr)
