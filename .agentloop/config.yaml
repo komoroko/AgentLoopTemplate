@@ -16,6 +16,9 @@ build:
   #   claude:  ["claude", "-p"]
   #   codex:   ["codex", "exec"]
   #   gemini:  ["gemini", "-p"]
+  # (Deliberately no per-agent adapter layer — YAGNI: every known CLI takes the prompt as the
+  #  last argument. If one ever cannot, extend _parse_headless in build_loop.py, e.g. with a
+  #  "{prompt}" placeholder, at that point.)
   headless:
     cmd: ["claude", "-p"]
 
