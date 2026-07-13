@@ -350,12 +350,32 @@ def collect_status(root: str | Path = ".") -> dict[str, object]:
     }
 
 
+def render_next(next_obj: dict[str, object]) -> str:
+    """The recommendation as 2–3 human lines (`./agentloop next`): command, why, and the also row if any."""
+    lines = [f"next: {next_obj.get('command', '')}", f"  why: {next_obj.get('reason', '')}"]
+    also = next_obj.get("also") or ()
+    if isinstance(also, (list, tuple)) and also:
+        lines.append(f"  also: {', '.join(str(a) for a in also)}")
+    return "\n".join(lines)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="aggregate the SSOT into one JSON status object")
     parser.add_argument("--root", default=".", help="repository root holding .agentloop/ (default: cwd)")
     parser.add_argument("--json", action="store_true", help="compact one-line JSON (default: indented)")
+    parser.add_argument(
+        "--next",
+        action="store_true",
+        dest="next_only",
+        help="print only the next recommended command (with --json: the recommendation object alone)",
+    )
     args = parser.parse_args(argv)
     status = collect_status(args.root)
+    if args.next_only:
+        next_obj = status["next"]
+        assert isinstance(next_obj, dict)  # asdict(Recommendation) — always a dict
+        print(json.dumps(next_obj, ensure_ascii=False) if args.json else render_next(next_obj))
+        return 0
     print(json.dumps(status, ensure_ascii=False) if args.json else json.dumps(status, ensure_ascii=False, indent=2))
     return 0
 

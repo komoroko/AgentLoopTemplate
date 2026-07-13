@@ -204,6 +204,31 @@ def test_main_prints_json(repo: Path, capsys: pytest.CaptureFixture[str]) -> Non
     assert parsed["next"]["command"] == "/build"
 
 
+# --- --next: the recommendation alone (`./agentloop next`) ----------------------
+
+
+def test_main_next_prints_command_why_and_also(repo: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert status_api.main(["--root", str(repo), "--next"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0] == "next: /build"
+    assert lines[1].startswith("  why: ")
+    assert lines[2] == "  also: make build-loop"
+
+
+def test_main_next_json_is_the_recommendation_object_only(repo: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert status_api.main(["--root", str(repo), "--next", "--json"]) == 0
+    out = capsys.readouterr().out
+    parsed = json.loads(out)
+    assert set(parsed) == {"command", "kind", "reason", "also"}
+    assert parsed["command"] == "/build" and parsed["kind"] == "run_phase"
+    assert out.count("\n") == 1  # one machine-readable line
+
+
+def test_render_next_omits_empty_also() -> None:
+    rendered = status_api.render_next({"command": "/req", "reason": "start", "also": []})
+    assert rendered == "next: /req\n  why: start"
+
+
 # --- trace block (requirement → design → task coverage, reusing dag.trace) ----
 
 _REQ_DOC = "# Requirements\n### R-1: base\n### R-2: leaf\n### NFR-1: perf\n"
