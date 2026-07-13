@@ -908,8 +908,10 @@ class Orchestrator:
                 if not self.dry_run:
                     try:  # leave the board reflecting the batch's blocked/done statuses before stopping
                         update_state_view(dag.load(TASKS_PATH))
-                    except (OSError, dag.DagError, yaml.YAMLError):
-                        pass
+                    except (OSError, dag.DagError, yaml.YAMLError) as view_exc:
+                        # Cosmetic only (tasks.yaml stays the truth), but say so — a silently
+                        # stale board would misdirect the human the escalation is aimed at.
+                        print(f"[warn] could not refresh the state.md board: {view_exc}", file=sys.stderr)
                 print(str(exc), file=sys.stderr)
                 return exc.code
             # Recompute at the top of the loop after each batch (reassemble the chain).

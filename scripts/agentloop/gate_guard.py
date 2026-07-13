@@ -235,7 +235,11 @@ def main(argv: list[str] | None = None) -> int:
     try:
         payload = json.load(sys.stdin)
     except (json.JSONDecodeError, ValueError):
-        return 0  # do not intervene if it cannot be parsed
+        # Fail-open by design: some hosts fire hooks for every tool and a malformed payload must
+        # not block path-less tools — but leave a trace, so a guard that stopped guarding is
+        # visible in the hook log instead of silently absent.
+        print("gate_guard: unparseable hook payload on stdin — allowing without a gate check", file=sys.stderr)
+        return 0
     tool_input = payload.get("tool_input") or {}
     # Claude Code sends snake_case, VS Code Copilot camelCase — accept both.
     file_path = tool_input.get("file_path") or tool_input.get("filePath")
