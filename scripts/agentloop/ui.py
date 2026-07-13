@@ -32,6 +32,7 @@ from datetime import date
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import common
 import revise
 import status_api
 import yaml
@@ -53,28 +54,29 @@ class UiActionError(Exception):
 def approve_gate_text(text: str, gate: str, today: str) -> str:
     """Record a human gate approval in the state.md text (pure function).
 
-    Rewrites only the gate's own front-matter line (`<gate>: pending …` → `approved   # <date> (via ui)`),
-    the same surgical style as revise.py. Enforces the gate-chain invariant server-side: approving a gate
-    whose upstream is still pending is refused, mirroring AGENTS.md gate rule 2's ordering.
+    Rewrites only the gate's own front-matter line (`<gate>: pending …` → `approved   # <date> (via ui)`)
+    via the same surgical primitive revise.py uses (common.rewrite_gate_line). Enforces the gate-chain
+    invariant server-side: approving a gate whose upstream is still pending is refused, mirroring
+    AGENTS.md gate rule 2's ordering.
     """
-    if gate not in status_api.GATE_ORDER:
-        raise UiActionError(400, f"unknown gate '{gate}' (one of {', '.join(status_api.GATE_ORDER)})")
-    parts = text.split("---", 2)
-    if not text.startswith("---") or len(parts) < 3:
+    if gate not in common.GATE_ORDER:
+        raise UiActionError(400, f"unknown gate '{gate}' (one of {', '.join(common.GATE_ORDER)})")
+    try:
+        front = common.parse_frontmatter(text)
+    except yaml.YAMLError as exc:
+        raise UiActionError(500, f"state.md front-matter is not valid YAML: {exc}") from None
+    if front is None:
         raise UiActionError(500, "state.md has no YAML front-matter")
-    loaded = yaml.safe_load(parts[1]) or {}
-    raw_gates = loaded.get("gates") if isinstance(loaded, dict) else None
-    gates = {str(k): str(v) for k, v in raw_gates.items()} if isinstance(raw_gates, dict) else {}
+    gates = common.gates_of(front) or {}
     if gates.get(gate) == "approved":
         raise UiActionError(409, f"gate '{gate}' is already approved")
-    for upstream in status_api.GATE_ORDER[: status_api.GATE_ORDER.index(gate)]:
-        if gates.get(upstream) != "approved":
-            raise UiActionError(409, f"cannot approve '{gate}': upstream gate '{upstream}' is still pending")
-    pattern = re.compile(rf"^(\s*{re.escape(gate)}:\s*)pending\b.*$", re.MULTILINE)
-    new_front, n = pattern.subn(rf"\g<1>approved   # {today} (via ui)", parts[1], count=1)
+    upstream = common.pending_upstream(gates, gate)
+    if upstream is not None:
+        raise UiActionError(409, f"cannot approve '{gate}': upstream gate '{upstream}' is still pending")
+    new_text, n = common.rewrite_gate_line(text, gate, "pending", f"approved   # {today} (via ui)", keep_trailer=False)
     if n == 0:
         raise UiActionError(500, f"gate line '{gate}: pending' not found in state.md front-matter")
-    return f"---{new_front}---{parts[2]}"
+    return new_text
 
 
 def action_argv(action: str, params: dict[str, object]) -> list[str]:

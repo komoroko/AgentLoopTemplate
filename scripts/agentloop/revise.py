@@ -53,8 +53,8 @@ def cascade_gates(target_phase: str) -> list[str]:
 
 def _set_gate_pending(text: str, gate: str) -> str:
     """Set just the value of the front-matter "  <gate>: approved   # comment" to pending (preserving the comment)."""
-    pattern = re.compile(rf"^(\s*{re.escape(gate)}:\s*)approved(.*)$", re.MULTILINE)
-    return pattern.sub(r"\1pending\2", text)
+    new, _ = common.rewrite_gate_line(text, gate, "approved", "pending", keep_trailer=True)
+    return new
 
 
 def _set_current_phase(text: str, value: str) -> str:

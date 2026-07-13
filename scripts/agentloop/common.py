@@ -18,6 +18,7 @@ need it) so the pyyaml-free paths — revise.py's gate rollback — keep working
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 # --- the SSOT trio (see AGENTS.md "Single Source of Truth") -----------------
@@ -100,6 +101,57 @@ def gates_of(front: dict[str, object] | None) -> dict[str, str] | None:
     if not isinstance(raw, dict):
         return None
     return {str(k): str(v) for k, v in raw.items()}
+
+
+# --- the gate-chain invariant (AGENTS.md "Roll back") -------------------------
+#
+# If an upstream gate is pending, no downstream gate may stay approved — a violated chain
+# means an approval survived a roll back. doctor reports every violation, status_api treats
+# any violation as "repair before continuing", and ui refuses to create one.
+
+
+def gate_chain_violations(gates: dict[str, str]) -> list[tuple[str, str]]:
+    """Every (approved_gate, first_pending_upstream) pair violating the chain invariant."""
+    violations: list[tuple[str, str]] = []
+    first_pending: str | None = None
+    for gate in GATE_ORDER:
+        if gates.get(gate) != "approved":
+            first_pending = first_pending or gate
+        elif first_pending is not None:
+            violations.append((gate, first_pending))
+    return violations
+
+
+def pending_upstream(gates: dict[str, str], gate: str) -> str | None:
+    """The first not-approved gate upstream of `gate` — approving `gate` now would break the chain."""
+    for upstream in GATE_ORDER[: GATE_ORDER.index(gate)]:
+        if gates.get(upstream) != "approved":
+            return upstream
+    return None
+
+
+def rewrite_gate_line(text: str, gate: str, old: str, new: str, *, keep_trailer: bool) -> tuple[str, int]:
+    """Surgically rewrite the front-matter line `<gate>: <old> …` to `<gate>: <new>`.
+
+    The rest of the document survives byte-for-byte (regex line surgery, never a YAML
+    round-trip — state.md's comments and layout must be preserved), and only the front-matter
+    fence is touched, so a matching line in the body cannot be rewritten by accident.
+    keep_trailer keeps the trailing text (roll-back preserves the human's approval note);
+    otherwise the trailer is replaced wholesale (approval stamps its own date comment).
+    Returns (new_text, substitutions); 0 substitutions = no matching line.
+    """
+    if not text.startswith("---"):
+        return text, 0
+    parts = text.split("---", 2)
+    if len(parts) < 3:
+        return text, 0
+    pattern = re.compile(rf"^(\s*{re.escape(gate)}:\s*){re.escape(old)}\b(.*)$", re.MULTILINE)
+
+    def _sub(m: re.Match[str]) -> str:
+        return m.group(1) + new + (m.group(2) if keep_trailer else "")
+
+    new_front, n = pattern.subn(_sub, parts[1], count=1)
+    return f"---{new_front}---{parts[2]}", n
 
 
 def read_yaml(path: str) -> dict[str, object] | None:

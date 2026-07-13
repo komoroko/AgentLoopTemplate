@@ -89,6 +89,55 @@ def test_gates_of_absent_is_none(front: dict[str, object] | None) -> None:
     assert common.gates_of(front) is None
 
 
+# --- gate-chain invariant ------------------------------------------------------
+
+
+def test_gate_chain_violations_reports_each_approved_over_pending() -> None:
+    gates = {"requirements": "pending", "design": "approved", "tasks": "pending", "build": "approved"}
+    assert common.gate_chain_violations(gates) == [("design", "requirements"), ("build", "requirements")]
+
+
+def test_gate_chain_ok_for_a_proper_prefix() -> None:
+    assert common.gate_chain_violations({"requirements": "approved", "design": "approved"}) == []
+    assert common.gate_chain_violations({}) == []
+
+
+def test_pending_upstream_names_the_first_blocker() -> None:
+    assert common.pending_upstream({}, "tasks") == "requirements"
+    assert common.pending_upstream({"requirements": "approved"}, "design") is None
+    assert common.pending_upstream({"requirements": "approved"}, "tasks") == "design"
+
+
+# --- rewrite_gate_line: surgical front-matter line rewrite ----------------------
+
+
+def test_rewrite_gate_line_keep_trailer_preserves_the_comment() -> None:
+    out, n = common.rewrite_gate_line(_STATE, "design", "approved", "pending", keep_trailer=True)
+    assert n == 1
+    assert "design: pending   # 2026-07-01 alice" in out
+    assert out.replace("design: pending ", "design: approved ") == _STATE  # everything else intact
+
+
+def test_rewrite_gate_line_replace_trailer_stamps_the_new_value() -> None:
+    out, n = common.rewrite_gate_line(_STATE, "requirements", "pending", "approved   # 2026-07-12", keep_trailer=False)
+    assert n == 1
+    assert "requirements: approved   # 2026-07-12" in out
+
+
+def test_rewrite_gate_line_only_touches_the_front_matter() -> None:
+    text = "---\ngates:\n  design: approved\n---\nbody says\n  design: approved\n"
+    out, n = common.rewrite_gate_line(text, "design", "approved", "pending", keep_trailer=True)
+    assert n == 1
+    assert out.endswith("body says\n  design: approved\n")  # the body line survived
+
+
+def test_rewrite_gate_line_no_match_is_zero() -> None:
+    assert common.rewrite_gate_line("no front matter", "design", "approved", "pending", keep_trailer=True) == (
+        "no front matter",
+        0,
+    )
+
+
 # --- read_yaml: tolerant mapping reads ----------------------------------------
 
 

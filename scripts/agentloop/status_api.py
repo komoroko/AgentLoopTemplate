@@ -60,14 +60,7 @@ def _is_placeholder(value: object) -> bool:
 
 def _gate_chain_broken(gates: dict[str, str]) -> bool:
     """True when a downstream gate is approved while an upstream one is pending (the invariant /revise keeps)."""
-    seen_pending = False
-    for gate in GATE_ORDER:
-        status = gates.get(gate, "pending")
-        if status != "approved":
-            seen_pending = True
-        elif seen_pending:
-            return True
-    return False
+    return bool(common.gate_chain_violations(gates))
 
 
 def next_action(
