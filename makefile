@@ -37,8 +37,9 @@ pre-commit:
 pre-push:
 	uv run pre-commit run --all-files --hook-stage pre-push
 
-# Implementation quality gate: run all commit + pre-push hooks (lint / format / type-check) together
-check: pre-commit pre-push
+# Implementation quality gate: all commit + pre-push hooks (lint / format / type-check), plus the
+# template drift canaries (template-lint auto-skips in a product repo). CI runs this same target.
+check: pre-commit pre-push template-lint
 
 # Run pytest. Exit code 5 = "no tests collected" is tolerated so a freshly
 # copied template (empty backend/) passes; the same tolerance is used in CI.

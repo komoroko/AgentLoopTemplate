@@ -31,9 +31,10 @@ jobs:
           path: ~/.cache/pre-commit
           key: pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}
 
-      # `make check` == pre-commit (commit stage) + pre-push stage — the full gate.
+      # `make check` == pre-commit (commit stage) + pre-push stage + template-lint (the drift
+      # canaries across the hand-maintained template files) — the full gate.
       # Frontend hooks (eslint/prettier/tsc) are file-scoped to frontend/ and skip when absent.
-      - name: Run pre-commit
+      - name: Run pre-commit and template-lint
         run: make check
 
   test:

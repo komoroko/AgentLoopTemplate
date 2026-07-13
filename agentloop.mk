@@ -10,7 +10,7 @@
 
 AGENTLOOP_PY := uv run --no-project --with pyyaml python
 
-.PHONY: init adopt agentloop-upgrade agentloop-uninstall cycle-close build-loop issue-sync revise events doctor pr-draft test-tools ui
+.PHONY: init adopt agentloop-upgrade agentloop-uninstall cycle-close build-loop issue-sync revise events doctor pr-draft template-lint test-tools ui
 
 # Turn the copied template into a product (idempotent): fills the pyproject / state.md placeholders,
 # snapshots the pristine docs scaffolds, records the adopt-manifest (FROM = the template's git URL,
@@ -108,6 +108,13 @@ pr-draft:
 #   make ui ARGS=--read-only   # disable the action endpoints (view only)
 ui:
 	$(AGENTLOOP_PY) scripts/agentloop/ui.py $(if $(PORT),--port $(PORT)) $(ARGS)
+
+# Drift canaries across the hand-maintained template files: wrapper parity, capability-mapping
+# set-equality, machine-read vocabulary echoes, README EN↔JA structure, VERSION↔CHANGELOG.
+# Part of `make check`; exits 0 in a product repo (gates.template_mode false) — the canaries
+# guard the template itself, not products built from it.
+template-lint:
+	$(AGENTLOOP_PY) scripts/agentloop/template_lint.py
 
 # Self-tests for the template's foundational tools (scripts/agentloop/). Unit tests of the
 # deterministic orchestrator, DAG, gate hook, and the init/adopt/cycle helpers.
