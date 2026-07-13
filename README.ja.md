@@ -251,7 +251,7 @@ make adopt TARGET=../myrepo NAME=myrepo TEST_CMD="npm test" CHECK_CMD="npm run l
 |------|------|
 | `.agentloop/state.md` | フェーズ・ゲート・ログの SSOT |
 | `.agentloop/tasks.yaml` | タスクグラフ(DAG)の機械可読 SSOT |
-| `.agentloop/events.ndjson` | オーケストレーション・イベント — エスカレーションログの機械可読の真実（`make events`） |
+| `.agentloop/events.ndjson` | オーケストレーション・イベント — エスカレーションログの機械可読の真実（`make events`。最初のイベント時に生成） |
 | `.agentloop/config.yaml` | 確定実行のノブ源と DoD の唯一の定義（`quality_gate.steps`） |
 | `.agentloop/schema/` | `config.yaml`／`tasks.yaml` の JSON Schema（エディタ検証・`make doctor`） |
 | `.agentloop/prompts/` | 全エージェントが読む共有のフェーズ手順・ロール定義 |
