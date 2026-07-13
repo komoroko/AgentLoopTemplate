@@ -153,20 +153,33 @@ def test_get_page_is_offline_self_contained(server: ui.DashboardServer) -> None:
     status, data = _request(server, "GET", "/")
     page = data.decode("utf-8")
     assert status == 200 and "AgentLoop" in page
-    assert "http://" not in page and "https://" not in page  # no external fetches (offline canary)
-    assert "src=" not in page and "//cdn" not in page  # no external scripts/assets either
     assert server.token in page  # the POST token is delivered only via the page
-    # the redesigned sections and their client renderers are all present
-    for marker in (
-        'id="stepper"',
-        'id="trace"',
-        'id="logs"',
-        'id="toasts"',
-        "buildDag",
-        "showTaskDetail",
-        "data-theme",
-    ):
+    # Offline canary across the page AND its same-origin assets: no external reference anywhere.
+    css = _request(server, "GET", "/assets/app.css")[1].decode("utf-8")
+    js = _request(server, "GET", "/assets/app.js")[1].decode("utf-8")
+    for name, text in (("index.html", page), ("app.css", css), ("app.js", js)):
+        assert "http://" not in text and "https://" not in text, name
+        assert "//cdn" not in text and "@import" not in text, name
+    # the page pulls only the two shipped assets, nothing else
+    assert re.findall(r'(?:src|href)="([^"]+)"', page) == ["/assets/app.css", "/assets/app.js"]
+    # the sections live in the page; their renderers and the theme machinery in the assets
+    for marker in ('id="stepper"', 'id="trace"', 'id="logs"', 'id="toasts"'):
         assert marker in page, marker
+    for marker in ("buildDag", "showTaskDetail", "data-theme"):
+        assert marker in js, marker
+    assert "data-theme" in css
+
+
+def test_assets_are_served_with_their_types_and_nothing_else(server: ui.DashboardServer) -> None:
+    conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=10)
+    conn.request("GET", "/assets/app.css")
+    res = conn.getresponse()
+    assert res.status == 200 and res.getheader("Content-Type", "").startswith("text/css")
+    res.read()
+    conn.close()
+    # anything off the exact-name allowlist is a 404 (including traversal shapes)
+    for path in ("/assets/nope.js", "/assets/../ui.py", "/assets/app.js.bak"):
+        assert _request(server, "GET", path)[0] == 404, path
 
 
 def test_get_unknown_path_is_404(server: ui.DashboardServer) -> None:
@@ -210,6 +223,13 @@ def test_main_once_prints_parseable_json(repo: Path, capsys: pytest.CaptureFixtu
     assert ui.main(["--once", "--root", str(repo)]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["next"]["command"] == "/req"
+
+
+def test_main_refuses_non_loopback_bind_with_writes_enabled(repo: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert ui.main(["--host", "0.0.0.0", "--root", str(repo)]) == 2
+    assert "refusing to bind" in capsys.readouterr().err
+    # --once starts no server, so the guard does not apply to it
+    assert ui.main(["--host", "0.0.0.0", "--once", "--root", str(repo)]) == 0
 
 
 def test_open_mode_targets_vscode_over_external_browser() -> None:

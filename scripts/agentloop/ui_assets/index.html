@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AgentLoop dashboard</title>
+<link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+<header>
+  <h1>agent<b>loop</b></h1>
+  <span class="meta" id="meta">loading…</span>
+  <span class="spacer"></span>
+  <span class="meta"><span class="dot" id="dot"></span><span id="ago">—</span></span>
+  <button class="ghost" id="refreshBtn" title="Refresh now">⟳</button>
+  <button class="ghost" id="themeBtn" title="Toggle theme">◐</button>
+</header>
+<main>
+  <section class="col-full"><h2>Lifecycle</h2><div class="rail" id="stepper"></div></section>
+  <section class="next col-full"><h2>Next action</h2><div id="next"></div></section>
+  <section class="col-full"><h2>Tasks</h2><div id="tasks"></div></section>
+  <section id="traceSection" style="display:none"><h2>Traceability (requirements → tasks)</h2>
+    <div id="trace"></div></section>
+  <section><h2>Needs attention</h2><div id="attention"></div></section>
+  <section id="logsSection" style="display:none"><h2>Logs</h2><div id="logs"></div></section>
+  <section class="col-full"><h2>Operations</h2><div id="ops"></div>
+    <pre class="out" id="out" style="display:none"></pre></section>
+</main>
+<div id="toasts"></div>
+<script>const TOKEN = "__TOKEN__"; const READ_ONLY = __READ_ONLY__;</script>
+<script src="/assets/app.js"></script>
+</body>
+</html>
