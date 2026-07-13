@@ -25,7 +25,23 @@ updated_at: "<YYYY-MM-DD>"
 # board
 """
 
-_CONFIG = "gates:\n  enforce_hook: true\n  template_mode: true\n"
+_CONFIG = """build:
+  headless:
+    cmd: ["claude", "-p"]
+gates:
+  enforce_hook: true
+  template_mode: true
+"""
+
+_BRIEF = """# Product Brief
+
+## What do you want to build? (1-3 lines)
+<!-- e.g. A CLI tool. -->
+
+
+## For whom / what problem to solve
+-
+"""
 
 
 def test_replace_pyproject_name_touches_only_the_name() -> None:
@@ -62,7 +78,7 @@ def project(tmp_path: Path) -> Iterator[Path]:
     (tmp_path / ".agentloop" / "config.yaml").write_text(_CONFIG, encoding="utf-8")
     # A slice of the copied template around the .agentloop core (greenfield = the whole repo).
     (tmp_path / "docs").mkdir()
-    (tmp_path / "docs" / "00-product-brief.md").write_text("# Brief\n", encoding="utf-8")
+    (tmp_path / "docs" / "00-product-brief.md").write_text(_BRIEF, encoding="utf-8")
     (tmp_path / "docs" / "10-requirements.md").write_text("# Requirements scaffold\n", encoding="utf-8")
     (tmp_path / "scripts" / "agentloop").mkdir(parents=True)
     (tmp_path / "scripts" / "agentloop" / "dag.py").write_text("# tool\n", encoding="utf-8")
@@ -155,3 +171,77 @@ def test_init_never_overwrites_a_recorded_source(project: Path) -> None:
     assert init.main(["--name", "demo", "--source", "first"]) == 0
     assert init.main(["--name", "demo", "--source", "second"]) == 0
     assert _manifest(project)["template"]["source"] == "first"
+
+
+# --- fill_brief: the wizard's brief insertion (pure) ------------------------------
+
+
+def test_fill_brief_inserts_after_the_example_comment() -> None:
+    out = init.fill_brief(_BRIEF, "A CLI task tool.\nLocal-first.")
+    lines = out.splitlines()
+    at = lines.index("<!-- e.g. A CLI tool. -->")
+    assert lines[at + 1 : at + 3] == ["A CLI task tool.", "Local-first."]
+    assert "## For whom / what problem to solve" in out  # the rest survives
+
+
+def test_fill_brief_never_overwrites_existing_content() -> None:
+    filled = init.fill_brief(_BRIEF, "first answer")
+    assert init.fill_brief(filled, "second answer") == filled
+
+
+def test_fill_brief_tolerates_a_missing_heading() -> None:
+    assert init.fill_brief("# Custom Brief\nno sections\n", "x") == "# Custom Brief\nno sections\n"
+
+
+# --- wizard: interactive first-run setup (`./agentloop start`) --------------------
+
+
+def _feed(monkeypatch: pytest.MonkeyPatch, answers: list[str]) -> None:
+    feed = iter(answers)
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(feed))
+
+
+def test_wizard_full_answers(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # name, branch(default), source, agent CLI choice = codex, two brief lines, blank to finish
+    _feed(monkeypatch, ["demo", "", "https://github.com/you/tpl.git", "2", "A CLI task tool.", ""])
+    assert init.wizard() == 0
+    state = (project / ".agentloop" / "state.md").read_text(encoding="utf-8")
+    assert 'project: "demo"' in state and 'branch: "build/demo"' in state
+    config = (project / ".agentloop" / "config.yaml").read_text(encoding="utf-8")
+    assert 'cmd: ["codex", "exec"]' in config and "template_mode: false" in config
+    assert "A CLI task tool." in (project / "docs" / "00-product-brief.md").read_text(encoding="utf-8")
+    assert _manifest(project)["template"]["source"] == "https://github.com/you/tpl.git"
+    # The scaffold snapshot stays pristine — the brief answer lands only in the live doc.
+    snapshot = project / ".agentloop" / "scaffold" / "docs" / "00-product-brief.md"
+    assert "A CLI task tool." not in snapshot.read_text(encoding="utf-8")
+
+
+def test_wizard_all_defaults(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # name, then Enter through branch / source / agent CLI (claude) / brief (skip)
+    _feed(monkeypatch, ["demo", "", "", "", ""])
+    assert init.wizard() == 0
+    state = (project / ".agentloop" / "state.md").read_text(encoding="utf-8")
+    assert 'project: "demo"' in state
+    config = (project / ".agentloop" / "config.yaml").read_text(encoding="utf-8")
+    assert 'cmd: ["claude", "-p"]' in config  # default preset — untouched
+    brief = (project / "docs" / "00-product-brief.md").read_text(encoding="utf-8")
+    assert brief == _BRIEF  # skipped — scaffold untouched
+
+
+def test_wizard_reasks_until_a_name_is_given(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _feed(monkeypatch, ["", "", "demo", "", "", "", ""])
+    assert init.wizard() == 0
+    assert 'project: "demo"' in (project / ".agentloop" / "state.md").read_text(encoding="utf-8")
+
+
+def test_wizard_ctrl_c_writes_nothing(
+    project: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def interrupt(_prompt: str = "") -> str:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("builtins.input", interrupt)
+    assert init.wizard() == 130
+    assert "nothing was written" in capsys.readouterr().err
+    state = (project / ".agentloop" / "state.md").read_text(encoding="utf-8")
+    assert 'project: "<enter the product name>"' in state  # untouched
