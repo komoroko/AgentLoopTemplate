@@ -6,6 +6,8 @@
 # parallelism, retry, worktree, and gate enforcement is all decided here. Because code (not a
 # natural-language prompt) reads it, changing this deterministically changes the execution control flow.
 
+schema_version: 1
+
 build:
   # How many independent leaf tasks within the frontier to launch concurrently (the worktree-isolation cap).
   max_parallel: 3

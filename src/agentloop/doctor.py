@@ -29,7 +29,7 @@ from pathlib import Path
 
 import yaml
 
-from agentloop import build_loop, common, dag, events, revise
+from agentloop import adopt, build_loop, common, dag, events, lock, revise
 from agentloop import repo as repo_mod
 
 SETTINGS_PATH = ".claude/settings.json"
@@ -466,17 +466,40 @@ def check_schema(repo: repo_mod.Repo) -> list[Finding]:
     return out
 
 
+def check_lock(repo: repo_mod.Repo) -> list[Finding]:
+    """agentloop.lock health: format readable, and its writer version vs the running tool."""
+    import agentloop
+
+    try:
+        data = lock.read(repo.lock)
+    except lock.LockError as exc:
+        return [Finding("FAIL", "lock", str(exc))]
+    if data is None:
+        return [Finding("INFO", "lock", f"no {lock.LOCK_NAME} yet — `agentloop init`/`sync` writes it")]
+    findings = [Finding("PASS", "lock", f"{lock.LOCK_NAME} readable (format {data.get('version')})")]
+    warning = lock.startup_warning(repo, agentloop.__version__)
+    if warning:
+        findings.append(Finding("WARN", "lock", warning))
+    return findings
+
+
 def check_version(repo: repo_mod.Repo) -> list[Finding]:
-    """Which template version this repo runs (identity only; upgrades are a human action)."""
+    """Which harness version this repo runs (identity only; upgrades are a human action)."""
+    try:
+        data = lock.read(repo.lock)
+    except lock.LockError:
+        data = None  # already FAILed by check_lock
+    if data is not None:
+        recorded = lock.tool_version_of(data)
+        return [Finding("INFO", "version", f"agentloop.lock: written by agentloop {recorded or '(unrecorded)'}")]
     manifest = _read_yaml(str(repo.path(MANIFEST_PATH)))
     if manifest is not None:
         template = manifest.get("template") if isinstance(manifest.get("template"), dict) else {}
         version = template.get("version") if isinstance(template, dict) else None
         return [Finding("INFO", "version", f"adopt-manifest: template version {version or '(pre-0.1.0, unrecorded)'}")]
-    try:
-        version_text = repo.path("VERSION").read_text(encoding="utf-8").strip()
-    except OSError:
-        return [Finding("INFO", "version", "no adopt-manifest and no VERSION file (pre-manifest setup)")]
+    version_text = adopt.read_version(repo.root)
+    if not version_text:
+        return [Finding("INFO", "version", "no agentloop.lock, adopt-manifest, or version record (pre-lock setup)")]
     return [Finding("INFO", "version", f"template repo, VERSION {version_text}")]
 
 
@@ -501,6 +524,7 @@ def run_checks(repo: repo_mod.Repo | None = None) -> list[Finding]:
     findings += check_events(repo)
     findings += check_security_review(repo)
     findings += check_schema(repo)
+    findings += check_lock(repo)
     findings += check_version(repo)
     return findings
 

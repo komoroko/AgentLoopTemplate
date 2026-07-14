@@ -278,18 +278,18 @@ def check_data_parity(root: Path) -> list[str]:
 
 
 def check_version_changelog(version: str, changelog: str) -> list[str]:
-    """VERSION and CHANGELOG.md's newest `## [x.y.z]` heading must agree.
+    """The pyproject version and CHANGELOG.md's newest `## [x.y.z]` heading must agree.
 
     Guards the release failure where the identity files go stale *together* (bump one, forget
-    the other) — upgrade's `template version: A → B` display then lies to every downstream repo.
+    the other) — upgrade's `version: A → B` display then lies to every downstream repo.
     """
     if not version:
-        return ["VERSION is missing or empty"]
+        return ["the pyproject.toml [project] version is missing or empty"]
     m = adopt._CHANGELOG_HEADING_RE.search(changelog)
     if not m:
         return ["CHANGELOG.md has no `## [x.y.z]` version heading"]
     if m.group(1) != version:
-        return [f"VERSION says {version} but CHANGELOG.md's newest heading says {m.group(1)}"]
+        return [f"pyproject.toml says version {version} but CHANGELOG.md's newest heading says {m.group(1)}"]
     return []
 
 

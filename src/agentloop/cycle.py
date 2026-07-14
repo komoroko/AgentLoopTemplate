@@ -256,7 +256,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  archive {name} → {rel_base}/{log_src.name}")
     for path in _restore_scaffold(scaffold_dir=str(repo.path(SCAFFOLD_DIR)), docs_dir=str(repo.docs)):
         print(f"  restore {repo.rel(path) or path} (fresh scaffold)")
-    repo.tasks.write_text(build_loop.TASKS_HEADER + "tasks: []\n", encoding="utf-8")
+    repo.tasks.write_text(build_loop.TASKS_HEADER + "schema_version: 1\ntasks: []\n", encoding="utf-8")
     print(f"  reset   {build_loop.TASKS_PATH} (empty task list)")
     state = repo.state
     snapshot = repo.path(SCAFFOLD_STATE)

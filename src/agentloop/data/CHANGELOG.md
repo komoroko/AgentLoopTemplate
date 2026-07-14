@@ -1,9 +1,37 @@
 # Changelog
 
-Template releases, newest first. `agentloop-upgrade` shows the sections between the
-installed version (recorded in `.agentloop/adopt-manifest.yaml`) and the new one, so keep
-one `## [x.y.z] - YYYY-MM-DD` heading per release. Neither this file nor `VERSION` is
-copied by `make adopt` — the manifest's `template.version` is the identity record.
+Releases, newest first — one `## [x.y.z] - YYYY-MM-DD` heading per release (`agentloop
+upgrade` shows the sections between the installed version, recorded in
+`.agentloop/agentloop.lock`, and the new one). The version's single source is
+`pyproject.toml [project] version`.
+
+## [0.7.0] - 2026-07-14
+
+### Changed
+- **The harness is now an installable package, not copied files.** `scripts/agentloop/`
+  became the `agentloop` Python package (`src/agentloop/`, console script `agentloop`,
+  installed with `uv tool install git+<this repo>`); product repositories keep only their
+  state — `.agentloop/` (SSOT + lock + materialized prompts/schema) and `docs/`
+  (deliverables). Prompt bodies, JSON schemas, the rules `AGENTS.md`, the repo scaffolds,
+  and the per-agent integration surfaces ship inside the wheel (`src/agentloop/data/`).
+- **Repo-root discovery replaces the cwd assumption.** Every command resolves the
+  repository once per invocation — `--repo` flag > `AGENTLOOP_ROOT` > walking up from cwd
+  for `.agentloop/` — into resolved absolute paths (`repo.py`), so the tools behave
+  identically from any launch directory. The gate guard resolves the root from the hook
+  payload's `cwd`, fixing evaluation for hooks fired in subdirectories and worktrees.
+- **Versioning is consolidated.** The `VERSION` file is gone: `pyproject.toml` is the
+  single version source (`agentloop.__version__`). `.agentloop/agentloop.lock` records the
+  tool version/source, the SSOT `schema_version`s, and a content hash per installed file
+  (replacing `.agentloop/adopt-manifest.yaml`); the tool refuses lock formats and
+  `schema_version`s newer than it knows, and warns on tool↔lock version skew.
+
+### Added
+- `schema_version: 1` in `config.yaml`/`tasks.yaml` (validated by the bundled JSON
+  schemas; `dag.load`/`Config.load` refuse newer versions with an upgrade hint).
+- `doctor` checks for the lock (readability, format, writer-version skew).
+
+### Removed
+- `VERSION` (see above).
 
 ## [0.6.0] - 2026-07-14
 

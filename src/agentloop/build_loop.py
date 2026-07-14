@@ -161,9 +161,18 @@ class Config:
         """The deterministic commands of the gate (for prompts / display)."""
         return [s.run for s in self.steps if s.kind == "cmd" and s.run]
 
+    # The config.yaml schema version this parser understands (see data/schema/config.schema.json).
+    SCHEMA_VERSION = 1
+
     @classmethod
     def load(cls, path: str = CONFIG_PATH) -> Config:
         data = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+        declared = data.get("schema_version")
+        if isinstance(declared, int) and declared > cls.SCHEMA_VERSION:
+            raise ValueError(
+                f"config.yaml declares schema_version {declared} but this agentloop understands "
+                f"{cls.SCHEMA_VERSION} — upgrade the tool (`uv tool upgrade agentloop`)"
+            )
         build = data.get("build") or {}
         wt = build.get("worktree") or {}
         qg = build.get("quality_gate") or {}

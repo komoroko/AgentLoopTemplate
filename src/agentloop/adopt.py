@@ -206,7 +206,17 @@ def default_owner(rel: str) -> str:
 
 
 def read_version(root: Path) -> str:
-    """The template's release version (`VERSION` at its root); "" when absent (pre-0.1.0)."""
+    """The template's release version — [project] version in its pyproject.toml.
+
+    Falls back to a legacy `VERSION` file (pre-0.7.0 templates), then "" (pre-0.1.0).
+    """
+    try:
+        text = (root / "pyproject.toml").read_text(encoding="utf-8")
+    except OSError:
+        text = ""
+    m = re.search(r'^version\s*=\s*"([^"]+)"', text, re.MULTILINE)
+    if m:
+        return m.group(1)
     try:
         return (root / "VERSION").read_text(encoding="utf-8").strip()
     except OSError:

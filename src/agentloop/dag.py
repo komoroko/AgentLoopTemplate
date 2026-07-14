@@ -244,10 +244,25 @@ def _task_from_raw(raw: dict[str, object]) -> Task:
     )
 
 
+# The tasks.yaml schema version this parser understands (see data/schema/tasks.schema.json).
+SCHEMA_VERSION = 1
+
+
 def load(path: str | Path = ".agentloop/tasks.yaml") -> Graph:
-    """Load tasks.yaml and return a validated Graph."""
+    """Load tasks.yaml and return a validated Graph.
+
+    A file declaring a `schema_version` newer than this parser knows is refused — guessing at
+    unknown semantics is how a newer repo gets silently mis-parsed by an older tool. A missing
+    schema_version stays accepted (pre-versioning repos).
+    """
     text = Path(path).read_text(encoding="utf-8")
     data = yaml.safe_load(text) or {}
+    declared = data.get("schema_version")
+    if isinstance(declared, int) and declared > SCHEMA_VERSION:
+        raise DagError(
+            f"tasks.yaml declares schema_version {declared} but this agentloop understands {SCHEMA_VERSION} — "
+            "upgrade the tool (`uv tool upgrade agentloop`)"
+        )
     raw_tasks = data.get("tasks") or []
     if not isinstance(raw_tasks, list):
         raise DagError("'tasks' in tasks.yaml must be a list")
