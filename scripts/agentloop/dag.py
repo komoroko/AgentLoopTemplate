@@ -674,7 +674,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         graph = load(args.path)
     except (OSError, DagError, yaml.YAMLError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        print(f"error: cannot load {args.path}: {exc} — fix it (or run `make doctor` to diagnose)", file=sys.stderr)
         # With --trace, represent "cannot check" with 2 (tasks.yaml unreadable = trace not established).
         return 2 if args.trace else 1
 

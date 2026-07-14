@@ -1,4 +1,7 @@
-"""Verify ui.py: gate-approval rewrite, the action whitelist, and the HTTP surface (deterministic, offline)."""
+"""Verify ui.py: the action whitelist and the HTTP surface (deterministic, offline).
+
+The gate-approval rewrite itself lives in approve.py (the single sanctioned write path) and is
+unit-tested in test_approve.py; here only the endpoint's delegation behavior is asserted."""
 
 from __future__ import annotations
 
@@ -34,41 +37,6 @@ _CONFIG = """gates:
 github:
   enabled: false
 """
-
-
-# --- approve_gate_text: surgical front-matter rewrite --------------------------
-
-
-def test_approve_gate_rewrites_only_the_gate_line() -> None:
-    out = ui.approve_gate_text(_STATE, "requirements", "2026-07-12")
-    assert re.search(r"requirements: approved\s+# 2026-07-12 \(via ui\)", out)
-    assert re.search(r"design: pending\s+# c2", out)  # downstream untouched
-    assert "Body example that must never be rewritten: `tasks: pending`." in out  # body untouched
-
-
-def test_approve_gate_enforces_chain_order() -> None:
-    with pytest.raises(ui.UiActionError) as exc:
-        ui.approve_gate_text(_STATE, "design", "2026-07-12")  # requirements still pending
-    assert exc.value.status == 409
-    approved = ui.approve_gate_text(_STATE, "requirements", "2026-07-12")
-    out = ui.approve_gate_text(approved, "design", "2026-07-12")  # now legal
-    assert re.search(r"design: approved\s+# 2026-07-12 \(via ui\)", out)
-
-
-def test_approve_gate_rejects_already_approved_and_unknown() -> None:
-    approved = ui.approve_gate_text(_STATE, "requirements", "2026-07-12")
-    with pytest.raises(ui.UiActionError) as exc:
-        ui.approve_gate_text(approved, "requirements", "2026-07-12")
-    assert exc.value.status == 409
-    with pytest.raises(ui.UiActionError) as exc2:
-        ui.approve_gate_text(_STATE, "verify", "2026-07-12")
-    assert exc2.value.status == 400
-
-
-def test_approve_gate_requires_frontmatter() -> None:
-    with pytest.raises(ui.UiActionError) as exc:
-        ui.approve_gate_text("# no front-matter here", "requirements", "2026-07-12")
-    assert exc.value.status == 500
 
 
 # --- action_argv: the fixed whitelist ------------------------------------------
@@ -202,6 +170,10 @@ def test_post_gate_approve_updates_state(server: ui.DashboardServer, repo: Path)
     state = (repo / ".agentloop" / "state.md").read_text(encoding="utf-8")
     assert re.search(r"requirements: approved\s+# \d{4}-\d{2}-\d{2} \(via ui\)", state)
     assert re.search(r"design: pending\s+# c2", state)
+    # The delegation to approve.py carries its full behavior: phase advance + the event record.
+    assert "current_phase: design" in state
+    events = (repo / ".agentloop" / "events.ndjson").read_text(encoding="utf-8")
+    assert '"event": "gate_approved"' in events and '"gate": "requirements"' in events
     # The chain check answers 409 through HTTP too (tasks needs design first).
     status2, _ = _request(server, "POST", "/api/gate/approve", {"gate": "tasks"}, token=server.token)
     assert status2 == 409

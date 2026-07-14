@@ -37,7 +37,7 @@ import shlex
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -664,13 +664,48 @@ class Orchestrator:
         branch = self._branch_for(task)
         path = self._worktree_path(task)
         if not self.dry_run:
-            # Clean up any worktree/branch left from a previous interruption (ignore if absent). Without this,
-            # `git worktree add -b` would fail on a path/branch collision on re-run.
-            _run(["git", "worktree", "remove", "--force", path], cwd=".")
-            _run(["git", "branch", "-D", branch], cwd=".")
-            _run(["git", "worktree", "prune"], cwd=".")
+            self._salvage_leftovers(task, branch, path)
         self._git(["worktree", "add", "-b", branch, path, self.branch])
         return branch
+
+    def _salvage_name(self, branch: str) -> str:
+        """A free salvage-branch name: `<branch>-salvage-<UTC stamp>`, suffixed on collision."""
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        candidate = f"{branch}-salvage-{stamp}"
+        n = 1
+        while _run(["git", "rev-parse", "--verify", "--quiet", candidate], cwd=".")[0] == 0:
+            n += 1
+            candidate = f"{branch}-salvage-{stamp}-{n}"
+        return candidate
+
+    def _salvage_leftovers(self, task: dag.Task, branch: str, path: str) -> None:
+        """Preserve, then clear, a previous run's leftover worktree/branch so `worktree add -b` can re-run.
+
+        The clean-up used to be unconditional (`worktree remove --force` + `branch -D`), which
+        destroyed a crashed run's committed work — and the branch _cleanup_worktree deliberately
+        keeps for human inspection — the moment the loop was re-invoked. Nothing unmerged may be
+        the only copy: an uncommitted diff is finalized onto the leaf branch first (same principle
+        as _finalize_commit's), and a branch holding commits the work branch does not have is
+        renamed to a salvage name instead of deleted (recorded as a branch_salvaged event). A
+        fully-merged branch is deleted as before — its content is already in the work branch.
+        """
+        if Path(path).is_dir() and not self._finalize_commit(path, f"{task.id}: WIP (salvaged at restart)"):
+            # The tree may hold the only copy of the previous run's diff — stop rather than destroy it
+            # (the finalize failure is already escalated with the repair pointer).
+            raise StopLoop(f"{task.id}: could not preserve the leftover worktree {path}; kept for manual recovery")
+        _run(["git", "worktree", "remove", "--force", path], cwd=".")
+        if _run(["git", "rev-parse", "--verify", "--quiet", branch], cwd=".")[0] == 0:
+            rc, out = _run(["git", "rev-list", "-n", "1", branch, "--not", self.branch], cwd=".")
+            if rc != 0 or out.strip():  # unmerged commits — or unable to prove there are none
+                salvage = self._salvage_name(branch)
+                self._git(["branch", "-m", branch, salvage])
+                events.append_event(
+                    "branch_salvaged", task=task.id, detail=f"{branch} → {salvage} (unmerged work preserved at restart)"
+                )
+                print(f"  [salvage] {task.id}: {branch} held unmerged work — renamed to {salvage}")
+            else:
+                _run(["git", "branch", "-D", branch], cwd=".")
+        _run(["git", "worktree", "prune"], cwd=".")
 
     def _safe_run_task(self, task: dag.Task, cwd: str) -> tuple[bool, str]:
         """Call _run_task_to_done safely from a thread. Convert exceptions to (False, log).
@@ -1131,7 +1166,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         config = Config.load()
     except (OSError, yaml.YAMLError, ValueError) as exc:
-        print(f"config load error: {exc}", file=sys.stderr)
+        print(
+            f"cannot load .agentloop/config.yaml: {exc} — fix it (`make doctor` validates it against the schema)",
+            file=sys.stderr,
+        )
         return 1
     return Orchestrator(config, dry_run=args.dry_run).run()
 

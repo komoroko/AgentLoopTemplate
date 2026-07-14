@@ -405,12 +405,14 @@ def test_trace_cli_require_design_exit2_when_design_missing(tmp_path: Path) -> N
     assert rc == 2
 
 
-def test_trace_cli_exit2_when_tasks_yaml_missing(tmp_path: Path) -> None:
+def test_trace_cli_exit2_when_tasks_yaml_missing(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     # tasks.yaml unreadable = trace not established = exit 2 (distinct from render's generic 1).
     reqs = tmp_path / "req.md"
     reqs.write_text("### R-1: a\n", encoding="utf-8")
     rc = dag.main([str(tmp_path / "none.yaml"), "--trace", "--requirements", str(reqs)])
     assert rc == 2
+    err = capsys.readouterr().err
+    assert "none.yaml" in err and "make doctor" in err  # cause + the next step
 
 
 # ---- NFR dimension (non-functional requirements trace with softer rules) ----

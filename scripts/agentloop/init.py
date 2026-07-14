@@ -20,6 +20,8 @@ Re-running with the same arguments is a no-op. build_loop.py refuses to start wh
 state.md placeholders are still present, pointing here.
 
 Usage:
+  ./agentloop start      # the same sequence as an interactive wizard (plus the headless-CLI
+                         # and product-brief questions) on a fresh copy
   make init NAME=myproduct [BRANCH=build/myproduct] [FROM=<template-url-or-path>]
   uv run python scripts/agentloop/init.py --name myproduct [--branch ...] [--source ...]
 """
@@ -36,6 +38,7 @@ from pathlib import Path
 # Circular with adopt.py (which imports init for shared text surgery) — safe: neither module
 # touches the other's attributes at import time, so the partially initialized module binds fine.
 import adopt
+import agent_cli
 import common
 import cycle
 import yaml
@@ -43,6 +46,7 @@ import yaml
 PYPROJECT_PATH = "pyproject.toml"
 STATE_PATH = common.STATE_PATH
 CONFIG_PATH = common.CONFIG_PATH
+BRIEF_PATH = "docs/00-product-brief.md"
 
 
 # --- pure text surgery (under test) ------------------------------------------
@@ -61,6 +65,28 @@ def fill_state(text: str, project: str, branch: str, today: str) -> str:
 
 def disable_template_mode(text: str) -> str:
     return re.sub(r"^(\s*template_mode:\s*)true\b", r"\g<1>false", text, count=1, flags=re.MULTILINE)
+
+
+def fill_brief(text: str, summary: str) -> str:
+    """Insert the wizard's 1–3 lines under the brief's first section (pure).
+
+    A no-op when the section already holds non-comment content (never overwrite the human's
+    words) or when the heading is absent (a customized scaffold). The scaffold's example
+    comment is kept — the summary lands right after it.
+    """
+    lines = text.splitlines()
+    try:
+        start = next(i for i, ln in enumerate(lines) if ln.startswith("## What do you want to build"))
+    except StopIteration:
+        return text
+    end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("## ")), len(lines))
+    if any(ln.strip() and not ln.lstrip().startswith("<!--") for ln in lines[start + 1 : end]):
+        return text
+    insert_at = start + 1
+    if insert_at < end and lines[insert_at].lstrip().startswith("<!--"):
+        insert_at += 1
+    new_lines = lines[:insert_at] + [summary.strip()] + lines[insert_at:]
+    return "\n".join(new_lines) + ("\n" if text.endswith("\n") else "")
 
 
 # --- application --------------------------------------------------------------
@@ -153,20 +179,9 @@ def _switch_branch(branch: str) -> str:
     return f"git: could not switch to {branch} — {out.strip().splitlines()[-1] if out.strip() else 'unknown error'}"
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="initialize the copied template into a product")
-    parser.add_argument("--name", default="", help="the product name (pyproject name / state.md project)")
-    parser.add_argument("--branch", default="", help="the work branch (default: build/<name>)")
-    parser.add_argument("--source", default="", help="the template's git URL/path (recorded for agentloop-upgrade)")
-    args = parser.parse_args(argv)
-
-    name = args.name.strip()
-    if not name:
-        print("usage: make init NAME=<product> [BRANCH=build/<product>]", file=sys.stderr)
-        return 2
-    branch = args.branch.strip() or f"build/{name}"
+def run_init(name: str, branch: str, source: str) -> int:
+    """Apply the whole init sequence (fills, snapshot, manifest, branch). Shared by CLI and wizard."""
     today = datetime.date.today().isoformat()
-
     try:
         results = [
             (PYPROJECT_PATH, _apply(PYPROJECT_PATH, lambda t: replace_pyproject_name(t, name))),
@@ -174,7 +189,11 @@ def main(argv: list[str] | None = None) -> int:
             (CONFIG_PATH, _apply(CONFIG_PATH, disable_template_mode)),
         ]
     except OSError as exc:
-        print(f"init failed: {exc}", file=sys.stderr)
+        print(
+            f"init failed while filling the placeholders: {exc} — run from the repository root"
+            " and check the named file is writable",
+            file=sys.stderr,
+        )
         return 1
 
     for path, updated in results:
@@ -188,9 +207,9 @@ def main(argv: list[str] | None = None) -> int:
     # After the snapshot (its files are part of the record) and after the fills above (the
     # seeded hashes must match what is on disk).
     try:
-        print(f"  {record_manifest(Path(), args.source.strip(), today)}")
+        print(f"  {record_manifest(Path(), source, today)}")
     except (OSError, ValueError) as exc:
-        print(f"init failed: {exc}", file=sys.stderr)
+        print(f"init failed while recording the adopt-manifest: {exc} — check .agentloop/ is writable", file=sys.stderr)
         return 1
     print(f"  {_switch_branch(branch)}")
     print(
@@ -198,6 +217,95 @@ def main(argv: list[str] | None = None) -> int:
         "Next: write a few lines into docs/00-product-brief.md and start with /req."
     )
     return 0
+
+
+# --- interactive wizard (`./agentloop start` on a fresh copy) ------------------
+
+
+def _ask(prompt: str, default: str = "") -> str:
+    shown = f"{prompt} [{default}]: " if default else f"{prompt}: "
+    return input(shown).strip() or default
+
+
+def _ask_agent_cli() -> str:
+    """The headless-CLI question: a preset number, or a custom command string."""
+    presets = list(agent_cli.PRESETS)
+    print("4/5 headless agent CLI for mode A (`make build-loop`):")
+    for i, preset in enumerate(presets, 1):
+        suffix = " (default)" if i == 1 else ""
+        print(f"  {i}) {preset}{suffix}")
+    print(f"  {len(presets) + 1}) custom command")
+    choice = _ask(f"choose 1-{len(presets) + 1}", "1")
+    if choice.isdigit() and 1 <= int(choice) <= len(presets):
+        return presets[int(choice) - 1]
+    answer = ""
+    while not answer:
+        answer = input('custom command (e.g. "mytool run"): ').strip()
+    return answer
+
+
+def _ask_brief() -> str:
+    print("5/5 What do you want to build? (1-3 lines for docs/00-product-brief.md;")
+    lines: list[str] = []
+    while len(lines) < 3:
+        line = input("  empty line to finish, Enter now to skip: " if not lines else "  ").strip()
+        if not line:
+            break
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def wizard() -> int:
+    """Interactive first-run setup: ask everything first, then write (Ctrl+C mid-question loses nothing).
+
+    Runs the exact same sequence as `make init NAME=...` (run_init), then applies the two
+    extra answers: the headless agent CLI (agent_cli.set_headless_cmd) and the product-brief
+    one-liner (fill_brief — written only after run_init's pristine scaffold snapshot).
+    """
+    print("AgentLoop setup — Enter accepts the [default]; Ctrl+C aborts without writing.")
+    try:
+        name = ""
+        while not name:
+            name = input("1/5 product name: ").strip()
+        branch = _ask("2/5 work branch", f"build/{name}")
+        source = _ask("3/5 template git URL/path (reused by agentloop-upgrade; Enter to skip)")
+        cli = _ask_agent_cli()
+        summary = _ask_brief()
+    except (KeyboardInterrupt, EOFError):
+        print("\naborted — nothing was written.", file=sys.stderr)
+        return 130
+    rc = run_init(name, branch, source)
+    if rc != 0:
+        return rc
+    if agent_cli.main([cli]) != 0:
+        return 1
+    if summary:
+        brief = Path(BRIEF_PATH)
+        try:
+            brief.write_text(fill_brief(brief.read_text(encoding="utf-8"), summary), encoding="utf-8")
+            print(f"  updated: {BRIEF_PATH} (your summary — flesh it out anytime)")
+        except OSError as exc:
+            print(f"could not write {BRIEF_PATH}: {exc} — add your summary there by hand.", file=sys.stderr)
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="initialize the copied template into a product")
+    parser.add_argument("--name", default="", help="the product name (pyproject name / state.md project)")
+    parser.add_argument("--branch", default="", help="the work branch (default: build/<name>)")
+    parser.add_argument("--source", default="", help="the template's git URL/path (recorded for agentloop-upgrade)")
+    args = parser.parse_args(argv)
+
+    name = args.name.strip()
+    if not name:
+        print(
+            "usage: make init NAME=<product> [BRANCH=build/<product>] — or run the interactive"
+            " wizard with `./agentloop start`",
+            file=sys.stderr,
+        )
+        return 2
+    branch = args.branch.strip() or f"build/{name}"
+    return run_init(name, branch, args.source.strip())
 
 
 if __name__ == "__main__":

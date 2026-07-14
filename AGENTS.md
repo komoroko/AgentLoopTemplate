@@ -52,8 +52,9 @@ brief → requirements → design → tasks → build → verify → done
 | build        | `/build`  | implementation code + tests | ④ implementation review |
 | verify       | `/verify` | `docs/test/test-plan.md` execution results | ⑤ release decision |
 
-Check progress anytime with `/status`, or `make ui` for the same board in a local browser
-(next command computed in code; a fixed whitelist of safe operations, never phase execution).
+Check progress anytime with `/status`; humans also have `./agentloop next` (the next command
+only) and `make ui` / `./agentloop ui` for the same board in a local browser (next command
+computed in code; a fixed whitelist of safe operations, never phase execution).
 At `done`, `/verify` records `docs/retrospective.md` and closes open logs. An upstream defect
 rolls back via `/revise` (see "Roll back").
 
@@ -90,10 +91,14 @@ The truth is split across three files with distinct roles — do not conflate th
 
 1. **Do not work on the next phase while its prerequisite gate is unapproved.** Each command
    checks its prerequisite up front; if unapproved, stop and tell the human what is needed.
-2. **Only humans open a gate.** Go only as far as an `approval-presentation`; set the gate to
-   `approved` only after a human acknowledges it or says an explicit "approve". **Invoking the
-   next-phase command is not itself approval.** Record the date (and approver) as a YAML
-   comment on the gate line (e.g. `tasks: approved   # 2026-07-07 alice`).
+2. **Only humans open a gate.** Go only as far as an `approval-presentation`; record the
+   approval only after a human acknowledges it or says an explicit "approve". **Invoking the
+   next-phase command is not itself approval.** Recording is an **operation, not a file
+   edit**: `make approve GATE=<gate> [BY=<approver>]` (scripts/agentloop/approve.py) stamps
+   the date/approver comment on the gate line (e.g. `tasks: approved   # 2026-07-07 alice`),
+   advances `current_phase`, and logs the `gate_approved` event. Never edit a gate line to
+   `approved` yourself — the guard denies it (see below); and never pre-authorize
+   `make approve` (its permission prompt is the human's confirmation).
 3. **Do not silently fix problems in requirements/design.** On an upstream defect, set the
    affected task to `needs-revision`, record it in the escalation log, and raise it to the
    human.
@@ -103,7 +108,10 @@ The truth is split across three files with distinct roles — do not conflate th
 hook on deliverable writes), **commit-stage** (`--check-diff` in pre-commit / `make check`),
 and **merge-stage** (`build_loop.py` re-checks every path a task changed before it lands;
 violations escalate as `gate_violation`). Guarded paths: `gates.guard_paths`;
-`scripts/agentloop/**` is always allowed; unreadable gates **fail closed**. Escape hatches:
+`scripts/agentloop/**` is always allowed; unreadable gates **fail closed**. Rule 2 has its
+own mechanism layer: an edit that flips a state.md gate to `approved` is denied edit-time,
+and a commit-stage flip without a matching `gate_approved` event fails — `make approve` is
+the only sanctioned write path (not relaxed by `template_mode`). Escape hatches:
 `gates.enforce_hook: false`; `gates.template_mode: true` while the repo IS the template.
 Detail: `gate_guard.py`'s docstring and the config comments.
 
@@ -227,7 +235,8 @@ equivalent pass, recorded the same way / a **security review + `make audit`** ma
 commands cuts repeated prompts without touching the gates. Template-owned settings hold only
 **generic AgentLoop commands**; **product-specific** ones go in the product's own committed
 settings. Destructive / outward-facing actions (push, PR, merge, `make cycle-close`) stay
-human-run — never pre-authorize them.
+human-run — never pre-authorize them, and never pre-authorize `make approve` either: its
+permission prompt is the human's approval confirmation (gate rule 2).
 
 ## Directories
 

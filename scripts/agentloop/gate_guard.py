@@ -44,6 +44,16 @@ stderr and exits 1. Registered as a local pre-commit hook, it runs inside `make 
 quality gate every agent's DoD executes) and on `git commit` once hooks are installed — so an
 agent whose environment cannot intercept file edits (e.g. Codex), or an edit that bypasses the
 tool hook (e.g. a shell redirect), is still gate-checked mechanically before the change lands.
+
+Besides the deliverable-path rules, both checkpoints guard **gate approval itself** (AGENTS.md
+gate rule 2: only humans open a gate). The sanctioned pending→approved write path is
+approve.py (`make approve`), which also records a `gate_approved` event. Edit-time, a
+Write/Edit whose result flips any state.md gate to `approved` is denied outright; commit-stage,
+a flip against HEAD without a matching `gate_approved` event in `.agentloop/events.ndjson`
+fails (that is how a shell-redirect flip that never passed the tool hook is still caught).
+Unlike the path rules this check is **not** relaxed by `gates.template_mode`: the template
+repo's scaffold state.md has no legitimate approved-flip either — only `gates.enforce_hook:
+false` disables it.
 """
 
 from __future__ import annotations
@@ -53,6 +63,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path, PurePosixPath
+from typing import Any
 
 import common
 import yaml
@@ -182,6 +193,126 @@ def evaluate(file_path: str) -> tuple[bool, str]:
     )
 
 
+# --- gate-approval write protection (AGENTS.md gate rule 2, mechanism layer) --
+
+
+def _gates_or_empty(text: str) -> dict[str, str]:
+    """The gates mapping of a state.md text; {} for any unreadable/absent case.
+
+    {} is the right posture for both callers: an unreadable *current* state makes every
+    proposed `approved` count as a flip (fail closed for flips), and an unreadable *proposed*
+    state has no approved gates to open (corrupting state.md is caught by the ordinary
+    fail-closed rule the next time a guarded path is edited, not here).
+    """
+    try:
+        gates = common.gates_of(common.parse_frontmatter(text))
+    except yaml.YAMLError:
+        return {}
+    return gates or {}
+
+
+def _proposed_state_text(current_text: str, tool_input: dict[str, Any]) -> str | None:
+    """state.md's content as it would be after this Write/Edit/MultiEdit. None = unknown shape.
+
+    Write carries the whole new content; Edit carries one old/new pair (both host spellings
+    accepted); MultiEdit carries an `edits` list applied in order. The simulation mirrors the
+    tools' own semantics closely enough for a gate-value comparison — an old_string that does
+    not occur simply leaves the text unchanged (the real tool would error out anyway).
+    """
+    content = tool_input.get("content")
+    if isinstance(content, str):
+        return content
+    edits = tool_input.get("edits")
+    if not isinstance(edits, list):
+        edits = [tool_input]
+    text = current_text
+    saw_edit = False
+    for edit in edits:
+        if not isinstance(edit, dict):
+            continue
+        old = edit.get("old_string") or edit.get("oldString")
+        new = edit.get("new_string") if "new_string" in edit else edit.get("newString")
+        if not isinstance(old, str) or not old or not isinstance(new, str):
+            continue
+        saw_edit = True
+        if edit.get("replace_all") or edit.get("replaceAll"):
+            text = text.replace(old, new)
+        else:
+            text = text.replace(old, new, 1)
+    return text if saw_edit else None
+
+
+def gate_flip_denial(tool_input: dict[str, Any]) -> str:
+    """Deny reason when this edit would flip a state.md gate to approved; "" to allow.
+
+    Approval is a human operation: the only sanctioned write path is approve.py
+    (`make approve`), so any tool edit whose *result* turns a not-approved gate `approved`
+    is denied — regardless of template_mode (see the module docstring). An edit payload
+    whose shape cannot be simulated is allowed with a stderr trace; the commit-stage flip
+    check still covers whatever it wrote.
+    """
+    try:
+        current_text = Path(STATE_PATH).read_text(encoding="utf-8")
+    except OSError:
+        current_text = ""
+    proposed_text = _proposed_state_text(current_text, tool_input)
+    if proposed_text is None:
+        print(
+            "gate_guard: state.md write with an unrecognized payload shape — allowing"
+            " (the commit-stage --check-diff flip check still applies)",
+            file=sys.stderr,
+        )
+        return ""
+    current = _gates_or_empty(current_text)
+    flips = [g for g, v in _gates_or_empty(proposed_text).items() if v == "approved" and current.get(g) != "approved"]
+    if not flips:
+        return ""
+    return (
+        f"Blocked: this edit would set gates.{', gates.'.join(flips)} to approved. Opening a gate is a"
+        " human operation — ask the human to run `make approve GATE=<gate>` (scripts/agentloop/approve.py),"
+        " which stamps the approval and records the gate_approved event. Never edit a gate line directly."
+    )
+
+
+def _head_state_gates() -> dict[str, str] | None:
+    """The gates in HEAD's state.md; None when HEAD has no copy (fresh repo / untracked state.md)."""
+    try:
+        proc = subprocess.run(["git", "show", f"HEAD:{STATE_PATH}"], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return _gates_or_empty(proc.stdout) if proc.returncode == 0 else None
+
+
+def _flip_failures() -> list[str]:
+    """Commit-stage twin of gate_flip_denial: flips vs HEAD lacking a gate_approved event.
+
+    approve.py writes the state.md flip and the event in one operation, so a legitimate
+    approval always passes; a flip smuggled past the tool hook (shell redirect, sed) has no
+    event and fails here before it can land. With no committed baseline (HEAD has no
+    state.md) there is no diff to judge a flip against, so the check does not apply — the
+    edit-time hook already denies *creating* a state.md with approved gates.
+    """
+    import events  # lazy: keep the edit-time hook path free of the extra import
+
+    try:
+        worktree = _gates_or_empty(Path(STATE_PATH).read_text(encoding="utf-8"))
+    except OSError:
+        return []
+    head = _head_state_gates()
+    if head is None:
+        return []
+    flips = [g for g, v in worktree.items() if v == "approved" and head.get(g) != "approved"]
+    if not flips:
+        return []
+    recorded = {e.gate for e in events.load_events() if e.event == "gate_approved"}
+    return [
+        f"gates.{g}: flipped to approved with no gate_approved event — approvals are recorded with"
+        f" `make approve GATE={g}` (approve.py), never by editing state.md"
+        for g in flips
+        if g not in recorded
+    ]
+
+
 def _changed_paths() -> list[str] | None:
     """Every path changed vs HEAD (worktree + index + untracked), repo-relative. None = git unusable.
 
@@ -219,11 +350,17 @@ def check_diff() -> int:
         print("gate_guard --check-diff: git status unavailable; skipping.", file=sys.stderr)
         return 0
     denied = [(p, reason) for p in paths for ok, reason in [evaluate(p)] if not ok]
-    if not denied:
+    # A changed state.md is additionally checked for approved-flips (module docstring: not
+    # relaxed by template_mode — only the enforce_hook escape hatch disables it).
+    flips = _flip_failures() if STATE_PATH in paths and _enforce_enabled() else []
+    if not denied and not flips:
         return 0
-    print("gate_guard: changes to gate-guarded paths whose prerequisite gate is not approved:", file=sys.stderr)
-    for path, reason in denied:
-        print(f"  {path}: {reason}", file=sys.stderr)
+    if denied:
+        print("gate_guard: changes to gate-guarded paths whose prerequisite gate is not approved:", file=sys.stderr)
+        for path, reason in denied:
+            print(f"  {path}: {reason}", file=sys.stderr)
+    for failure in flips:
+        print(f"  {failure}", file=sys.stderr)
     return 1
 
 
@@ -246,6 +383,13 @@ def main(argv: list[str] | None = None) -> int:
     if not isinstance(file_path, str) or not file_path:
         return 0
     allowed, reason = evaluate(file_path)
+    # state.md is not a guarded deliverable, but its gate lines are write-protected: an edit
+    # that flips a gate to approved is denied even in template_mode (only enforce_hook: false
+    # bypasses — module docstring).
+    if allowed and _repo_relative(file_path) == STATE_PATH and _enforce_enabled():
+        denial = gate_flip_denial(tool_input)
+        if denial:
+            allowed, reason = False, denial
     if not allowed:
         decision = {
             "hookSpecificOutput": {

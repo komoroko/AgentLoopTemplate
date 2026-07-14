@@ -33,14 +33,12 @@ import shlex
 import subprocess
 import sys
 import webbrowser
-from datetime import date
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-import common
+import approve
 import revise
 import status_api
-import yaml
 
 ACTION_TIMEOUT_SEC = 900
 _OUTPUT_LIMIT = 8000  # tail shown per stream (failures are summarized, not dumped)
@@ -59,34 +57,6 @@ class UiActionError(Exception):
         super().__init__(message)
         self.status = status
         self.message = message
-
-
-def approve_gate_text(text: str, gate: str, today: str) -> str:
-    """Record a human gate approval in the state.md text (pure function).
-
-    Rewrites only the gate's own front-matter line (`<gate>: pending …` → `approved   # <date> (via ui)`)
-    via the same surgical primitive revise.py uses (common.rewrite_gate_line). Enforces the gate-chain
-    invariant server-side: approving a gate whose upstream is still pending is refused, mirroring
-    AGENTS.md gate rule 2's ordering.
-    """
-    if gate not in common.GATE_ORDER:
-        raise UiActionError(400, f"unknown gate '{gate}' (one of {', '.join(common.GATE_ORDER)})")
-    try:
-        front = common.parse_frontmatter(text)
-    except yaml.YAMLError as exc:
-        raise UiActionError(500, f"state.md front-matter is not valid YAML: {exc}") from None
-    if front is None:
-        raise UiActionError(500, "state.md has no YAML front-matter")
-    gates = common.gates_of(front) or {}
-    if gates.get(gate) == "approved":
-        raise UiActionError(409, f"gate '{gate}' is already approved")
-    upstream = common.pending_upstream(gates, gate)
-    if upstream is not None:
-        raise UiActionError(409, f"cannot approve '{gate}': upstream gate '{upstream}' is still pending")
-    new_text, n = common.rewrite_gate_line(text, gate, "pending", f"approved   # {today} (via ui)", keep_trailer=False)
-    if n == 0:
-        raise UiActionError(500, f"gate line '{gate}: pending' not found in state.md front-matter")
-    return new_text
 
 
 def action_argv(action: str, params: dict[str, object]) -> list[str]:
@@ -215,14 +185,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_json(exc.status, {"error": exc.message})
 
     def _approve_gate(self, body: dict[str, object]) -> None:
+        # Delegates to approve.py — the single sanctioned pending→approved write path — so the
+        # UI click stamps the gate line, advances current_phase, and records the gate_approved
+        # event exactly as `make approve` does. ApproveError already carries the HTTP status.
         gate = str(body.get("gate") or "")
-        state_path = self.server.root / ".agentloop" / "state.md"
         try:
-            text = state_path.read_text(encoding="utf-8")
-        except OSError as exc:
-            raise UiActionError(500, f"cannot read state.md: {exc}") from None
-        today = date.today().isoformat()
-        state_path.write_text(approve_gate_text(text, gate, today), encoding="utf-8")
+            today = approve.record_approval(
+                gate,
+                "(via ui)",
+                state_path=str(self.server.root / ".agentloop" / "state.md"),
+                events_path=str(self.server.root / ".agentloop" / "events.ndjson"),
+            )
+        except approve.ApproveError as exc:
+            raise UiActionError(exc.status, exc.message) from None
         self._send_json(200, {"ok": True, "gate": gate, "date": today})
 
     def _run_action(self, body: dict[str, object]) -> None:

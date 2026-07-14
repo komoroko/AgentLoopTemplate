@@ -76,6 +76,16 @@ gates from the target onward to `pending` in a chain) — also at the human's di
 | Refresh / retract the tooling | `make -f agentloop.mk agentloop-upgrade` / `agentloop-uninstall` |
 | Lost or resuming | `/status` (tells you the next command), or `make ui` for a local browser dashboard |
 
+The daily human surface is one entry point with four verbs (everything else stays behind the
+dashboard's buttons or the operational `make` targets — `./agentloop --help` lists them):
+
+```bash
+./agentloop start        # first run: interactive setup wizard; afterwards: where you are + what's next
+./agentloop next         # only the next recommended command (--json for integrations)
+./agentloop ui           # local dashboard — approve gates, run doctor/revise/cycle-close from the page
+./agentloop agent codex  # switch the headless agent CLI (claude | codex | gemini | a custom command)
+```
+
 ## Design principles
 
 This template is itself a multi-agent orchestration, built on three axes:
@@ -90,9 +100,9 @@ This template is itself a multi-agent orchestration, built on three axes:
 ## Setup (greenfield)
 
 Prerequisites: WSL / Linux / macOS and `make` (not Windows-native). Mode A (`make build-loop`)
-additionally needs a **headless agent CLI** — `claude -p` by default; swap via
-`build.headless.cmd` in `.agentloop/config.yaml` (e.g. `codex exec`, `gemini -p`). Without one,
-use interactive mode B (see "Agent support").
+additionally needs a **headless agent CLI** — `claude -p` by default; switch with
+`./agentloop agent codex` (rewrites `build.headless.cmd` in `.agentloop/config.yaml`; `gemini`
+and custom commands work too). Without one, use interactive mode B (see "Agent support").
 
 ```bash
 # 1. copy the template
@@ -104,16 +114,20 @@ make install   # uv / pnpm binaries (offline: install them manually)
 make setup     # uv sync
 # frontend only: scaffold into frontend/ (e.g. `pnpm create vite frontend`), then pnpm install
 
-# 3. initialize the product (idempotent)
-make init NAME=<product> FROM=https://github.com/you/AgentLoopTemplate.git
-# optionally BRANCH=build/<product>
+# 3. initialize the product — the interactive wizard (recommended; asks name / branch /
+#    upgrade source / headless agent CLI / a first product-brief line)
+./agentloop start
+# or non-interactively (idempotent):
+#   make init NAME=<product> FROM=https://github.com/you/AgentLoopTemplate.git
+#   (optionally BRANCH=build/<product>)
 
 # 4. sanity check
 make check && make test && make test-tools
 ```
 
-`make init` fills the placeholders, creates and switches to the work branch (implement there, not
-on main), flips `gates.template_mode` off so the gate guard goes live, and records
+`make init` (the wizard runs the same sequence) fills the placeholders, creates and switches to
+the work branch (implement there, not on main), flips `gates.template_mode` off so the gate guard
+goes live, and records
 `.agentloop/adopt-manifest.yaml` (provenance + per-file hashes) — the basis for upgrade/uninstall.
 `FROM` is remembered as the default upgrade source. Your `AGENTS.md`, `CLAUDE.md`, and
 `.claude/settings.json` are yours from day one — upgrades never rewrite them.
@@ -167,16 +181,22 @@ Then, inside the adopted repo:
    | implementation | `/build`  | autonomous loop (test-green condition) | ④ review/approve completion |
    | verification | `/verify` | run functional + non-functional tests | ⑤ decide on release |
 
-3. **Roll back** on an upstream defect: `/revise <phase>` resets gates from the target onward and
+3. **Open a gate** with the approval operation `make approve GATE=<gate> [BY=<name>]` — it stamps
+   the date/approver on the gate line, advances the phase, and logs the `gate_approved` event.
+   The agent may run it after your explicit "approve" but must never pre-authorize it (the
+   permission prompt is your confirmation); editing a gate line by hand is denied by the guard.
+4. **Roll back** on an upstream defect: `/revise <phase>` resets gates from the target onward and
    marks task impact (`make revise ARGS="--impacted T-00x"` sets seeds and their transitive
    dependents to `needs-revision`).
-4. **Check progress** anytime with `/status`, or `make ui` for the same board in a browser
-   (read-only by default; a fixed whitelist of safe operations and gate-approval recording can run
-   from the page). Render the task dependency diagram with
+5. **Check progress** anytime: `./agentloop next` prints just the next recommended command
+   (`--json` for integrations), `/status` gives the full picture in chat, and `make ui` (=
+   `./agentloop ui`) shows the same board in a browser (read-only by default; a fixed whitelist of
+   safe operations and gate-approval recording can run from the page). Render the task dependency
+   diagram with
    `uv run --no-project --with pyyaml python scripts/agentloop/dag.py --mermaid`.
-5. **Ship as a PR**: `make pr-draft` assembles the PR body from the SSOT into
+6. **Ship as a PR**: `make pr-draft` assembles the PR body from the SSOT into
    `.agentloop/pr-draft.md` (read-only); creating/pushing the PR stays yours.
-6. **Close the cycle** after gate ⑤: `make cycle-close NAME=<slug>` archives to
+7. **Close the cycle** after gate ⑤: `make cycle-close NAME=<slug>` archives to
    `docs/archive/<date>-<slug>/`, restores fresh scaffolds, and resets gates/phase. A human
    operation, like opening a gate.
 
@@ -246,7 +266,7 @@ SSOT). Writing issues is outward-facing, so the opt-in is the consent.
 - **Edit denied by the gate guard** — you're editing a next-phase deliverable while its gate is
   `pending`; that's the mechanism working. Get the gate approved. Emergency hatch:
   `gates.enforce_hook: false`.
-- **"template placeholders"** — run `make init NAME=<product>` first.
+- **"template placeholders"** — run `./agentloop start` (or `make init NAME=<product>`) first.
 - **No usable `make` in an adopted repo** — the targets are self-contained in `agentloop.mk` (uv
   only): `make -f agentloop.mk build-loop`.
 
@@ -262,6 +282,7 @@ SSOT). Writing issues is outward-facing, so the opt-in is the consent.
 | `.agentloop/prompts/` | the shared phase procedures and role definitions every agent reads |
 | `scripts/agentloop/` | deterministic orchestration (`dag.py`, `build_loop.py`, `gate_guard.py`, `revise.py`, `adopt.py`, …) + the dashboard (`status_api.py`, `ui.py`). Product scripts go under `scripts/` |
 | `VERSION` / `CHANGELOG.md` | the template's release identity |
+| `agentloop` | the daily human entry point — `./agentloop start / next / ui / agent` (uv only) |
 | `agentloop.mk` | the AgentLoop make targets, self-contained (uv only) |
 | `AGENTS.md` / `CLAUDE.md` | the agent-neutral operating rules / the Claude Code capability mapping |
 | `.claude/`, `.github/` | per-agent entry points, role wrappers, and gate-guard hook registration |

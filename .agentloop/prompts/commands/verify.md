@@ -20,7 +20,7 @@ If unapproved, do not work — **invoking `/verify` is not itself the gate-④ a
 Write the deliverable (`docs/test/test-plan.md`) in the user's language.
 
 ## Once approved
-- Set `gates.release` to `approved`, `current_phase` to `done`, and update `updated_at` in `state.md`.
+- Record the approval by running `make approve GATE=release [BY=<approver>]` — it stamps the gate line, advances `current_phase` to `done`, and logs the `gate_approved` event (the permission prompt is the human's confirmation; never edit a gate line yourself — gate_guard denies it).
 - **Leave a retrospective (recovering the metacognition)**: generate/update `docs/retrospective.md`.
   - Classify needs-revision / blocked into "upstream (requirements/design) defect / implementation convenience / external factor" and summarize the lessons for upstream.
   - **Close the open items**: every open escalation in the event log (`make events ARGS=--render` lists them) gets a `make events ARGS='--resolve <ID> --note "…"'`, and blank adoption columns in `state.md`'s "speculative work log" are filled — do not leave them dangling.

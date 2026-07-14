@@ -5,6 +5,61 @@ installed version (recorded in `.agentloop/adopt-manifest.yaml`) and the new one
 one `## [x.y.z] - YYYY-MM-DD` heading per release. Neither this file nor `VERSION` is
 copied by `make adopt` — the manifest's `template.version` is the identity record.
 
+## [0.6.0] - 2026-07-14
+
+### Added
+- **Gate approval is an operation, not a state-file edit**: `make approve GATE=<gate>
+  [BY=<name>]` (`scripts/agentloop/approve.py`, the forward twin of `revise.py`) stamps the
+  date/approver on the gate line, advances `current_phase`, and appends a `gate_approved`
+  event — the single sanctioned `pending → approved` write path. Gate rule 2 gains its own
+  mechanism layer in `gate_guard.py`: **edit-time**, a Write/Edit/MultiEdit whose result
+  flips a state.md gate to `approved` is denied (deliberately **not** relaxed by
+  `template_mode`; `enforce_hook: false` stays the escape hatch); **commit-stage**,
+  `--check-diff` fails a flip vs HEAD that has no matching `gate_approved` event, catching
+  shell-redirect/sed bypasses. The `make ui` approval endpoint delegates to the same
+  operation. `make approve` must never be pre-authorized — its permission prompt is the
+  human's confirmation (AGENTS.md "Tool-execution permissions").
+- **Crash recovery salvages a previous run's work instead of destroying it**: on re-run,
+  `build_loop.py` no longer unconditionally force-removes a leftover leaf worktree and
+  `branch -D`s its branch. Uncommitted worktree changes are finalized onto the leaf branch
+  first (if that fails, the loop stops and keeps the tree — nothing unmerged may be the only
+  copy); a branch holding commits the work branch does not have is renamed to
+  `<leaf>-salvage-<UTC stamp>` and recorded as a `branch_salvaged` event. Fully-merged
+  leftovers are deleted as before. This also protects the branches `_cleanup_worktree`
+  deliberately keeps for human inspection.
+- **One human entry point, four verbs**: `./agentloop start | next | ui | agent` (root
+  wrapper + `scripts/agentloop/cli.py`, a thin dispatcher over the owning modules). The
+  human-facing command surface is deliberately compressed to these; the operational make
+  targets (approve / revise / doctor / events / cycle-close / build-loop / agentloop-upgrade)
+  are unchanged and listed in `./agentloop --help`. `approve` is deliberately not a verb —
+  the "never pre-authorize `make approve`" rule keeps a single spelling. `make adopt`
+  installs the wrapper too (template-owned: upgrade refreshes it while pristine).
+- **`agentloop start`** — on a fresh copy: an interactive setup wizard (product name, work
+  branch, upgrade source, headless agent CLI, and an optional 1–3-line product-brief seed
+  written after the pristine scaffold snapshot). Answers are collected before anything is
+  written; non-TTY falls back to the `make init NAME=` hint. On an initialized repo: a
+  one-line "where you are" plus the next recommendation (read-only).
+- **`agentloop next`** — `status_api.py --next` prints only the deterministic next-command
+  recommendation (`--json` emits the recommendation object alone, for integrations).
+- **`agentloop agent <claude|codex|gemini|"custom cmd">`** (`scripts/agentloop/agent_cli.py`)
+  — rewrites exactly the `build.headless.cmd` line (surgical line surgery; comments survive).
+
+### Changed
+- `events.py`: new event kinds `gate_approved` / `branch_salvaged`; `Event` gains a
+  first-class `gate` field (what the commit-stage flip check matches on).
+- `common.py` now hosts `set_current_phase` / `set_updated_at` (moved from `revise.py`;
+  shared by `revise.py`, `cycle.py`, and the new `approve.py`).
+- CLI errors now name the broken input **and** the next command (`make doctor` for SSOT
+  parse failures) — `revise.py` / `build_loop.py` / `events.py` / `dag.py` / `init.py`.
+- Decisions recorded (no code change): **no per-agent adapter layer for the headless CLI**
+  (`build.headless.cmd` + prompt-as-last-argument covers every known CLI; the extension
+  point, should one ever not, is `_parse_headless`); the `make ui` dashboard already is the
+  "driver's seat" (gate approval + a fixed whitelist of safe operations; phase execution and
+  outward-facing operations stay excluded by design); and **no config.yaml profile/preset
+  layer** — the frequently-switched knob is covered by `agentloop agent`, the quality-gate
+  commands are product-specific (adopt already injects them), and a preset layer would add
+  indirection to the single source of knobs (YAGNI).
+
 ## [0.5.0] - 2026-07-12
 
 ### Added

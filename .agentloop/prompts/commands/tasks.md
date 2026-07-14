@@ -53,7 +53,7 @@ After presenting gate ③, while waiting you may proceed with the following (**o
 - **Forbidden**: real implementation of each feature that pre-empts the task plan.
 
 ## Once approved
-- Set `gates.tasks` to `approved`, `current_phase` to `build`, and update `updated_at` in `state.md`.
+- Record the approval by running `make approve GATE=tasks [BY=<approver>]` — it stamps the gate line, advances `current_phase` to `build`, and logs the `gate_approved` event (the permission prompt is the human's confirmation; never edit a gate line yourself — gate_guard denies it).
 - **(Only with GitHub integration)** Run `make issue-sync` to one-way-mirror the approved tasks to Issues. It only acts when `github.enabled: true` in `.agentloop/config.yaml`, and auto-skips if gh/remote is absent (does not fail). **Do not run it before approval** (avoid making issues for unapproved tasks). tasks.yaml is always the SSOT; Issues are not read back.
 - After committing the gate's deliverables, suggest `session-compaction` before starting `/build` — the next command rehydrates from the SSOT, so nothing is lost (pre-compact check: AGENTS.md "Context budget").
 - Point to "next is `/build`".

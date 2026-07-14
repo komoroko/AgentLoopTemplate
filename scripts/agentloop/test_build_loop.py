@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -105,6 +106,13 @@ def test_dry_run_blocks_when_tasks_not_approved(project: Path) -> None:
     (project / ".agentloop" / "state.md").write_text(_STATE.format(tasks="pending"), encoding="utf-8")
     (project / ".agentloop" / "tasks.yaml").write_text(_TASKS, encoding="utf-8")
     assert build_loop.main(["--dry-run"]) == 2
+
+
+def test_main_broken_config_names_the_file_and_next_step(project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    (project / ".agentloop" / "config.yaml").write_text("build: [broken", encoding="utf-8")
+    assert build_loop.main(["--dry-run"]) == 1
+    err = capsys.readouterr().err
+    assert ".agentloop/config.yaml" in err and "make doctor" in err  # cause + the next step
 
 
 def _snapshot(project: Path) -> dict[str, bytes | None]:
@@ -1211,3 +1219,84 @@ def test_serial_unguarded_changes_pass_the_gate_check(project: Path, monkeypatch
     monkeypatch.setattr(orch, "_run_task_to_done", lambda task, cwd: (True, ""))
     orch._consume_serial([dag.Task(id="T-001", title="base", kind="foundation")])
     assert {t.id: t.status for t in dag.load(".agentloop/tasks.yaml").tasks}["T-001"] == "done"
+
+
+# --- crash recovery: a previous run's leftovers are salvaged, not destroyed ------
+
+
+def _git(cwd: Path | str, *args: str) -> str:
+    proc = subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
+    return proc.stdout
+
+
+def _seed_work_repo(project: Path) -> None:
+    _git(project, "init", "-q", "-b", "main")
+    _git(project, "config", "user.email", "t@example.com")
+    _git(project, "config", "user.name", "t")
+    (project / "base.py").write_text("x = 1\n", encoding="utf-8")
+    _git(project, "add", "-A")
+    _git(project, "commit", "-qm", "base")
+    _git(project, "checkout", "-qb", "build/demo")
+
+
+def test_add_worktree_salvages_unmerged_branch_and_wip(project: Path) -> None:
+    # A crashed run left a leaf branch with a commit plus uncommitted WIP in its worktree.
+    # The restart used to `branch -D` all of it; now both survive on a salvage branch.
+    _provision(project)
+    _seed_work_repo(project)
+    _git(project, "worktree", "add", "-q", "-b", "build/demo-T-002", ".worktrees/T-002", "build/demo")
+    wt = project / ".worktrees" / "T-002"
+    (wt / "impl.py").write_text("done = True\n", encoding="utf-8")
+    _git(wt, "add", "-A")
+    _git(wt, "commit", "-qm", "T-002: half done")
+    (wt / "wip.py").write_text("wip = True\n", encoding="utf-8")  # uncommitted
+
+    orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
+    assert orch._add_worktree(_leaf("T-002", "leaf A")) == "build/demo-T-002"
+
+    # the fresh worktree restarts from the work branch — no leftover files
+    assert not (wt / "impl.py").exists() and not (wt / "wip.py").exists()
+    # the unmerged work survives on a salvage branch: the commit AND the finalized WIP
+    salvage = _git(
+        project, "for-each-ref", "--format=%(refname:short)", "refs/heads/build/demo-T-002-salvage-*"
+    ).strip()
+    assert salvage
+    files = _git(project, "ls-tree", "-r", "--name-only", salvage)
+    assert "impl.py" in files and "wip.py" in files
+    # and the restart is visible to the human via the event log
+    recorded = [e for e in events.load_events() if e.event == "branch_salvaged"]
+    assert recorded and recorded[0].task == "T-002" and salvage in recorded[0].detail
+
+
+def test_add_worktree_deletes_fully_merged_leftover_branch(project: Path) -> None:
+    # A leftover branch whose commits are all in the work branch holds nothing unique — the
+    # pre-salvage behavior (delete and recreate) is kept for it.
+    _provision(project)
+    _seed_work_repo(project)
+    _git(project, "branch", "build/demo-T-002")  # same commit as work: fully merged
+    orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
+    orch._add_worktree(_leaf("T-002", "leaf A"))
+    assert _git(project, "for-each-ref", "refs/heads/build/demo-T-002-salvage-*").strip() == ""
+    assert [e for e in events.load_events() if e.event == "branch_salvaged"] == []
+
+
+def test_add_worktree_stops_when_wip_cannot_be_preserved(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # If the leftover worktree's dirty diff cannot be committed (unset identity, index lock, …),
+    # the tree may be the only copy — the restart must stop and keep it, not force-remove it.
+    _provision(project)
+    (project / ".worktrees" / "T-002").mkdir(parents=True)
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], cwd: str, timeout: float | None = None) -> tuple[int, str]:
+        calls.append(cmd)
+        if cmd[:3] == ["git", "status", "--porcelain"]:
+            return 0, " M app.py"  # dirty leftover tree
+        if cmd[:2] == ["git", "commit"]:
+            return 1, "fatal: unable to auto-detect email address"
+        return 0, ""
+
+    monkeypatch.setattr(build_loop, "_run", fake_run)
+    orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
+    with pytest.raises(build_loop.StopLoop, match="manual recovery"):
+        orch._add_worktree(_leaf("T-002", "leaf A"))
+    assert ["git", "worktree", "remove", "--force", str(Path(".worktrees") / "T-002")] not in calls

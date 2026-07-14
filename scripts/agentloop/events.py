@@ -45,6 +45,9 @@ VIEW_END = "<!-- ESCALATION-VIEW:END -->"
 ESCALATION_EVENTS = frozenset({"blocked", "merge_conflict", "integration_red", "no_runnable", "gate_violation"})
 # Display order of the full vocabulary (validated on append so a typo cannot create an
 # unaggregatable kind; the set is this tuple, kept in one place).
+# `gate_approved` is the machine record of a human gate approval (written by approve.py; the
+# commit-stage gate guard cross-checks a state.md flip against it). `branch_salvaged` records
+# a restart preserving a previous run's unmerged leaf branch under a salvage name.
 EVENT_ORDER = (
     "blocked",
     "merge_conflict",
@@ -53,6 +56,8 @@ EVENT_ORDER = (
     "gate_violation",
     "step_fail",
     "task_done",
+    "gate_approved",
+    "branch_salvaged",
     "security_review",
     "resolve",
 )
@@ -65,13 +70,18 @@ _LOCK = threading.Lock()
 
 @dataclass(frozen=True)
 class Event:
-    """One structured event. `ref` links a `resolve` to the escalation id it closes (0 = none)."""
+    """One structured event. `ref` links a `resolve` to the escalation id it closes (0 = none).
+
+    `gate` names the lifecycle gate a `gate_approved` event records — a first-class field
+    (not free text in `detail`) because gate_guard's commit-stage check matches on it.
+    """
 
     id: int
     ts: str  # ISO "YYYY-MM-DDTHH:MM:SS"
     event: str
     task: str = ""
     step: str = ""
+    gate: str = ""
     detail: str = ""
     commit: str = ""
     ref: int = 0
@@ -102,6 +112,7 @@ def load_events(path: str = EVENTS_PATH) -> list[Event]:
                     event=str(raw["event"]),
                     task=str(raw.get("task", "")),
                     step=str(raw.get("step", "")),
+                    gate=str(raw.get("gate", "")),
                     detail=str(raw.get("detail", "")),
                     commit=str(raw.get("commit", "")),
                     ref=int(raw.get("ref", 0)),
@@ -123,6 +134,7 @@ def append_event(
     *,
     task: str = "",
     step: str = "",
+    gate: str = "",
     detail: str = "",
     commit: str = "",
     ref: int = 0,
@@ -140,6 +152,7 @@ def append_event(
             event=event,
             task=task,
             step=step,
+            gate=gate,
             detail=detail,
             commit=commit,
             ref=ref,
@@ -275,7 +288,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.add, task=args.task, step=args.step, detail=args.detail, commit=args.commit, path=args.path
             )
         except ValueError as exc:
-            print(f"error: {exc}", file=sys.stderr)
+            print(f"error: {exc} — valid events: {', '.join(EVENT_ORDER)}", file=sys.stderr)
             return 2
         print(f"added #{entry.id} {entry.event}" + (f" ({entry.task})" if entry.task else ""))
         refresh_state_view(args.path, args.state)
@@ -285,7 +298,11 @@ def main(argv: list[str] | None = None) -> int:
         events = load_events(args.path)
         target = next((e for e in events if e.id == args.resolve), None)
         if target is None or target.event not in ESCALATION_EVENTS:
-            print(f"error: no escalation event with id {args.resolve}", file=sys.stderr)
+            print(
+                f"error: no escalation event with id {args.resolve} — list the open ones with"
+                " `make events ARGS=--render`",
+                file=sys.stderr,
+            )
             return 2
         if target.id not in {e.id for e in open_escalations(events)}:
             print(f"error: escalation #{args.resolve} is already resolved", file=sys.stderr)

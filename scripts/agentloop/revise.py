@@ -24,7 +24,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import re
 import sys
 from datetime import date
 from pathlib import Path
@@ -57,16 +56,6 @@ def _set_gate_pending(text: str, gate: str) -> str:
     return new
 
 
-def _set_current_phase(text: str, value: str) -> str:
-    pattern = re.compile(r"^(\s*current_phase:\s*)\S+(\s*(?:#.*)?)$", re.MULTILINE)
-    return pattern.sub(rf"\g<1>{value}\2", text)
-
-
-def _set_updated_at(text: str, today: str) -> str:
-    pattern = re.compile(r"^(\s*updated_at:\s*).*$", re.MULTILINE)
-    return pattern.sub(rf'\g<1>"{today}"', text)
-
-
 def _insert_log(text: str, target: str, gates: list[str], reason: str, today: str) -> str:
     """Append one row to the roll-back log table (right before the marker). Do nothing if the marker is absent."""
     if REVISE_MARKER not in text:
@@ -81,8 +70,8 @@ def apply_revision(text: str, target: str, reason: str, today: str) -> str:
     new = text
     for gate in gates:
         new = _set_gate_pending(new, gate)
-    new = _set_current_phase(new, target)
-    new = _set_updated_at(new, today)
+    new = common.set_current_phase(new, target)
+    new = common.set_updated_at(new, today)
     new = _insert_log(new, target, gates, reason, today)
     return new
 
@@ -95,11 +84,15 @@ def mark_impacted(seeds: list[str], dry_run: bool) -> int:
     """
     import build_loop  # lazy: pyyaml is needed only for this mode; the gate rollback stays stdlib-only
     import dag
+    import yaml
 
     try:
         graph = dag.load()
-    except (OSError, dag.DagError) as exc:
-        print(f"cannot load tasks.yaml: {exc}", file=sys.stderr)
+    except (OSError, dag.DagError, yaml.YAMLError) as exc:
+        print(
+            f"cannot load .agentloop/tasks.yaml: {exc} — fix it (or run `make doctor` to diagnose the SSOT)",
+            file=sys.stderr,
+        )
         return 1
     known = {t.id for t in graph.tasks}
     unknown = [s for s in seeds if s not in known]
