@@ -1,66 +1,60 @@
 # =========================================================
-# Makefile
+# Makefile — development targets for the agentloop package itself.
 #
-# Note:
-# - This Makefile assumes macOS / Linux (bash, sh)
-# - It does not work on Windows (cmd.exe / PowerShell)
-#   → use WSL or Git Bash
-#
-# The AgentLoop foundational targets (init / cycle-close / build-loop /
-# issue-sync / revise / test-tools) live in agentloop.mk — self-contained,
-# so an existing repo can take just that file. This makefile keeps the
-# stack-specific targets (install / setup / test / check / audit / clean).
+# Products no longer need make: every operation is an `agentloop <verb>`
+# (install the CLI with `uv tool install git+<this repo>`). This file only
+# wraps the package's own dev workflow (macOS / Linux; use WSL on Windows).
 # =========================================================
 
-include agentloop.mk
+.PHONY: install setup pre-commit pre-push check test test-tools template-lint sync-check audit clean
 
-.PHONY: install setup pre-commit pre-push check test audit clean
-
-# Install tools (uv / pnpm binaries)
+# Install the uv binary (the one bootstrap prerequisite)
 install:
 	curl -LsSf https://astral.sh/uv/install.sh | sh
-	curl -fsSL https://get.pnpm.io/install.sh | sh -
 
 # Sync dependencies (including the dev group; generates/updates uv.lock) and install the
 # git hooks (idempotent) so the commit-stage layer — gitleaks and the AgentLoop gate guard —
 # actually fires on `git commit`, not only inside `make check`.
-# If using the frontend, also run `cd frontend && pnpm install`
 setup:
 	uv sync
 	uv run pre-commit install
 
-# Commit-stage hooks (ruff lint / eslint / various checks)
+# Commit-stage hooks (ruff lint / gitleaks / various checks)
 pre-commit:
 	uv run pre-commit run --all-files
 
-# Pre-push-stage hooks (ruff-format / prettier / mypy / tsc)
+# Pre-push-stage hooks (ruff-format / mypy)
 pre-push:
 	uv run pre-commit run --all-files --hook-stage pre-push
 
-# Implementation quality gate: all commit + pre-push hooks (lint / format / type-check), plus the
-# template drift canaries (template-lint auto-skips in a product repo). CI runs this same target.
-check: pre-commit pre-push template-lint
+# The full quality gate: both hook stages plus the template drift canaries and the
+# materialized-artifact check. CI runs this same target.
+check: pre-commit pre-push template-lint sync-check
 
-# Run pytest. Exit code 5 = "no tests collected" is tolerated so a freshly
-# copied template (empty backend/) passes; the same tolerance is used in CI.
-# No --lf here: this target is the quality gate's `test` step (the DoD), and
-# "last failed only" would let a fix regress the rest of the suite unseen.
+# The package's test suite (the same suite CI's matrix runs).
 test:
-	uv run pytest -vv backend/ || test $$? -eq 5
+	uv run pytest -vv tests/
+
+# Kept as an alias — AGENTS.md and muscle memory say `make test-tools`.
+test-tools: test
+
+# Drift canaries across the hand-maintained template files (wrapper parity, capability-mapping
+# set-equality, vocabulary echoes, README EN↔JA structure, pyproject↔CHANGELOG, data parity).
+template-lint:
+	uv run agentloop template-lint
+
+# The materialized .agentloop/prompts|schema|rules must match the packaged payload.
+sync-check:
+	uv run agentloop sync --check
 
 # Dependency vulnerability audit (supply-chain check). Mandatory in /verify.
-# Python: audit resolved dependencies with pip-audit. frontend: pnpm audit if package.json exists.
-# Alternative: osv-scanner to scan the lockfiles in bulk (supports uv.lock + pnpm-lock.yaml).
 audit:
 	@req="$$(mktemp)"; \
 	uv export --format requirements-txt --no-emit-project -o "$$req" && uvx pip-audit -r "$$req"; \
 	status=$$?; rm -f "$$req"; exit $$status
-	@if [ -f frontend/package.json ]; then cd frontend && pnpm audit; else echo "no frontend/package.json: skipping frontend audit"; fi
 
 # Cleanup
 clean:
 	uv run pre-commit clean ; \
 	uv cache clean ; \
-	docker image prune -a -f ; \
-	docker builder prune --all -f --keep-storage 3GB ; \
 	find . \( -type d -name "__pycache__" -o -type d -name ".pytest_cache" -o -type f -name "*.pyc" \) -exec rm -rf {} +

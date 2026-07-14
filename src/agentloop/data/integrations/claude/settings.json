@@ -19,22 +19,20 @@
       "Bash(git merge --no-ff:*)",
       "Bash(git worktree:*)",
       "Bash(ls:*)",
-      "Bash(make build-loop:*)",
-      "Bash(make test-tools:*)",
-      "Bash(make issue-sync:*)",
-      "Bash(make revise:*)",
+      "Bash(agentloop status:*)",
+      "Bash(agentloop next:*)",
+      "Bash(agentloop dag:*)",
+      "Bash(agentloop build:*)",
+      "Bash(agentloop doctor:*)",
+      "Bash(agentloop events:*)",
+      "Bash(agentloop revise:*)",
+      "Bash(agentloop issue-sync:*)",
+      "Bash(agentloop sync --check:*)",
       "Bash(make test:*)",
       "Bash(make check:*)",
       "Bash(make audit:*)",
-      "Bash(make setup:*)",
-      "Bash(uv run pytest:*)",
-      "Bash(PYTHONPATH=src uv run --no-project --with pyyaml python -m agentloop.dag:*)",
-      "Bash(PYTHONPATH=src uv run --no-project --with pyyaml python -m agentloop.build_loop:*)",
-      "Bash(PYTHONPATH=src uv run --no-project --with pyyaml python -m agentloop.issue_sync:*)",
-      "Bash(PYTHONPATH=src uv run --no-project --with pyyaml python -m agentloop.revise:*)"
-    ],
-    "ask": [],
-    "deny": []
+      "Bash(uv run pytest:*)"
+    ]
   },
   "hooks": {
     "SessionStart": [
@@ -53,7 +51,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "PYTHONPATH=src uv run --no-project --with pyyaml python -m agentloop.gate_guard"
+            "command": "agentloop guard"
           }
         ]
       }

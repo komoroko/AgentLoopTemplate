@@ -239,7 +239,10 @@ def run_init(
     # 1) the SSOT trio, placeholder-filled (never overwriting an existing file).
     state_text = fill_state(data_mod.read_text("scaffold/agentloop/state.md"), name, branch, today)
     config_text = data_mod.read_text("scaffold/agentloop/config.yaml")
-    config_text = brownfield_config(config_text, test_cmd, check_cmd) if brownfield else disable_template_mode(config_text)
+    if brownfield:
+        config_text = brownfield_config(config_text, test_cmd, check_cmd)
+    else:
+        config_text = disable_template_mode(config_text)
     seeds: list[tuple[str, bytes]] = [
         (".agentloop/state.md", state_text.encode()),
         (".agentloop/config.yaml", config_text.encode()),
@@ -378,10 +381,19 @@ def main(argv: list[str] | None = None) -> int:
     if not name:
         if sys.stdin.isatty():
             return wizard(root)
-        print("usage: agentloop init --name <product> [--branch build/<product>] (or run on a TTY for the wizard)",
-              file=sys.stderr)
+        print(
+            "usage: agentloop init --name <product> [--branch build/<product>] (or run on a TTY for the wizard)",
+            file=sys.stderr,
+        )
         return 2
     branch = args.branch.strip() or f"build/{name}"
     mode = "greenfield" if args.greenfield else "brownfield" if args.brownfield else "auto"
-    return run_init(root, name, branch, args.source.strip(), test_cmd=args.test_cmd.strip(),
-                    check_cmd=args.check_cmd.strip(), mode=mode)
+    return run_init(
+        root,
+        name,
+        branch,
+        args.source.strip(),
+        test_cmd=args.test_cmd.strip(),
+        check_cmd=args.check_cmd.strip(),
+        mode=mode,
+    )

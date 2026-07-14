@@ -310,9 +310,7 @@ def _dest_map(pairs: tuple[tuple[str, str], ...]) -> dict[str, bytes]:
     return out
 
 
-def _plan(
-    repo: repo_mod.Repo, desired: dict[str, bytes], recorded: dict[str, str], force: bool
-) -> list[PlanItem]:
+def _plan(repo: repo_mod.Repo, desired: dict[str, bytes], recorded: dict[str, str], force: bool) -> list[PlanItem]:
     """The per-file decision table: what a sync/install run would do to each destination.
 
     pristine (on-disk == lock record, or file absent) -> write; locally modified -> skip
@@ -353,7 +351,9 @@ def _apply_plan(repo: repo_mod.Repo, items: list[PlanItem], desired: dict[str, b
     return hashes
 
 
-def _print_plan(items: list[PlanItem], *, verbose_ops: tuple[str, ...] = ("install", "update", "skip-modified")) -> None:
+def _print_plan(
+    items: list[PlanItem], *, verbose_ops: tuple[str, ...] = ("install", "update", "skip-modified")
+) -> None:
     for item in items:
         if item.op in verbose_ops:
             note = f"  ({item.note})" if item.note else ""
@@ -388,7 +388,9 @@ def sync(repo: repo_mod.Repo, *, check: bool = False, force: bool = False) -> in
             print(f"sync --check: {len(items)} materialized file(s) match the packaged payload.")
             return 0
         _print_plan(drift)
-        print(f"sync --check: {len(drift)} file(s) differ from the packaged payload (agentloop {agentloop.__version__}).")
+        print(
+            f"sync --check: {len(drift)} file(s) differ from the packaged payload (agentloop {agentloop.__version__})."
+        )
         return 1
 
     _print_plan(items)
@@ -458,6 +460,10 @@ def install_integration(repo: repo_mod.Repo, name: str, *, force: bool = False, 
         settings, existed = _read_settings(repo)
         installed_record = previous.get("settings") if isinstance(previous.get("settings"), dict) else None
         template = _settings_template()
+        if not existed and "$schema" in template:
+            # A settings.json we bring into existence carries the editor schema pointer too;
+            # merge_settings only tracks permissions/hooks, so seed it before the merge.
+            settings = {"$schema": template["$schema"], **settings}
         if installed_record:
             merged, notes, added = upgrade_settings(settings, installed_record, template)
         else:
@@ -542,15 +548,14 @@ def uninstall_integration(repo: repo_mod.Repo, name: str, *, force: bool = False
         if installed_record:
             settings, existed = _read_settings(repo)
             if existed:
-                if installed_record.get("created") and not installed_record.get("original"):
-                    unmerged, _notes = unmerge_settings(settings, installed_record)
-                    if not unmerged:
-                        repo.path(SETTINGS_PATH).unlink(missing_ok=True)
-                        print(f"  remove        {SETTINGS_PATH} (created by install; empty after unmerge)")
-                    else:
-                        _write_settings(repo, unmerged)
+                unmerged, notes = unmerge_settings(settings, installed_record)
+                # A file install itself created is deleted once nothing but the schema pointer
+                # is left; a pre-existing file always survives (it is the repo's).
+                remaining = {k: v for k, v in unmerged.items() if k != "$schema"}
+                if installed_record.get("created") and not remaining:
+                    repo.path(SETTINGS_PATH).unlink(missing_ok=True)
+                    print(f"  remove        {SETTINGS_PATH} (created by install; empty after unmerge)")
                 else:
-                    unmerged, notes = unmerge_settings(settings, installed_record)
                     _write_settings(repo, unmerged)
                     for note in notes:
                         print(f"  settings      {note}")
@@ -648,8 +653,10 @@ def upgrade(repo: repo_mod.Repo, *, dry_run: bool = False, force: bool = False) 
         recorded = {".agentloop/" + k: str(v) for k, v in ((prompts or {}).get("files") or {}).items()}
         drift = [i for i in _plan(repo, desired, recorded, force) if i.op != "unchanged"]
         _print_plan(drift)
-        print(f"[dry-run] upgrade: {len(drift)} file(s) would change; integrations: "
-              f"{', '.join(sorted(data.get('integrations') or {})) or '(none)'}")
+        print(
+            f"[dry-run] upgrade: {len(drift)} file(s) would change; integrations: "
+            f"{', '.join(sorted(data.get('integrations') or {})) or '(none)'}"
+        )
         return 0
     rc = sync(repo, force=force)
     if rc != 0:
@@ -670,7 +677,9 @@ def _repo_from(args: argparse.Namespace) -> repo_mod.Repo:
 
 
 def cmd_sync(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="agentloop sync", description="materialize prompts/schema/rules from the package")
+    parser = argparse.ArgumentParser(
+        prog="agentloop sync", description="materialize prompts/schema/rules from the package"
+    )
     parser.add_argument("--check", action="store_true", help="report drift without writing (exit 1 on drift)")
     parser.add_argument("--force", action="store_true", help="overwrite locally modified files too")
     parser.add_argument("--repo", default=None, help="repository root (default: discovered from cwd)")
@@ -684,8 +693,13 @@ def cmd_sync(argv: list[str] | None = None) -> int:
 
 def cmd_install(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="agentloop install", description="install per-agent integration surfaces")
-    parser.add_argument("names", nargs="+", choices=sorted(INTEGRATIONS), metavar="integration",
-                        help=f"one or more of: {', '.join(sorted(INTEGRATIONS))}")
+    parser.add_argument(
+        "names",
+        nargs="+",
+        choices=sorted(INTEGRATIONS),
+        metavar="integration",
+        help=f"one or more of: {', '.join(sorted(INTEGRATIONS))}",
+    )
     parser.add_argument("--force", action="store_true", help="overwrite locally modified files too")
     parser.add_argument("--dry-run", action="store_true", help="print the plan only")
     parser.add_argument("--repo", default=None, help="repository root (default: discovered from cwd)")
@@ -703,9 +717,16 @@ def cmd_install(argv: list[str] | None = None) -> int:
 
 
 def cmd_uninstall(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="agentloop uninstall", description="retract integration surfaces (pristine files only)")
-    parser.add_argument("names", nargs="*", choices=sorted(INTEGRATIONS), metavar="integration",
-                        help=f"one or more of: {', '.join(sorted(INTEGRATIONS))}")
+    parser = argparse.ArgumentParser(
+        prog="agentloop uninstall", description="retract integration surfaces (pristine files only)"
+    )
+    parser.add_argument(
+        "names",
+        nargs="*",
+        choices=sorted(INTEGRATIONS),
+        metavar="integration",
+        help=f"one or more of: {', '.join(sorted(INTEGRATIONS))}",
+    )
     parser.add_argument("--all", action="store_true", dest="all_", help="remove every installed artifact and the lock")
     parser.add_argument("--force", action="store_true", help="remove locally modified files too")
     parser.add_argument("--dry-run", action="store_true", help="print the plan only")
@@ -728,7 +749,9 @@ def cmd_uninstall(argv: list[str] | None = None) -> int:
 
 
 def cmd_upgrade(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="agentloop upgrade", description="refresh materialized artifacts + installed integrations")
+    parser = argparse.ArgumentParser(
+        prog="agentloop upgrade", description="refresh materialized artifacts + installed integrations"
+    )
     parser.add_argument("--force", action="store_true", help="overwrite locally modified files too")
     parser.add_argument("--dry-run", action="store_true", help="print the transition report only")
     parser.add_argument("--repo", default=None, help="repository root (default: discovered from cwd)")

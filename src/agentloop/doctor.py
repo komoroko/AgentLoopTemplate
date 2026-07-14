@@ -301,6 +301,12 @@ def _check_leaf_branches(declared: str, wt_cfg: dict[str, object], repo: repo_mo
     return out
 
 
+def _mentions_guard(text: str) -> bool:
+    """True when a hook file carries the gate guard — either spelling ('agentloop guard' is
+    the installed-CLI form; 'gate_guard' covers module-path invocations and older setups)."""
+    return "agentloop guard" in text or "gate_guard" in text
+
+
 def check_hook(config: dict[str, object], repo: repo_mod.Repo) -> list[Finding]:
     """The gate guard is only real if the PreToolUse hook is registered in at least one hook host.
 
@@ -314,13 +320,13 @@ def check_hook(config: dict[str, object], repo: repo_mod.Repo) -> list[Finding]:
         return [Finding("INFO", "hook", "gates.enforce_hook is false — convention layer only")]
     surfaces: list[str] = []
     try:
-        if "gate_guard" in repo.path(SETTINGS_PATH).read_text(encoding="utf-8"):
+        if _mentions_guard(repo.path(SETTINGS_PATH).read_text(encoding="utf-8")):
             surfaces.append("claude")
     except OSError:
         pass
     for hook_file in sorted(repo.path(COPILOT_HOOKS_DIR).glob("*.json")):
         try:
-            if "gate_guard" in hook_file.read_text(encoding="utf-8"):
+            if _mentions_guard(hook_file.read_text(encoding="utf-8")):
                 surfaces.append("copilot")
                 break
         except OSError:

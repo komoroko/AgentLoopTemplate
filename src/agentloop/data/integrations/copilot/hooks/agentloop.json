@@ -1,10 +1,10 @@
 {
-  "$comment": "VS Code Copilot agent-hooks registration (preview). Same gate_guard as .claude/settings.json — VS Code may parse both and run the guard twice per tool; that is harmless (read-only, idempotent deny). Matchers are ignored by VS Code, so gate_guard runs on every tool and passes anything that carries no file path.",
+  "$comment": "VS Code Copilot agent-hooks registration (preview). Same gate guard as .claude/settings.json — VS Code may parse both and run the guard twice per tool; that is harmless (read-only, idempotent deny). Matchers are ignored by VS Code, so the guard runs on every tool and passes anything that carries no file path. Requires the agentloop CLI on PATH (uv tool install).",
   "hooks": {
     "PreToolUse": [
       {
         "type": "command",
-        "command": "PYTHONPATH=src uv run --no-project --with pyyaml python -m agentloop.gate_guard",
+        "command": "agentloop guard",
         "timeout": 30
       }
     ],

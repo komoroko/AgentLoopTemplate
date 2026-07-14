@@ -192,8 +192,9 @@ def test_run_init_brownfield_adapts_config_and_brief(tmp_path: Path, capsys: pyt
     assert "src/" not in parsed["gates"]["guard_paths"]
 
 
-def test_main_requires_a_name_without_a_tty(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-                                            capsys: pytest.CaptureFixture[str]) -> None:
+def test_main_requires_a_name_without_a_tty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     import sys
 
     monkeypatch.setattr(sys.stdin, "isatty", lambda: False)

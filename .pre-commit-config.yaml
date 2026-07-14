@@ -8,7 +8,7 @@
     hooks:
       - id: agentloop-gate-guard
         name: agentloop gate guard (commit stage)
-        entry: env PYTHONPATH=src uv run --no-project --with pyyaml python -m agentloop.gate_guard --check-diff
+        entry: uv run agentloop guard --check-diff
         language: system
         pass_filenames: false
         always_run: true

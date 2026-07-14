@@ -105,8 +105,9 @@ def repo(tmp_path: Path) -> repo_mod.Repo:
     return repo_mod.Repo(tmp_path)
 
 
-def test_sync_check_is_clean_after_init_and_flags_drift(repo: repo_mod.Repo,
-                                                        capsys: pytest.CaptureFixture[str]) -> None:
+def test_sync_check_is_clean_after_init_and_flags_drift(
+    repo: repo_mod.Repo, capsys: pytest.CaptureFixture[str]
+) -> None:
     assert install.sync(repo, check=True) == 0
     req = repo.path(".agentloop/prompts/commands/req.md")
     req.write_text(req.read_text(encoding="utf-8") + "\nlocal note\n", encoding="utf-8")
