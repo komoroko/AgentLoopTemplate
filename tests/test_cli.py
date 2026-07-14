@@ -1,4 +1,4 @@
-"""Verify cli.py: the `./agentloop` dispatcher stays a thin, predictable four-verb surface."""
+"""Verify cli.py: the `agentloop` dispatcher stays a thin, predictable verb surface."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from agentloop import cli, init, ui
+from agentloop import cli, init_cmd, ui
 
 _STATE = """---
 project: "demo"
@@ -49,12 +49,12 @@ def repo(tmp_path: Path) -> Iterator[Path]:
         os.chdir(prev)
 
 
-def test_help_lists_the_verbs_and_the_make_operations(capsys: pytest.CaptureFixture[str]) -> None:
+def test_help_lists_the_verbs_and_the_operations(capsys: pytest.CaptureFixture[str]) -> None:
     assert cli.main([]) == 0
     out = capsys.readouterr().out
-    for verb in ("start", "next", "ui", "agent"):
+    for verb in ("start", "next", "ui", "agent", "init", "install", "sync", "upgrade", "approve", "guard"):
         assert verb in out
-    assert "make approve" in out  # the operational layer stays discoverable
+    assert "NEVER pre-authorize" in out  # gate rule 2's single guarded spelling stays discoverable
     assert cli.main(["--help"]) == 0
 
 
@@ -104,7 +104,7 @@ def test_start_uninitialized_non_tty_refuses_with_the_make_alternative(
     (repo / ".agentloop" / "config.yaml").write_text("gates:\n  template_mode: true\n", encoding="utf-8")
     monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
     assert cli.main(["start"]) == 2
-    assert "make init NAME=" in capsys.readouterr().err
+    assert "agentloop init --name" in capsys.readouterr().err
 
 
 def test_start_uninitialized_tty_runs_the_wizard(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -112,11 +112,11 @@ def test_start_uninitialized_tty_runs_the_wizard(repo: Path, monkeypatch: pytest
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
     called: list[bool] = []
 
-    def fake_wizard() -> int:
+    def fake_wizard(root: Path | None = None) -> int:
         called.append(True)
         return 0
 
-    monkeypatch.setattr(init, "wizard", fake_wizard)
+    monkeypatch.setattr(init_cmd, "wizard", fake_wizard)
     assert cli.main(["start"]) == 0
     assert called == [True]
 

@@ -26,7 +26,7 @@ from pathlib import Path
 
 import yaml
 
-from agentloop import adopt, common, dag, gate_guard
+from agentloop import common, dag, gate_guard, install
 
 AGENTS_MD = "AGENTS.md"
 TASKS_CMD = ".agentloop/prompts/commands/tasks.md"
@@ -285,7 +285,7 @@ def check_version_changelog(version: str, changelog: str) -> list[str]:
     """
     if not version:
         return ["the pyproject.toml [project] version is missing or empty"]
-    m = adopt._CHANGELOG_HEADING_RE.search(changelog)
+    m = install._CHANGELOG_HEADING_RE.search(changelog)
     if not m:
         return ["CHANGELOG.md has no `## [x.y.z]` version heading"]
     if m.group(1) != version:
@@ -294,7 +294,20 @@ def check_version_changelog(version: str, changelog: str) -> list[str]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    config_text = Path(CONFIG_PATH).read_text(encoding="utf-8")
+    import argparse
+
+    from agentloop import repo as repo_mod
+
+    parser = argparse.ArgumentParser(prog="agentloop template-lint", description="template drift canaries")
+    parser.add_argument("--repo", default=None, help="repository root (default: discovered from cwd)")
+    args = parser.parse_args(argv)
+    try:
+        root = repo_mod.get(args.repo).root
+    except repo_mod.RepoNotFoundError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+    config_text = (root / CONFIG_PATH).read_text(encoding="utf-8")
     config = yaml.safe_load(config_text) or {}
     if (config.get("gates") or {}).get("template_mode") is not True:
         print("skipped (gates.template_mode is false: not the template repo)")
@@ -302,22 +315,22 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         files = {
-            path: Path(path).read_text(encoding="utf-8")
+            path: (root / path).read_text(encoding="utf-8")
             for path in (AGENTS_MD, TASKS_CMD, BUILD_CMD, STATE_PATH, CONFIG_PATH, "README.md", "README.ja.md")
         }
         failures = check_vocabulary(files)
-        failures += check_wrapper_parity(Path())
+        failures += check_wrapper_parity(root)
         failures += check_capability_mapping(
-            Path(CLAUDE_MAPPING).read_text(encoding="utf-8"),
-            Path(COPILOT_MAPPING).read_text(encoding="utf-8"),
+            (root / CLAUDE_MAPPING).read_text(encoding="utf-8"),
+            (root / COPILOT_MAPPING).read_text(encoding="utf-8"),
             files[AGENTS_MD],
         )
-        failures += check_neutral_vocabulary(neutral_texts(Path()))
-        failures += check_data_parity(Path())
+        failures += check_neutral_vocabulary(neutral_texts(root))
+        failures += check_data_parity(root)
         failures += check_guard_defaults(files[CONFIG_PATH])
         failures += check_readme_parity(files["README.md"], files["README.ja.md"])
         failures += check_version_changelog(
-            adopt.read_version(Path()), Path("CHANGELOG.md").read_text(encoding="utf-8")
+            install.read_version(root), (root / "CHANGELOG.md").read_text(encoding="utf-8")
         )
     except OSError as exc:
         print(f"template-lint failed: {exc}", file=sys.stderr)

@@ -284,10 +284,10 @@ def test_live_repo_has_no_drift() -> None:
     failures += template_lint.check_data_parity(_REPO_ROOT)
     failures += template_lint.check_guard_defaults(files[template_lint.CONFIG_PATH])
     failures += template_lint.check_readme_parity(files["README.md"], files["README.ja.md"])
-    from agentloop import adopt
+    from agentloop import install
 
     failures += template_lint.check_version_changelog(
-        adopt.read_version(_REPO_ROOT), (_REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+        install.read_version(_REPO_ROOT), (_REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     )
     assert failures == []
 

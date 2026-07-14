@@ -8,47 +8,22 @@
 # this file is slated for removal once the CLI covers every verb).
 # =========================================================
 
-AGENTLOOP_PY := PYTHONPATH=src uv run --no-project --with pyyaml python -m
+AGENTLOOP := PYTHONPATH=src uv run --no-project --with pyyaml python -m agentloop.cli
 
-.PHONY: init adopt agentloop-upgrade agentloop-uninstall cycle-close build-loop issue-sync approve revise events doctor pr-draft template-lint test-tools ui
+.PHONY: init cycle-close build-loop issue-sync approve revise events doctor pr-draft template-lint test-tools ui
 
-# Turn the copied template into a product (idempotent): fills the pyproject / state.md placeholders,
-# snapshots the pristine docs scaffolds, records the adopt-manifest (FROM = the template's git URL,
-# reused later by agentloop-upgrade), creates the work branch, and flips gates.template_mode off
-# so the gate guard goes live. Interactive alternative: `./agentloop start` (the setup wizard).
-#   make init NAME=myproduct [BRANCH=build/myproduct] [FROM=https://github.com/you/AgentLoopTemplate.git]
+# Seed this repository with AgentLoop state (idempotent; brownfield auto-detected). Adoption
+# into an existing repo is the SAME command now — `agentloop init` writes only state, from the
+# installed package's payload. Interactive alternative: `agentloop start` (the setup wizard).
+#   make init NAME=myproduct [BRANCH=build/myproduct] [FROM=<agentloop source url>]
 init:
-	$(AGENTLOOP_PY) agentloop.init --name "$(NAME)" $(if $(BRANCH),--branch "$(BRANCH)") $(if $(FROM),--source "$(FROM)")
-
-# Install AgentLoop into an EXISTING repository (run from this template checkout). Copies the
-# machinery without overwriting anything, merges AGENTS.md/CLAUDE.md/settings.json additively, and writes
-# brownfield defaults (guard_paths = docs only). See src/agentloop/adopt.py for details.
-#   make adopt TARGET=../myrepo NAME=myrepo [TEST_CMD="npm test"] [CHECK_CMD="npm run lint"] [ARGS=--dry-run]
-adopt:
-	$(AGENTLOOP_PY) agentloop.adopt --target "$(TARGET)" --name "$(NAME)" $(if $(BRANCH),--branch "$(BRANCH)") $(if $(TEST_CMD),--test-cmd "$(TEST_CMD)") $(if $(CHECK_CMD),--check-cmd "$(CHECK_CMD)") $(ARGS)
-
-# Refresh this repo's template-owned tooling from a newer template (manifest-driven,
-# hash-checked: your local edits are never overwritten — they are skipped and listed; FORCE=1
-# overrides). Works for adopted AND greenfield (make init) repos. Run inside the repo; FROM is a
-# git URL or local path, and without it the source recorded at init/adopt time is reused. Prints
-# the installed → new template version with the CHANGELOG sections in between — preview everything
-# without applying via ARGS=--dry-run. Review with `git diff`, then commit.
-#   make -f agentloop.mk agentloop-upgrade [FROM=https://github.com/you/AgentLoopTemplate.git] [REF=main] [FORCE=1] [ARGS=--dry-run]
-agentloop-upgrade:
-	$(AGENTLOOP_PY) agentloop.adopt --upgrade --target "$(or $(TARGET),.)" $(if $(FROM),--from-git "$(FROM)") $(if $(REF),--ref "$(REF)") $(if $(FORCE),--force) $(ARGS)
-
-# Remove everything adopt installed from THIS repo (pristine files only: anything you edited is
-# left in place and listed for manual review). Retracts the CLAUDE.md @import block, the AGENTS.md pointer block, and the
-# merged settings.json entries too. Manifest-driven — needs no template checkout.
-#   make -f agentloop.mk agentloop-uninstall [FORCE=1] [ARGS=--dry-run]
-agentloop-uninstall:
-	$(AGENTLOOP_PY) agentloop.adopt --uninstall --target "$(or $(TARGET),.)" $(if $(FORCE),--force) $(ARGS)
+	$(AGENTLOOP) init --name "$(NAME)" $(if $(BRANCH),--branch "$(BRANCH)") $(if $(FROM),--source "$(FROM)")
 
 # Close the current delta cycle (human decision, after /verify's release approval): archive the
 # filled deliverables to docs/archive/<date>-<slug>/, restore fresh scaffolds, reset gates/phase.
 #   make cycle-close NAME=payment-refactor
 cycle-close:
-	$(AGENTLOOP_PY) agentloop.cycle --name "$(NAME)" $(ARGS)
+	$(AGENTLOOP) cycle-close --name "$(NAME)" $(ARGS)
 
 # The deterministic orchestrator for /build. Reads .agentloop/{config,tasks}.yaml and state.md and
 # deterministically drives frontier computation, max parallelism, worktree isolation, merge,
@@ -56,13 +31,13 @@ cycle-close:
 # approved. Only the human opens gates.build.
 #   make build-loop ARGS=--dry-run   # check just the control flow without calling claude/git
 build-loop:
-	$(AGENTLOOP_PY) agentloop.build_loop $(ARGS)
+	$(AGENTLOOP) build $(ARGS)
 
 # One-way-mirror tasks.yaml to GitHub Issues (human-facing visibility, opt-in).
 # Acts only when github.enabled is true in .agentloop/config.yaml. Auto-skips if gh/remote is absent.
 #   make issue-sync ARGS=--dry-run
 issue-sync:
-	$(AGENTLOOP_PY) agentloop.issue_sync $(ARGS)
+	$(AGENTLOOP) issue-sync $(ARGS)
 
 # Structured orchestration events (.agentloop/events.ndjson — the escalation log's machine-readable
 # truth; state.md embeds only the generated view between its ESCALATION-VIEW markers).
@@ -71,7 +46,7 @@ issue-sync:
 #   make events ARGS='--resolve 3 --note "fixed by abc123"'          # close an open escalation
 #   make events ARGS=--summary                                       # aggregates (per task / per step)
 events:
-	$(AGENTLOOP_PY) agentloop.events $(ARGS)
+	$(AGENTLOOP) events $(ARGS)
 
 # Record a human gate approval (the first-class operation for opening a gate — the forward twin
 # of revise). Stamps `gates.<GATE>: approved   # <date> [BY]`, advances current_phase, and appends
@@ -80,14 +55,14 @@ events:
 # confirmation); direct state.md gate edits are denied by gate_guard.
 #   make approve GATE=design [BY=alice]
 approve:
-	$(AGENTLOOP_PY) agentloop.approve "$(GATE)" $(if $(BY),--by "$(BY)")
+	$(AGENTLOOP) approve "$(GATE)" $(if $(BY),--by "$(BY)")
 
 # Roll back (returning upstream). Resets every gate from the target phase onward to pending in a
 # chain and updates current_phase and the roll-back log (the first-class operation for a human
 # rewinding approval). Does not touch tasks; do impact analysis with dag.py --impacted.
 #   make revise ARGS="--to design --reason 'rethink the auth method'"
 revise:
-	$(AGENTLOOP_PY) agentloop.revise $(ARGS)
+	$(AGENTLOOP) revise $(ARGS)
 
 # One-shot read-only diagnosis of the environment and the SSOT's consistency: binaries on PATH,
 # config/state/tasks parse + gate-chain invariant, guard_paths typos, task↔ticket parity,
@@ -98,14 +73,14 @@ revise:
 #  the ordinary runtime stays pyyaml-only.)
 #   make doctor
 doctor:
-	PYTHONPATH=src uv run --no-project --with pyyaml --with jsonschema python -m agentloop.doctor $(ARGS)
+	PYTHONPATH=src uv run --no-project --with pyyaml --with jsonschema python -m agentloop.cli doctor $(ARGS)
 
 # Assemble a PR body from the SSOT (gates, tasks, requirement coverage, security-review binding,
 # commit list) into .agentloop/pr-draft.md. Read-only and never calls gh — creating the PR stays
 # a human action; the tool prints the `gh pr create --body-file` line to run after review.
 #   make pr-draft [ARGS='--base develop' | ARGS=--stdout]
 pr-draft:
-	$(AGENTLOOP_PY) agentloop.pr_draft $(ARGS)
+	$(AGENTLOOP) pr-draft $(ARGS)
 
 # Local browser dashboard over the SSOT: current phase/gates, the task DAG, open escalations, and
 # the deterministically computed next command (the same "what next" logic /status describes, in code).
@@ -116,14 +91,14 @@ pr-draft:
 #   make ui PORT=9000 ARGS=--no-open
 #   make ui ARGS=--read-only   # disable the action endpoints (view only)
 ui:
-	$(AGENTLOOP_PY) agentloop.ui $(if $(PORT),--port $(PORT)) $(ARGS)
+	$(AGENTLOOP) ui $(if $(PORT),--port $(PORT)) $(ARGS)
 
 # Drift canaries across the hand-maintained template files: wrapper parity, capability-mapping
 # set-equality, machine-read vocabulary echoes, README EN↔JA structure, VERSION↔CHANGELOG.
 # Part of `make check`; exits 0 in a product repo (gates.template_mode false) — the canaries
 # guard the template itself, not products built from it.
 template-lint:
-	$(AGENTLOOP_PY) agentloop.template_lint
+	$(AGENTLOOP) template-lint
 
 # Self-tests for the template's foundational tools (src/agentloop/). Unit tests of the
 # deterministic orchestrator, DAG, gate hook, and the init/adopt/cycle helpers.

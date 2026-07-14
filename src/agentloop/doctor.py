@@ -29,7 +29,7 @@ from pathlib import Path
 
 import yaml
 
-from agentloop import adopt, build_loop, common, dag, events, lock, revise
+from agentloop import build_loop, common, dag, events, install, lock, revise
 from agentloop import repo as repo_mod
 
 SETTINGS_PATH = ".claude/settings.json"
@@ -497,7 +497,7 @@ def check_version(repo: repo_mod.Repo) -> list[Finding]:
         template = manifest.get("template") if isinstance(manifest.get("template"), dict) else {}
         version = template.get("version") if isinstance(template, dict) else None
         return [Finding("INFO", "version", f"adopt-manifest: template version {version or '(pre-0.1.0, unrecorded)'}")]
-    version_text = adopt.read_version(repo.root)
+    version_text = install.read_version(repo.root)
     if not version_text:
         return [Finding("INFO", "version", "no agentloop.lock, adopt-manifest, or version record (pre-lock setup)")]
     return [Finding("INFO", "version", f"template repo, VERSION {version_text}")]
