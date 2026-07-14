@@ -8,7 +8,7 @@
     hooks:
       - id: agentloop-gate-guard
         name: agentloop gate guard (commit stage)
-        entry: uv run --no-project --with pyyaml python scripts/agentloop/gate_guard.py --check-diff
+        entry: env PYTHONPATH=src uv run --no-project --with pyyaml python -m agentloop.gate_guard --check-diff
         language: system
         pass_filenames: false
         always_run: true
@@ -30,6 +30,8 @@
     - id: check-yaml
     - id: debug-statements
     - id: name-tests-test
+      # tests/ uses pytest's conventional test_*.py naming (the hook's default wants *_test.py)
+      args: [--pytest-test-first]
     - id: requirements-txt-fixer
 
   # Ruff (lint + format + import sorting; black/isort are consolidated into ruff)

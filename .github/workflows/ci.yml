@@ -71,18 +71,12 @@ jobs:
         # scaffold's example R-N headings have no tasks yet, by design). Exit 2 = "cannot
         # check" (requirements doc absent) is tolerated; a broken thread exits 1 and fails.
         run: |
-          uv run --no-project --with pyyaml python scripts/agentloop/dag.py --validate
+          PYTHONPATH=src uv run --no-project --with pyyaml python -m agentloop.dag --validate
           if grep -q "id:" .agentloop/tasks.yaml; then
-            uv run --no-project --with pyyaml python scripts/agentloop/dag.py --trace || test $? -eq 2
+            PYTHONPATH=src uv run --no-project --with pyyaml python -m agentloop.dag --trace || test $? -eq 2
           else
             echo "tasks.yaml holds no tasks yet: skipping --trace"
           fi
-
-      - name: Run product (backend) tests
-        # The bare template ships no backend tests yet, so pytest exits 5 ("no tests collected"),
-        # which we tolerate (real failures exit 1 and still fail). Called directly rather than via
-        # `make test` because make collapses a recipe's exit code to 2, hiding the 5.
-        run: uv run pytest backend/ || test $? -eq 5
 
   # Aggregate gate over the python matrix. Branch protection requires the single stable name
   # "tests" — the matrix jobs are named per version, so this is what reports it. `if: always()`
