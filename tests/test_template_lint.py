@@ -281,6 +281,7 @@ def test_live_repo_has_no_drift() -> None:
         files[template_lint.AGENTS_MD],
     )
     failures += template_lint.check_neutral_vocabulary(template_lint.neutral_texts(_REPO_ROOT))
+    failures += template_lint.check_data_parity(_REPO_ROOT)
     failures += template_lint.check_guard_defaults(files[template_lint.CONFIG_PATH])
     failures += template_lint.check_readme_parity(files["README.md"], files["README.ja.md"])
     from agentloop import adopt

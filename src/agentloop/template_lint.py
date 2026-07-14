@@ -226,6 +226,57 @@ def check_guard_defaults(config_text: str) -> list[str]:
     return failures
 
 
+# The repo files that must stay byte-identical to the package-data payload. The payload
+# (src/agentloop/data/) is what ships in the wheel — init/sync/install write repos from it —
+# while the repo-root copies are what this template repo itself runs on (dogfood) and what
+# the .claude/.github wrappers @-import. A fix landing in only one home is the drift.
+_DATA_PARITY: tuple[tuple[str, str], ...] = (
+    (".agentloop/prompts", "prompts"),
+    (".agentloop/schema", "schema"),
+    ("AGENTS.md", "rules/AGENTS.md"),
+    (".claude/commands", "integrations/claude/commands"),
+    (".claude/agents", "integrations/claude/agents"),
+    (".claude/settings.json", "integrations/claude/settings.json"),
+    (".github/prompts", "integrations/copilot/prompts"),
+    (".github/agents", "integrations/copilot/agents"),
+    (".github/hooks", "integrations/copilot/hooks"),
+    (".github/instructions", "integrations/copilot/instructions"),
+    ("CHANGELOG.md", "CHANGELOG.md"),
+)
+
+
+def check_data_parity(root: Path) -> list[str]:
+    """Every materialized file equals its package-data source, pair-complete both ways."""
+    from agentloop import data as data_mod
+
+    failures: list[str] = []
+    for repo_rel, data_rel in _DATA_PARITY:
+        repo_path = root / repo_rel
+        if repo_path.is_file():
+            repo_files = {"": repo_path.read_bytes()}
+        else:
+            repo_files = {
+                p.relative_to(repo_path).as_posix(): p.read_bytes() for p in sorted(repo_path.rglob("*")) if p.is_file()
+            }
+        data_files: dict[str, bytes] = {}
+        entry = data_mod.path(data_rel)
+        if entry.is_file():
+            data_files[""] = entry.read_bytes()
+        else:
+            strip = len(data_rel) + 1
+            for rel, blob in data_mod.iter_files(data_rel):
+                data_files[rel[strip:]] = blob
+        for name in sorted(set(repo_files) - set(data_files)):
+            failures.append(f"src/agentloop/data/{data_rel}: missing `{name or repo_rel}` (present in {repo_rel})")
+        for name in sorted(set(data_files) - set(repo_files)):
+            failures.append(f"{repo_rel}: missing `{name or data_rel}` (present in src/agentloop/data/{data_rel})")
+        for name in sorted(set(repo_files) & set(data_files)):
+            if repo_files[name] != data_files[name]:
+                where = f"{repo_rel}/{name}" if name else repo_rel
+                failures.append(f"{where}: differs from src/agentloop/data/{data_rel}{'/' + name if name else ''}")
+    return failures
+
+
 def check_version_changelog(version: str, changelog: str) -> list[str]:
     """VERSION and CHANGELOG.md's newest `## [x.y.z]` heading must agree.
 
@@ -262,6 +313,7 @@ def main(argv: list[str] | None = None) -> int:
             files[AGENTS_MD],
         )
         failures += check_neutral_vocabulary(neutral_texts(Path()))
+        failures += check_data_parity(Path())
         failures += check_guard_defaults(files[CONFIG_PATH])
         failures += check_readme_parity(files["README.md"], files["README.ja.md"])
         failures += check_version_changelog(
