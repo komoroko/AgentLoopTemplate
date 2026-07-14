@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from collections.abc import Iterator
 from pathlib import Path
 
 import cli
+import init
 import pytest
+import ui
 
 _STATE = """---
 project: "demo"
@@ -76,7 +79,12 @@ def test_agent_passes_through_to_agent_cli(repo: Path, capsys: pytest.CaptureFix
 
 def test_ui_passes_its_args_through(monkeypatch: pytest.MonkeyPatch) -> None:
     seen: list[list[str]] = []
-    monkeypatch.setattr(cli.ui, "main", lambda argv: seen.append(list(argv)) or 0)
+
+    def fake_ui_main(argv: list[str]) -> int:
+        seen.append(list(argv))
+        return 0
+
+    monkeypatch.setattr(ui, "main", fake_ui_main)
     assert cli.main(["ui", "--read-only", "--port", "0"]) == 0
     assert seen == [["--read-only", "--port", "0"]]
 
@@ -95,16 +103,21 @@ def test_start_uninitialized_non_tty_refuses_with_the_make_alternative(
     repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     (repo / ".agentloop" / "config.yaml").write_text("gates:\n  template_mode: true\n", encoding="utf-8")
-    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: False)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
     assert cli.main(["start"]) == 2
     assert "make init NAME=" in capsys.readouterr().err
 
 
 def test_start_uninitialized_tty_runs_the_wizard(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     (repo / ".agentloop" / "config.yaml").write_text("gates:\n  template_mode: true\n", encoding="utf-8")
-    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
     called: list[bool] = []
-    monkeypatch.setattr(cli.init, "wizard", lambda: called.append(True) or 0)
+
+    def fake_wizard() -> int:
+        called.append(True)
+        return 0
+
+    monkeypatch.setattr(init, "wizard", fake_wizard)
     assert cli.main(["start"]) == 0
     assert called == [True]
 

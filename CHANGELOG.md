@@ -5,37 +5,7 @@ installed version (recorded in `.agentloop/adopt-manifest.yaml`) and the new one
 one `## [x.y.z] - YYYY-MM-DD` heading per release. Neither this file nor `VERSION` is
 copied by `make adopt` — the manifest's `template.version` is the identity record.
 
-## [0.7.0] - 2026-07-14
-
-### Added
-- **One human entry point, four verbs**: `./agentloop start | next | ui | agent` (root
-  wrapper + `scripts/agentloop/cli.py`, a thin dispatcher over the owning modules). The
-  human-facing command surface is deliberately compressed to these; the operational make
-  targets (approve / revise / doctor / events / cycle-close / build-loop / agentloop-upgrade)
-  are unchanged and listed in `./agentloop --help`. `approve` is deliberately not a verb —
-  the "never pre-authorize `make approve`" rule keeps a single spelling. `make adopt`
-  installs the wrapper too (template-owned: upgrade refreshes it while pristine).
-- **`agentloop start`** — on a fresh copy: an interactive setup wizard (product name, work
-  branch, upgrade source, headless agent CLI, and an optional 1–3-line product-brief seed
-  written after the pristine scaffold snapshot). Answers are collected before anything is
-  written; non-TTY falls back to the `make init NAME=` hint. On an initialized repo: a
-  one-line "where you are" plus the next recommendation (read-only).
-- **`agentloop next`** — `status_api.py --next` prints only the deterministic next-command
-  recommendation (`--json` emits the recommendation object alone, for integrations).
-- **`agentloop agent <claude|codex|gemini|"custom cmd">`** (`scripts/agentloop/agent_cli.py`)
-  — rewrites exactly the `build.headless.cmd` line (surgical line surgery; comments survive).
-
-### Changed
-- CLI errors now name the broken input **and** the next command (`make doctor` for SSOT
-  parse failures) — `revise.py` / `build_loop.py` / `events.py` / `dag.py` / `init.py`.
-- Decisions recorded (no code change): the `make ui` dashboard already is the "driver's
-  seat" (gate approval + a fixed whitelist of safe operations; phase execution and
-  outward-facing operations stay excluded by design), and **no config.yaml profile/preset
-  layer** — the frequently-switched knob is covered by `agentloop agent`, the quality-gate
-  commands are product-specific (adopt already injects them), and a preset layer would add
-  indirection to the single source of knobs (YAGNI).
-
-## [0.6.0] - 2026-07-13
+## [0.6.0] - 2026-07-14
 
 ### Added
 - **Gate approval is an operation, not a state-file edit**: `make approve GATE=<gate>
@@ -57,15 +27,38 @@ copied by `make adopt` — the manifest's `template.version` is the identity rec
   `<leaf>-salvage-<UTC stamp>` and recorded as a `branch_salvaged` event. Fully-merged
   leftovers are deleted as before. This also protects the branches `_cleanup_worktree`
   deliberately keeps for human inspection.
+- **One human entry point, four verbs**: `./agentloop start | next | ui | agent` (root
+  wrapper + `scripts/agentloop/cli.py`, a thin dispatcher over the owning modules). The
+  human-facing command surface is deliberately compressed to these; the operational make
+  targets (approve / revise / doctor / events / cycle-close / build-loop / agentloop-upgrade)
+  are unchanged and listed in `./agentloop --help`. `approve` is deliberately not a verb —
+  the "never pre-authorize `make approve`" rule keeps a single spelling. `make adopt`
+  installs the wrapper too (template-owned: upgrade refreshes it while pristine).
+- **`agentloop start`** — on a fresh copy: an interactive setup wizard (product name, work
+  branch, upgrade source, headless agent CLI, and an optional 1–3-line product-brief seed
+  written after the pristine scaffold snapshot). Answers are collected before anything is
+  written; non-TTY falls back to the `make init NAME=` hint. On an initialized repo: a
+  one-line "where you are" plus the next recommendation (read-only).
+- **`agentloop next`** — `status_api.py --next` prints only the deterministic next-command
+  recommendation (`--json` emits the recommendation object alone, for integrations).
+- **`agentloop agent <claude|codex|gemini|"custom cmd">`** (`scripts/agentloop/agent_cli.py`)
+  — rewrites exactly the `build.headless.cmd` line (surgical line surgery; comments survive).
 
 ### Changed
 - `events.py`: new event kinds `gate_approved` / `branch_salvaged`; `Event` gains a
   first-class `gate` field (what the commit-stage flip check matches on).
 - `common.py` now hosts `set_current_phase` / `set_updated_at` (moved from `revise.py`;
   shared by `revise.py`, `cycle.py`, and the new `approve.py`).
-- Decision recorded (no code change): **no per-agent adapter layer for the headless CLI** —
-  `build.headless.cmd` + prompt-as-last-argument covers every known CLI; the extension
-  point, should one ever not, is `_parse_headless` (YAGNI note in `config.yaml`).
+- CLI errors now name the broken input **and** the next command (`make doctor` for SSOT
+  parse failures) — `revise.py` / `build_loop.py` / `events.py` / `dag.py` / `init.py`.
+- Decisions recorded (no code change): **no per-agent adapter layer for the headless CLI**
+  (`build.headless.cmd` + prompt-as-last-argument covers every known CLI; the extension
+  point, should one ever not, is `_parse_headless`); the `make ui` dashboard already is the
+  "driver's seat" (gate approval + a fixed whitelist of safe operations; phase execution and
+  outward-facing operations stay excluded by design); and **no config.yaml profile/preset
+  layer** — the frequently-switched knob is covered by `agentloop agent`, the quality-gate
+  commands are product-specific (adopt already injects them), and a preset layer would add
+  indirection to the single source of knobs (YAGNI).
 
 ## [0.5.0] - 2026-07-12
 
