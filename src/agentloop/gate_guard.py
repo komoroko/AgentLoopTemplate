@@ -59,18 +59,32 @@ false` disables it.
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any
 
 import yaml
 
 from agentloop import common
+from agentloop import repo as repo_mod
 
 STATE_PATH = common.STATE_PATH
 CONFIG_PATH = common.CONFIG_PATH
+
+
+def _repo_or_cwd(start: Path | None = None) -> repo_mod.Repo:
+    """The discovered repo, or a cwd-anchored one when no .agentloop/ exists anywhere above.
+
+    The fallback preserves the pre-discovery posture outside an AgentLoop repository: config
+    and state reads fail there, which makes guarded-path writes fail closed (deny) exactly as
+    before — a guard that cannot know its gates must not silently open them.
+    """
+    try:
+        return repo_mod.get(start=start)
+    except repo_mod.RepoNotFoundError:
+        return repo_mod.Repo((start or Path.cwd()).resolve())
+
 
 # Not guarded (always allowed regardless of gates). The template's foundational tools are where
 # the hook itself runs, and the build gate must not block their maintenance.
@@ -105,30 +119,20 @@ _PHASE_LABEL = {
 }
 
 
-def _repo_relative(file_path: str) -> str | None:
-    """Normalize the edit target to a repo-relative posix path. None if outside the repo."""
-    try:
-        rel = os.path.relpath(os.path.abspath(file_path), os.getcwd())
-    except ValueError:
-        return None
-    if rel.startswith(".."):
-        return None
-    return PurePosixPath(rel).as_posix()
-
-
-def required_gate(file_path: str, rules: dict[str, str] | None = None) -> str | None:
+def required_gate(file_path: str, rules: dict[str, str] | None = None, repo: repo_mod.Repo | None = None) -> str | None:
     """The gate name this edit requires. None if not guarded.
 
     An exact entry wins over prefix entries; among matching prefixes the longest wins
     (deterministic regardless of the config's key order).
     """
-    rel = _repo_relative(file_path)
+    repo = repo or _repo_or_cwd()
+    rel = repo.rel(file_path)
     if rel is None:
         return None
     if any(rel.startswith(p) for p in _UNGUARDED_PREFIXES):
         return None
     if rules is None:
-        rules = _guard_paths()
+        rules = _guard_paths(repo)
     exact = rules.get(rel)
     if exact is not None:
         return exact
@@ -139,46 +143,47 @@ def required_gate(file_path: str, rules: dict[str, str] | None = None) -> str | 
     return best[1] if best else None
 
 
-def _gates_config() -> dict[str, object]:
+def _gates_config(repo: repo_mod.Repo) -> dict[str, object]:
     # absent config = enabled defaults (fail-secure; fail-open only when state is absent)
-    data = common.read_yaml(CONFIG_PATH) or {}
+    data = common.read_yaml(str(repo.config)) or {}
     gates = data.get("gates")
     return gates if isinstance(gates, dict) else {}
 
 
-def _enforce_enabled() -> bool:
-    return bool(_gates_config().get("enforce_hook", True))
+def _enforce_enabled(repo: repo_mod.Repo) -> bool:
+    return bool(_gates_config(repo).get("enforce_hook", True))
 
 
-def _template_mode() -> bool:
-    return bool(_gates_config().get("template_mode", False))
+def _template_mode(repo: repo_mod.Repo) -> bool:
+    return bool(_gates_config(repo).get("template_mode", False))
 
 
-def _guard_paths() -> dict[str, str]:
+def _guard_paths(repo: repo_mod.Repo) -> dict[str, str]:
     """The active guard rules: gates.guard_paths from config, or the built-in defaults."""
-    raw = _gates_config().get("guard_paths")
+    raw = _gates_config(repo).get("guard_paths")
     if isinstance(raw, dict) and raw:
         return {str(k): str(v) for k, v in raw.items()}
     return _DEFAULT_GUARD_PATHS
 
 
-def _read_gates() -> dict[str, str] | None:
+def _read_gates(repo: repo_mod.Repo) -> dict[str, str] | None:
     """Read the gates from state.md front-matter. None if unreadable (the caller fails closed)."""
     try:
-        front = common.parse_frontmatter(Path(STATE_PATH).read_text(encoding="utf-8"))
+        front = common.parse_frontmatter(repo.state.read_text(encoding="utf-8"))
     except (OSError, yaml.YAMLError):
         return None
     return common.gates_of(front)
 
 
-def evaluate(file_path: str) -> tuple[bool, str]:
+def evaluate(file_path: str, repo: repo_mod.Repo | None = None) -> tuple[bool, str]:
     """Return (allowed, reason). When allowed=False, reason is the deny reason."""
-    gate = required_gate(file_path)
+    repo = repo or _repo_or_cwd()
+    gate = required_gate(file_path, repo=repo)
     if gate is None:
         return True, ""
-    if _template_mode() or not _enforce_enabled():
+    if _template_mode(repo) or not _enforce_enabled(repo):
         return True, ""
-    gates = _read_gates()
+    gates = _read_gates(repo)
     if gates is None:  # unknown state fails closed: it must not silently open every gate
         return False, (
             "Blocked: cannot read the gates from .agentloop/state.md (file missing or malformed"
@@ -243,7 +248,7 @@ def _proposed_state_text(current_text: str, tool_input: dict[str, Any]) -> str |
     return text if saw_edit else None
 
 
-def gate_flip_denial(tool_input: dict[str, Any]) -> str:
+def gate_flip_denial(tool_input: dict[str, Any], repo: repo_mod.Repo | None = None) -> str:
     """Deny reason when this edit would flip a state.md gate to approved; "" to allow.
 
     Approval is a human operation: the only sanctioned write path is approve.py
@@ -252,8 +257,9 @@ def gate_flip_denial(tool_input: dict[str, Any]) -> str:
     whose shape cannot be simulated is allowed with a stderr trace; the commit-stage flip
     check still covers whatever it wrote.
     """
+    repo = repo or _repo_or_cwd()
     try:
-        current_text = Path(STATE_PATH).read_text(encoding="utf-8")
+        current_text = repo.state.read_text(encoding="utf-8")
     except OSError:
         current_text = ""
     proposed_text = _proposed_state_text(current_text, tool_input)
@@ -275,16 +281,18 @@ def gate_flip_denial(tool_input: dict[str, Any]) -> str:
     )
 
 
-def _head_state_gates() -> dict[str, str] | None:
+def _head_state_gates(repo: repo_mod.Repo) -> dict[str, str] | None:
     """The gates in HEAD's state.md; None when HEAD has no copy (fresh repo / untracked state.md)."""
     try:
-        proc = subprocess.run(["git", "show", f"HEAD:{STATE_PATH}"], capture_output=True, text=True, timeout=30)
+        proc = subprocess.run(
+            ["git", "show", f"HEAD:{STATE_PATH}"], capture_output=True, text=True, timeout=30, cwd=repo.root
+        )
     except (OSError, subprocess.TimeoutExpired):
         return None
     return _gates_or_empty(proc.stdout) if proc.returncode == 0 else None
 
 
-def _flip_failures() -> list[str]:
+def _flip_failures(repo: repo_mod.Repo) -> list[str]:
     """Commit-stage twin of gate_flip_denial: flips vs HEAD lacking a gate_approved event.
 
     approve.py writes the state.md flip and the event in one operation, so a legitimate
@@ -296,16 +304,16 @@ def _flip_failures() -> list[str]:
     from agentloop import events  # lazy: keep the edit-time hook path free of the extra import
 
     try:
-        worktree = _gates_or_empty(Path(STATE_PATH).read_text(encoding="utf-8"))
+        worktree = _gates_or_empty(repo.state.read_text(encoding="utf-8"))
     except OSError:
         return []
-    head = _head_state_gates()
+    head = _head_state_gates(repo)
     if head is None:
         return []
     flips = [g for g, v in worktree.items() if v == "approved" and head.get(g) != "approved"]
     if not flips:
         return []
-    recorded = {e.gate for e in events.load_events() if e.event == "gate_approved"}
+    recorded = {e.gate for e in events.load_events(str(repo.events)) if e.event == "gate_approved"}
     return [
         f"gates.{g}: flipped to approved with no gate_approved event — approvals are recorded with"
         f" `make approve GATE={g}` (approve.py), never by editing state.md"
@@ -314,7 +322,7 @@ def _flip_failures() -> list[str]:
     ]
 
 
-def _changed_paths() -> list[str] | None:
+def _changed_paths(repo: repo_mod.Repo) -> list[str] | None:
     """Every path changed vs HEAD (worktree + index + untracked), repo-relative. None = git unusable.
 
     `git status --porcelain` covers all three in one call and, unlike `git diff HEAD`, also works
@@ -322,7 +330,9 @@ def _changed_paths() -> list[str] | None:
     (the default collapses them to `dir/`, which would hide a brand-new `docs/tasks/T-001.md`).
     """
     try:
-        proc = subprocess.run(["git", "status", "--porcelain", "-uall"], capture_output=True, text=True, timeout=30)
+        proc = subprocess.run(
+            ["git", "status", "--porcelain", "-uall"], capture_output=True, text=True, timeout=30, cwd=repo.root
+        )
     except (OSError, subprocess.TimeoutExpired):
         return None
     if proc.returncode != 0:
@@ -338,22 +348,25 @@ def _changed_paths() -> list[str] | None:
     return paths
 
 
-def check_diff() -> int:
+def check_diff(repo: repo_mod.Repo | None = None) -> int:
     """Commit-stage check: fail (1) when any changed path needs a gate that is not approved.
 
     The per-path decision is the same `evaluate()` the tool hooks use, so template_mode,
     enforce_hook, and the fail-closed rule for an unreadable state.md all carry over.
     """
-    paths = _changed_paths()
+    repo = repo or _repo_or_cwd()
+    paths = _changed_paths(repo)
     if paths is None:
         # Nothing to enforce against (not a git repo / git unavailable). The tool-hook layer,
         # where present, still guards individual edits.
         print("gate_guard --check-diff: git status unavailable; skipping.", file=sys.stderr)
         return 0
-    denied = [(p, reason) for p in paths for ok, reason in [evaluate(p)] if not ok]
+    # git status paths are repo-relative; anchor them so evaluate() judges them against the
+    # discovered root no matter where the process was launched.
+    denied = [(p, reason) for p in paths for ok, reason in [evaluate(str(repo.path(p)), repo)] if not ok]
     # A changed state.md is additionally checked for approved-flips (module docstring: not
     # relaxed by template_mode — only the enforce_hook escape hatch disables it).
-    flips = _flip_failures() if STATE_PATH in paths and _enforce_enabled() else []
+    flips = _flip_failures(repo) if STATE_PATH in paths and _enforce_enabled(repo) else []
     if not denied and not flips:
         return 0
     if denied:
@@ -383,12 +396,17 @@ def main(argv: list[str] | None = None) -> int:
     file_path = tool_input.get("file_path") or tool_input.get("filePath")
     if not isinstance(file_path, str) or not file_path:
         return 0
-    allowed, reason = evaluate(file_path)
+    # The hook payload carries the session's cwd — resolve the repo from there (a hook fired
+    # from a subdirectory or a worktree still finds the right root), falling back to our own cwd.
+    payload_cwd = payload.get("cwd")
+    start = Path(payload_cwd) if isinstance(payload_cwd, str) and payload_cwd else None
+    repo = _repo_or_cwd(start)
+    allowed, reason = evaluate(file_path, repo)
     # state.md is not a guarded deliverable, but its gate lines are write-protected: an edit
     # that flips a gate to approved is denied even in template_mode (only enforce_hook: false
     # bypasses — module docstring).
-    if allowed and _repo_relative(file_path) == STATE_PATH and _enforce_enabled():
-        denial = gate_flip_denial(tool_input)
+    if allowed and repo.rel(file_path) == STATE_PATH and _enforce_enabled(repo):
+        denial = gate_flip_denial(tool_input, repo)
         if denial:
             allowed, reason = False, denial
     if not allowed:

@@ -360,7 +360,7 @@ def render_next(next_obj: dict[str, object]) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="aggregate the SSOT into one JSON status object")
-    parser.add_argument("--root", default=".", help="repository root holding .agentloop/ (default: cwd)")
+    parser.add_argument("--root", "--repo", dest="root", default="", help="repository root (default: discovered)")
     parser.add_argument("--json", action="store_true", help="compact one-line JSON (default: indented)")
     parser.add_argument(
         "--next",
@@ -369,6 +369,13 @@ def main(argv: list[str] | None = None) -> int:
         help="print only the next recommended command (with --json: the recommendation object alone)",
     )
     args = parser.parse_args(argv)
+    if not args.root:
+        from agentloop import repo as repo_mod  # lazy: collect_status stays callable with a bare root
+
+        try:
+            args.root = str(repo_mod.get().root)
+        except repo_mod.RepoNotFoundError:
+            args.root = "."  # a repo with no .agentloop/ yet: collect_status reports setup guidance
     status = collect_status(args.root)
     if args.next_only:
         next_obj = status["next"]

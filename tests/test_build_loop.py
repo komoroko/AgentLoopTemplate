@@ -12,6 +12,15 @@ import pytest
 from agentloop import build_loop, dag, events
 
 
+def _cwd() -> str:
+    """The orchestrator's root: tests chdir into the tmp repo, so cwd IS the discovered root."""
+    return str(Path.cwd().resolve())
+
+
+def _wt(task_id: str) -> str:
+    return str(Path.cwd().resolve() / ".worktrees" / task_id)
+
+
 def _graph(done: tuple[str, ...] = ()) -> dag.Graph:
     def st(tid: str) -> str:
         return "done" if tid in done else "todo"
@@ -460,8 +469,8 @@ def test_consume_parallel_cleans_up_blocked_worktree(project: Path, monkeypatch:
     monkeypatch.setattr(orch, "_run_task_to_done", fake_run_task)
     with pytest.raises(build_loop.StopLoop):
         orch._consume_parallel([_leaf("T-002", "leaf A"), _leaf("T-003", "leaf B")])
-    assert ["git", "worktree", "remove", "--force", str(Path(".worktrees") / "T-003")] in calls
-    assert ["git", "worktree", "remove", "--force", str(Path(".worktrees") / "T-002")] in calls  # via merge_leaf
+    assert ["git", "worktree", "remove", "--force", _wt("T-003")] in calls
+    assert ["git", "worktree", "remove", "--force", _wt("T-002")] in calls  # via merge_leaf
 
 
 def test_acquire_lock_blocks_live_pid_and_reclaims_stale(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -544,7 +553,7 @@ def test_merge_leaf_success_removes_worktree(project: Path, monkeypatch: pytest.
     orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
     assert orch.merge_leaf(_leaf("T-002", "leaf A"), "build/demo-T-002") is True
     assert ["git", "merge", "--no-ff", "--no-edit", "build/demo-T-002"] in calls
-    assert ["git", "worktree", "remove", "--force", str(Path(".worktrees") / "T-002")] in calls
+    assert ["git", "worktree", "remove", "--force", _wt("T-002")] in calls
 
 
 def test_run_escalates_when_all_unfinished_are_blocked(project: Path) -> None:
@@ -812,7 +821,7 @@ def test_integration_gate_skips_agent_and_empty_steps(project: Path, monkeypatch
 
     def record(step: build_loop.GateStep, cwd: str) -> str:
         ran.append(step.name)
-        assert cwd == "."  # on the merged work branch, not a worktree
+        assert cwd == _cwd()  # on the merged work branch, not a worktree
         return ""
 
     monkeypatch.setattr(orch, "_run_cmd_step", record)
@@ -927,16 +936,16 @@ def test_parallel_finalizes_worktree_before_merge_and_before_blocked_cleanup(
     with pytest.raises(build_loop.StopLoop):
         orch._consume_parallel([_leaf("T-002", "leaf A"), _leaf("T-003", "leaf B")])
 
-    wt2, wt3 = str(Path(".worktrees") / "T-002"), str(Path(".worktrees") / "T-003")
+    wt2, wt3 = _wt("T-002"), _wt("T-003")
     add = ["git", "add", "-A", "--", ".", ":(exclude).agentloop"]
     assert (add, wt2) in calls  # success path: finalize inside the worktree...
     commit_ok = calls.index((["git", "commit", "--no-verify", "-m", "T-002: leaf A"], wt2))
-    merge = calls.index((["git", "merge", "--no-ff", "--no-edit", "build/demo-T-002"], "."))
+    merge = calls.index((["git", "merge", "--no-ff", "--no-edit", "build/demo-T-002"], _cwd()))
     assert commit_ok < merge  # ...before the merge picks the branch up
     assert (add, wt3) in calls  # blocked path: finalize as WIP...
     commit_wip = calls.index((["git", "commit", "--no-verify", "-m", "T-003: WIP (blocked)"], wt3))
     # _add_worktree also pre-cleans worktrees at batch start; the removal that matters is the LAST one.
-    removal = len(calls) - 1 - calls[::-1].index((["git", "worktree", "remove", "--force", wt3], "."))
+    removal = len(calls) - 1 - calls[::-1].index((["git", "worktree", "remove", "--force", wt3], _cwd()))
     assert commit_wip < removal  # ...before the forced removal drops the tree
 
 
@@ -1014,7 +1023,7 @@ def test_finalize_failure_before_merge_blocks_leaf_but_merges_the_rest(
     # the leaf blocks, and the other leaf still merges normally.
     _provision(project)
     calls: list[tuple[list[str], str]] = []
-    wt3 = str(Path(".worktrees") / "T-003")
+    wt3 = _wt("T-003")
     monkeypatch.setattr(build_loop, "_run", _failing_commit_run(calls, fail_cwd=wt3))
     orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
     monkeypatch.setattr(orch, "_run_task_to_done", lambda task, cwd: (True, ""))
@@ -1176,7 +1185,7 @@ def test_parallel_gate_violation_blocks_leaf_and_skips_merge(project: Path, monk
     assert violations and "docs/test/results.md" in violations[0].detail
     # The cleanup keeps the branch for human review: no `git branch -D` after the violation
     # (the only -D is _add_worktree's pre-clean at batch start).
-    fail_at = calls.index((["git", "diff", "--name-only", "build/demo...build/demo-T-003"], "."))
+    fail_at = calls.index((["git", "diff", "--name-only", "build/demo...build/demo-T-003"], _cwd()))
     assert not [c for c, _ in calls[fail_at:] if c[:3] == ["git", "branch", "-D"]]
 
 
@@ -1298,4 +1307,4 @@ def test_add_worktree_stops_when_wip_cannot_be_preserved(project: Path, monkeypa
     orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
     with pytest.raises(build_loop.StopLoop, match="manual recovery"):
         orch._add_worktree(_leaf("T-002", "leaf A"))
-    assert ["git", "worktree", "remove", "--force", str(Path(".worktrees") / "T-002")] not in calls
+    assert ["git", "worktree", "remove", "--force", _wt("T-002")] not in calls

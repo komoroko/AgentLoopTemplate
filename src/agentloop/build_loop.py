@@ -44,6 +44,7 @@ from typing import Any
 import yaml
 
 from agentloop import common, dag, events, gate_guard
+from agentloop import repo as repo_mod
 
 # Single definitions live in common.py; the old names stay importable from here.
 STATE_PATH = common.STATE_PATH
@@ -192,12 +193,12 @@ class Config:
 read_frontmatter = common.read_frontmatter
 
 
-def work_branch(front: dict[str, object]) -> str:
+def work_branch(front: dict[str, object], root: str = ".") -> str:
     branch = front.get("branch")
     if isinstance(branch, str) and branch and not branch.startswith("<"):
         return branch
     # If state.md is not filled in, use the current branch.
-    rc, out = _run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=".")
+    rc, out = _run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=root)
     return out.strip() if rc == 0 else "HEAD"
 
 
@@ -281,11 +282,13 @@ def update_state_view(graph: dag.Graph, path: str = STATE_PATH) -> bool:
     return True
 
 
-def log_escalation(event: str, message: str, *, task: str = "") -> None:
+def log_escalation(
+    event: str, message: str, *, task: str = "", events_path: str = events.EVENTS_PATH, state_path: str = STATE_PATH
+) -> None:
     """Record an escalation as a structured event (the machine-readable truth, see events.py),
     refresh state.md's generated view, and echo it to stderr for the console."""
-    events.append_event(event, task=task, detail=message)
-    events.refresh_state_view()
+    events.append_event(event, task=task, detail=message, path=events_path)
+    events.refresh_state_view(events_path, state_path)
     print(f"[escalation] {message}", file=sys.stderr)
 
 
@@ -381,11 +384,15 @@ def plan_batch(graph: dag.Graph, max_parallel: int) -> tuple[str, list[dag.Task]
 
 
 class Orchestrator:
-    def __init__(self, config: Config, dry_run: bool) -> None:
+    def __init__(self, config: Config, dry_run: bool, repo: repo_mod.Repo | None = None) -> None:
         self.config = config
         self.dry_run = dry_run
-        self.front = read_frontmatter()
-        self.branch = work_branch(self.front)
+        # The discovered repository anchors every path and git call below — the orchestrator
+        # behaves identically no matter which directory it was launched from.
+        self.repo = repo or repo_mod.get()
+        self.root = str(self.repo.root)
+        self.front = read_frontmatter(str(self.repo.state))
+        self.branch = work_branch(self.front, self.root)
         # Dry-run status overlay: the simulated statuses live here instead of tasks.yaml, so the
         # loop can progress to completion while the run stays strictly read-only.
         self._sim_status: dict[str, str] = {}
@@ -395,16 +402,16 @@ class Orchestrator:
             self._sim_status[task_id] = status
             print(f"    [dry-run] {task_id} → {status}")
             return
-        set_task_status(task_id, status)
+        set_task_status(task_id, status, tasks_path=str(self.repo.tasks))
 
     def _escalate(self, event: str, message: str, *, task: str = "") -> None:
         if self.dry_run:  # read-only: surface it on the console without touching the event log
             print(f"[escalation] {message}", file=sys.stderr)
             return
-        log_escalation(event, message, task=task)
+        log_escalation(event, message, task=task, events_path=str(self.repo.events), state_path=str(self.repo.state))
 
     def _load_graph(self) -> dag.Graph:
-        graph = dag.load(TASKS_PATH)
+        graph = dag.load(self.repo.tasks)
         if self.dry_run and self._sim_status:
             graph = dag.Graph.from_tasks([replace(t, status=self._sim_status.get(t.id, t.status)) for t in graph.tasks])
         return graph
@@ -426,7 +433,7 @@ class Orchestrator:
         # reusable-asset inventory the implementer must match — point at it when present.
         baseline_ref = (
             " Consult docs/05-current-state.md for the existing architecture, conventions, and reusable assets."
-            if Path("docs/05-current-state.md").exists()
+            if self.repo.path("docs/05-current-state.md").exists()
             else ""
         )
         # The gate runs the ticket's own test command first (_steps_for), so tell the implementer
@@ -594,7 +601,7 @@ class Orchestrator:
     def _invoke_integration_fixer(self, ids: str, failure_log: str) -> None:
         rc, out = _run(
             [*self.config.headless_cmd, self._integration_fix_prompt(ids, failure_log)],
-            cwd=".",
+            cwd=self.root,
             timeout=self.config.timeout_agent,
         )
         if rc != 0:
@@ -624,7 +631,7 @@ class Orchestrator:
             for step in self._steps_effective:
                 if step.kind != "cmd" or not step.run:
                     continue
-                failure = self._run_cmd_step(step, cwd=".")
+                failure = self._run_cmd_step(step, cwd=self.root)
                 if failure:
                     failed, failure_log = step.name, failure
                     break
@@ -640,7 +647,8 @@ class Orchestrator:
 
     # -- worktree / merge --
 
-    def _git(self, args: list[str], cwd: str = ".") -> None:
+    def _git(self, args: list[str], cwd: str | None = None) -> None:
+        cwd = cwd or self.root
         if self.dry_run:
             print(f"    [dry-run] git {' '.join(args)} (cwd={cwd})")
             return
@@ -652,7 +660,7 @@ class Orchestrator:
         return self.config.branch_pattern.format(branch=self.branch, task_id=task.id)
 
     def _worktree_path(self, task: dag.Task) -> str:
-        return str(Path(self.config.worktree_dir) / task.id)
+        return str(self.repo.path(self.config.worktree_dir) / task.id)
 
     def _add_worktree(self, task: dag.Task) -> str:
         """Create a worktree for a leaf task and return the branch name. Clean up any existing one first.
@@ -671,7 +679,7 @@ class Orchestrator:
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
         candidate = f"{branch}-salvage-{stamp}"
         n = 1
-        while _run(["git", "rev-parse", "--verify", "--quiet", candidate], cwd=".")[0] == 0:
+        while _run(["git", "rev-parse", "--verify", "--quiet", candidate], cwd=self.root)[0] == 0:
             n += 1
             candidate = f"{branch}-salvage-{stamp}-{n}"
         return candidate
@@ -691,19 +699,22 @@ class Orchestrator:
             # The tree may hold the only copy of the previous run's diff — stop rather than destroy it
             # (the finalize failure is already escalated with the repair pointer).
             raise StopLoop(f"{task.id}: could not preserve the leftover worktree {path}; kept for manual recovery")
-        _run(["git", "worktree", "remove", "--force", path], cwd=".")
-        if _run(["git", "rev-parse", "--verify", "--quiet", branch], cwd=".")[0] == 0:
-            rc, out = _run(["git", "rev-list", "-n", "1", branch, "--not", self.branch], cwd=".")
+        _run(["git", "worktree", "remove", "--force", path], cwd=self.root)
+        if _run(["git", "rev-parse", "--verify", "--quiet", branch], cwd=self.root)[0] == 0:
+            rc, out = _run(["git", "rev-list", "-n", "1", branch, "--not", self.branch], cwd=self.root)
             if rc != 0 or out.strip():  # unmerged commits — or unable to prove there are none
                 salvage = self._salvage_name(branch)
                 self._git(["branch", "-m", branch, salvage])
                 events.append_event(
-                    "branch_salvaged", task=task.id, detail=f"{branch} → {salvage} (unmerged work preserved at restart)"
+                    "branch_salvaged",
+                    task=task.id,
+                    detail=f"{branch} → {salvage} (unmerged work preserved at restart)",
+                    path=str(self.repo.events),
                 )
                 print(f"  [salvage] {task.id}: {branch} held unmerged work — renamed to {salvage}")
             else:
-                _run(["git", "branch", "-D", branch], cwd=".")
-        _run(["git", "worktree", "prune"], cwd=".")
+                _run(["git", "branch", "-D", branch], cwd=self.root)
+        _run(["git", "worktree", "prune"], cwd=self.root)
 
     def _safe_run_task(self, task: dag.Task, cwd: str) -> tuple[bool, str]:
         """Call _run_task_to_done safely from a thread. Convert exceptions to (False, log).
@@ -767,20 +778,21 @@ class Orchestrator:
         in code here, before it lands. template_mode / enforce_hook short-circuit inside
         evaluate() exactly as they do for the other checkpoints.
         """
-        return [(p, reason) for p in paths for ok, reason in [gate_guard.evaluate(p)] if not ok]
+        verdicts = ((p, gate_guard.evaluate(str(self.repo.path(p)), self.repo)) for p in paths)
+        return [(p, reason) for p, (ok, reason) in verdicts if not ok]
 
     def _branch_changed_paths(self, branch: str) -> list[str]:
         """Paths a leaf branch changed since it forked off the work branch (merge-base diff)."""
-        rc, out = _run(["git", "diff", "--name-only", f"{self.branch}...{branch}"], cwd=".")
+        rc, out = _run(["git", "diff", "--name-only", f"{self.branch}...{branch}"], cwd=self.root)
         return [p for p in out.splitlines() if p.strip()] if rc == 0 else []
 
     def _changed_since(self, base: str) -> list[str]:
         """Paths a serial task changed on the work branch: commits since `base` plus the dirty tree."""
         paths: set[str] = set()
-        rc, out = _run(["git", "diff", "--name-only", f"{base}..HEAD"], cwd=".")
+        rc, out = _run(["git", "diff", "--name-only", f"{base}..HEAD"], cwd=self.root)
         if rc == 0:
             paths.update(p for p in out.splitlines() if p.strip())
-        rc, out = _run(["git", "status", "--porcelain", "-uall", "--", ".", ":(exclude).agentloop"], cwd=".")
+        rc, out = _run(["git", "status", "--porcelain", "-uall", "--", ".", ":(exclude).agentloop"], cwd=self.root)
         if rc == 0:
             for line in out.splitlines():
                 if len(line) < 4:
@@ -812,21 +824,23 @@ class Orchestrator:
             return
         if not self._finalize_commit(self._worktree_path(task), f"{task.id}: WIP (blocked)"):
             return  # the worktree may hold the only copy of the diff — keep it rather than destroy it
-        _run(["git", "worktree", "remove", "--force", self._worktree_path(task)], cwd=".")
-        _run(["git", "worktree", "prune"], cwd=".")
+        _run(["git", "worktree", "remove", "--force", self._worktree_path(task)], cwd=self.root)
+        _run(["git", "worktree", "prune"], cwd=self.root)
 
     def merge_leaf(self, task: dag.Task, branch: str) -> bool:
         """Merge a leaf branch into work and remove the worktree. On a conflict, abort and return False."""
         if self.dry_run:
             print(f"    [dry-run] git merge --no-ff {branch} → {self.branch}, remove worktree")
             return True
-        rc, out = _run(["git", "merge", "--no-ff", "--no-edit", branch], cwd=".")
+        rc, out = _run(["git", "merge", "--no-ff", "--no-edit", branch], cwd=self.root)
         if rc != 0:
-            _run(["git", "merge", "--abort"], cwd=".")
+            _run(["git", "merge", "--abort"], cwd=self.root)
             log_escalation(
                 "merge_conflict",
                 f"{task.id}: conflict merging into work. Manual resolution needed.\n{out[-500:]}",
                 task=task.id,
+                events_path=str(self.repo.events),
+                state_path=str(self.repo.state),
             )
             return False
         self._git(["worktree", "remove", "--force", self._worktree_path(task)])
@@ -840,8 +854,8 @@ class Orchestrator:
         """
         if self.dry_run:
             return
-        _, head = _run(["git", "rev-parse", "HEAD"], cwd=".")
-        events.append_event("task_done", task=task.id, commit=head.strip())
+        _, head = _run(["git", "rev-parse", "HEAD"], cwd=self.root)
+        events.append_event("task_done", task=task.id, commit=head.strip(), path=str(self.repo.events))
 
     # -- main loop --
 
@@ -852,7 +866,7 @@ class Orchestrator:
         that task is never started and the loop deadlocks. Roll back once at startup.
         """
         try:
-            graph = dag.load(TASKS_PATH)
+            graph = dag.load(self.repo.tasks)
         except (OSError, dag.DagError, yaml.YAMLError):
             return
         for t in graph.tasks:
@@ -883,7 +897,7 @@ class Orchestrator:
             return 2
         if self.dry_run:
             return self._run_loop()  # read-only: no lock file either (and no contention to guard against)
-        if not acquire_lock():
+        if not acquire_lock(str(self.repo.path(LOCK_PATH))):
             print(
                 f"another build-loop run appears to be active ({LOCK_PATH} holds a live PID). "
                 "Wait for it to finish, or remove the lock file if you are sure it is gone.",
@@ -893,7 +907,7 @@ class Orchestrator:
         try:
             return self._run_loop()
         finally:
-            release_lock()
+            release_lock(str(self.repo.path(LOCK_PATH)))
 
     def _run_loop(self) -> int:
         # Fail fast on a contradictory DoD: a step marked required with no command would otherwise
@@ -908,13 +922,15 @@ class Orchestrator:
             )
             return 2
         if not self.dry_run:
-            events.rotate_if_large()  # keep the append-only event log lean before appending this run's entries
+            # keep the append-only event log lean before appending this run's entries
+            events.rotate_if_large(str(self.repo.events))
         self._recover_in_progress()
         while True:
             graph = self._load_graph()
             if not self.dry_run:
-                update_state_view(graph)  # keep state.md's human-facing board fresh each iteration
-                events.refresh_state_view()
+                # keep state.md's human-facing board fresh each iteration
+                update_state_view(graph, str(self.repo.state))
+                events.refresh_state_view(str(self.repo.events), str(self.repo.state))
             counts = graph.counts()
             unfinished = len(graph.tasks) - counts["done"]
             if unfinished == 0:
@@ -940,7 +956,7 @@ class Orchestrator:
             except StopLoop as exc:
                 if not self.dry_run:
                     try:  # leave the board reflecting the batch's blocked/done statuses before stopping
-                        update_state_view(dag.load(TASKS_PATH))
+                        update_state_view(dag.load(self.repo.tasks), str(self.repo.state))
                     except (OSError, dag.DagError, yaml.YAMLError) as view_exc:
                         # Cosmetic only (tasks.yaml stays the truth), but say so — a silently
                         # stale board would misdirect the human the escalation is aimed at.
@@ -954,8 +970,8 @@ class Orchestrator:
         for task in tasks:
             self._set_status(task.id, "in_progress")
             print(f"  [serial] {task.id} {task.title}")
-            pre_head = "" if self.dry_run else _run(["git", "rev-parse", "HEAD"], cwd=".")[1].strip()
-            ok, log = self._run_task_to_done(task, cwd=".")
+            pre_head = "" if self.dry_run else _run(["git", "rev-parse", "HEAD"], cwd=self.root)[1].strip()
+            ok, log = self._run_task_to_done(task, cwd=self.root)
             if not ok:
                 self._set_status(task.id, "blocked")
                 self._escalate(
@@ -981,7 +997,7 @@ class Orchestrator:
             # Finalize the task diff only. The .agentloop/ orchestration state (tasks.yaml status, etc.)
             # is not included in the per-task commit (keeping one commit = one task). If the
             # implementer has not committed, this finalizes the diff (no-op otherwise).
-            if not self._finalize_commit(".", f"{task.id}: {task.title}"):
+            if not self._finalize_commit(self.root, f"{task.id}: {task.title}"):
                 # The tree on the work branch keeps the diff, but the task must not be marked done
                 # without its commit (one commit = one task is the record gate ④ reviews).
                 self._set_status(task.id, "blocked")
@@ -1078,7 +1094,7 @@ class Orchestrator:
         current one at gate ④.
         """
         try:
-            text = Path(SECURITY_REVIEW_PATH).read_text(encoding="utf-8")
+            text = self.repo.path(SECURITY_REVIEW_PATH).read_text(encoding="utf-8")
         except OSError:
             return ""
         m = re.search(r"^Reviewed-HEAD:\s*([0-9a-fA-F]+)", text, re.MULTILINE)
@@ -1114,12 +1130,14 @@ class Orchestrator:
                 "post-build security review is OFF (build.post_build.security_review: false) — "
                 "run /security-review by hand before approving gate ④."
             )
-        _, out = _run(["git", "rev-parse", "HEAD"], cwd=".")
+        _, out = _run(["git", "rev-parse", "HEAD"], cwd=self.root)
         head = out.strip()
         if head and self._reviewed_head() == head:
             return f"already reviewed at current HEAD — report: {SECURITY_REVIEW_PATH} (Reviewed-HEAD {head[:12]})"
         rc, out = _run(
-            [*self.config.headless_cmd, self._security_review_prompt(head)], cwd=".", timeout=self.config.timeout_agent
+            [*self.config.headless_cmd, self._security_review_prompt(head)],
+            cwd=self.root,
+            timeout=self.config.timeout_agent,
         )
         if rc != 0:
             return (
@@ -1130,8 +1148,9 @@ class Orchestrator:
                 f"security review ran but {SECURITY_REVIEW_PATH} does not record Reviewed-HEAD {head[:12]} — "
                 "treat it as not done; run /security-review by hand before gate ④."
             )
-        events.append_event("security_review", commit=head, detail=SECURITY_REVIEW_PATH)
-        events.refresh_state_view()  # this event lands after the loop-top refresh; keep the view current
+        events.append_event("security_review", commit=head, detail=SECURITY_REVIEW_PATH, path=str(self.repo.events))
+        # this event lands after the loop-top refresh; keep the view current
+        events.refresh_state_view(str(self.repo.events), str(self.repo.state))
         return f"report written: {SECURITY_REVIEW_PATH} (Reviewed-HEAD {head[:12]})"
 
     def _present_gate4(self, graph: dag.Graph, security_note: str) -> int:
@@ -1160,16 +1179,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--dry-run", action="store_true", help="run only the control flow without calling the agent CLI/git"
     )
+    parser.add_argument("--repo", default=None, help="repository root (default: discovered from cwd)")
     args = parser.parse_args(argv)
     try:
-        config = Config.load()
+        repo = repo_mod.get(args.repo)
+    except repo_mod.RepoNotFoundError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    try:
+        config = Config.load(str(repo.config))
     except (OSError, yaml.YAMLError, ValueError) as exc:
         print(
             f"cannot load .agentloop/config.yaml: {exc} — fix it (`make doctor` validates it against the schema)",
             file=sys.stderr,
         )
         return 1
-    return Orchestrator(config, dry_run=args.dry_run).run()
+    return Orchestrator(config, dry_run=args.dry_run, repo=repo).run()
 
 
 if __name__ == "__main__":

@@ -26,9 +26,9 @@ from __future__ import annotations
 import argparse
 import sys
 from datetime import date
-from pathlib import Path
 
 from agentloop import common
+from agentloop import repo as repo_mod
 
 STATE_PATH = common.STATE_PATH
 # The forward gate order (defined once in common.py). Reset the target onward to pending in a chain.
@@ -76,7 +76,7 @@ def apply_revision(text: str, target: str, reason: str, today: str) -> str:
     return new
 
 
-def mark_impacted(seeds: list[str], dry_run: bool) -> int:
+def mark_impacted(seeds: list[str], dry_run: bool, repo: repo_mod.Repo | None = None) -> int:
     """Mark the seeds and their transitive dependents `needs-revision` in tasks.yaml (in code).
 
     The frontier never picks a needs-revision task, so everything in the closure stays parked
@@ -89,8 +89,9 @@ def mark_impacted(seeds: list[str], dry_run: bool) -> int:
         dag,
     )
 
+    repo = repo or repo_mod.get()
     try:
-        graph = dag.load()
+        graph = dag.load(repo.tasks)
     except (OSError, dag.DagError, yaml.YAMLError) as exc:
         print(
             f"cannot load .agentloop/tasks.yaml: {exc} — fix it (or run `make doctor` to diagnose the SSOT)",
@@ -107,7 +108,7 @@ def mark_impacted(seeds: list[str], dry_run: bool) -> int:
     for tid in impacted:
         former = graph.get(tid).status
         if not dry_run and former != "needs-revision":
-            build_loop.set_task_status(tid, "needs-revision")
+            build_loop.set_task_status(tid, "needs-revision", tasks_path=str(repo.tasks))
         invalidated = " — done work invalidated (reverts to todo at the /tasks reconcile)" if former == "done" else ""
         print(f"{prefix} {tid} → needs-revision (was {former}){invalidated}")
     print(
@@ -128,10 +129,17 @@ def main(argv: list[str] | None = None) -> int:
         "dependents needs-revision in tasks.yaml (deterministic impact marking)",
     )
     parser.add_argument("--dry-run", action="store_true", help="show the plan only without writing anything")
+    parser.add_argument("--repo", default=None, help="repository root (default: discovered from cwd)")
     args = parser.parse_args(argv)
     seeds = [s.strip() for s in args.impacted.split(",") if s.strip()]
     if not args.to and not seeds:
         parser.error("nothing to do: pass --to <phase> and/or --impacted <ids>")
+    try:
+        repo = repo_mod.get(args.repo)
+    except repo_mod.RepoNotFoundError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    state_path = repo.state
 
     if args.to:
         gates = cascade_gates(args.to)
@@ -142,15 +150,15 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[dry-run] current_phase -> {args.to} / updated_at -> {today}")
         else:
             try:
-                text = Path(STATE_PATH).read_text(encoding="utf-8")
+                text = state_path.read_text(encoding="utf-8")
             except OSError as exc:
                 print(f"cannot read state.md: {exc}", file=sys.stderr)
                 return 1
-            Path(STATE_PATH).write_text(apply_revision(text, args.to, args.reason, today), encoding="utf-8")
+            state_path.write_text(apply_revision(text, args.to, args.reason, today), encoding="utf-8")
             print(f"roll-back complete: phase={args.to}. gates reset to pending: {', '.join(gates)}")
 
     if seeds:
-        rc = mark_impacted(seeds, args.dry_run)
+        rc = mark_impacted(seeds, args.dry_run, repo)
         if rc != 0:
             return rc
     elif args.to and not args.dry_run:

@@ -30,6 +30,7 @@ from typing import Any
 import yaml
 
 from agentloop import common, dag
+from agentloop import repo as repo_mod
 
 CONFIG_PATH = ".agentloop/config.yaml"
 
@@ -44,6 +45,9 @@ class GithubConfig:
     label: str
     close_on_done: bool
     repo: str
+    # Where gh/git run (repo-remote inference is cwd-sensitive). Not a YAML knob — load() sets
+    # it to the config file's repository so calls behave the same from any launch directory.
+    root: str = "."
 
     @classmethod
     def load(cls, path: str = CONFIG_PATH) -> GithubConfig:
@@ -57,6 +61,7 @@ class GithubConfig:
             label=str(gh.get("label", "agentloop")),
             close_on_done=bool(gh.get("close_on_done", True)),
             repo=str(gh.get("repo", "") or ""),
+            root=str(Path(path).resolve().parent.parent),
         )
 
 
@@ -228,7 +233,7 @@ def preflight(cfg: GithubConfig) -> tuple[bool, str]:
     if shutil.which("gh") is None:
         return False, "Skipped Issues mirror because the gh CLI was not found."
     if not cfg.repo:
-        rc, out = _run(["git", "remote"])
+        rc, out = _run(["git", "remote"], cwd=cfg.root)
         if rc != 0 or not out.strip():
             return False, "Skipped Issues mirror: no git remote (you can also set github.repo in config)."
     return True, ""
@@ -253,7 +258,7 @@ def fetch_existing(cfg: GithubConfig) -> dict[str, ExistingIssue]:
     ]
     if cfg.repo:
         args += ["--repo", cfg.repo]
-    rc, out = _run(args)
+    rc, out = _run(args, cwd=cfg.root)
     if rc != 0:
         raise IssueSyncError(f"gh issue list failed:\n{out[-500:]}")
     try:
@@ -286,7 +291,7 @@ def _gh(args: list[str], cfg: GithubConfig) -> tuple[int, str]:
     cmd = ["gh", *args]
     if cfg.repo:
         cmd += ["--repo", cfg.repo]
-    return _run(cmd)
+    return _run(cmd, cwd=cfg.root)
 
 
 def ensure_labels(graph: dag.Graph, cfg: GithubConfig) -> None:
@@ -335,12 +340,18 @@ def _apply_one(action: Action, cfg: GithubConfig) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="one-way-mirror tasks.yaml to GitHub Issues")
     parser.add_argument("--dry-run", action="store_true", help="output planned creations without calling gh (offline)")
+    parser.add_argument("--repo", default=None, help="repository root (default: discovered from cwd)")
     args = parser.parse_args(argv)
 
-    cfg = GithubConfig.load()
+    try:
+        repo = repo_mod.get(args.repo)
+    except repo_mod.RepoNotFoundError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    cfg = GithubConfig.load(str(repo.config))
 
     if args.dry_run:
-        graph = dag.load()
+        graph = dag.load(repo.tasks)
         print("[dry-run] labels to create/ensure:")
         print(", ".join(spec.name for spec in label_specs(graph, cfg.label)))
         actions = plan_actions(graph.tasks, {}, base_label=cfg.label, close_on_done=cfg.close_on_done)
@@ -354,7 +365,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     try:
-        graph = dag.load()
+        graph = dag.load(repo.tasks)
         ensure_labels(graph, cfg)  # provision labels before creating issues (create fails if they are absent)
         existing = fetch_existing(cfg)
         actions = plan_actions(graph.tasks, existing, base_label=cfg.label, close_on_done=cfg.close_on_done)

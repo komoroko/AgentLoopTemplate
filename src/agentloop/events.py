@@ -33,6 +33,7 @@ from datetime import datetime
 from pathlib import Path
 
 from agentloop import common
+from agentloop import repo as repo_mod
 
 EVENTS_PATH = ".agentloop/events.ndjson"
 STATE_PATH = common.STATE_PATH
@@ -278,9 +279,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--detail", default="", help="free-text detail for --add")
     parser.add_argument("--commit", default="", help="related commit hash for --add")
     parser.add_argument("--note", default="", help="how it was resolved, for --resolve")
-    parser.add_argument("--path", default=EVENTS_PATH, help=f"events file (default {EVENTS_PATH})")
-    parser.add_argument("--state", default=STATE_PATH, help=f"state.md carrying the view (default {STATE_PATH})")
+    parser.add_argument("--path", default="", help=f"events file (default: {EVENTS_PATH} under the discovered root)")
+    parser.add_argument("--state", default="", help=f"state.md carrying the view (default: discovered {STATE_PATH})")
+    parser.add_argument("--repo", default=None, help="repository root (default: discovered from cwd)")
     args = parser.parse_args(argv)
+    if not args.path or not args.state:
+        try:
+            repo = repo_mod.get(args.repo)
+        except repo_mod.RepoNotFoundError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        args.path = args.path or str(repo.events)
+        args.state = args.state or str(repo.state)
 
     if args.add is not None:
         try:

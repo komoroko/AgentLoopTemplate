@@ -99,4 +99,4 @@ def test_main_noop_when_already_set(repo: Path, capsys: pytest.CaptureFixture[st
 def test_main_missing_config_names_next_step(repo: Path, capsys: pytest.CaptureFixture[str]) -> None:
     (repo / ".agentloop" / "config.yaml").unlink()
     assert agent_cli.main(["codex"]) == 1
-    assert "repository root" in capsys.readouterr().err
+    assert "config.yaml" in capsys.readouterr().err

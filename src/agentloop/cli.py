@@ -24,8 +24,10 @@ Usage:
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 from agentloop import agent_cli, init, status_api, ui
+from agentloop import repo as repo_mod
 
 HELP = """usage: agentloop <verb> [args]
 
@@ -51,7 +53,11 @@ def _start(rest: list[str]) -> int:
     if rest:
         print(f"agentloop start takes no arguments (got: {' '.join(rest)})", file=sys.stderr)
         return 2
-    status = status_api.collect_status(".")
+    try:
+        root = repo_mod.get().root
+    except repo_mod.RepoNotFoundError:
+        root = Path.cwd()  # uninitialized checkout: collect_status reports the setup path below
+    status = status_api.collect_status(root)
     rec = status["next"]
     assert isinstance(rec, dict)  # asdict(Recommendation)
     if rec.get("kind") == "setup":

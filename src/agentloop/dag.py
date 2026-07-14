@@ -623,7 +623,8 @@ def _run_trace(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="deterministically derive the DAG from tasks.yaml")
-    parser.add_argument("path", nargs="?", default=".agentloop/tasks.yaml", help="path to tasks.yaml")
+    parser.add_argument("path", nargs="?", default="", help="path to tasks.yaml (default: the discovered repo's)")
+    parser.add_argument("--repo", default=None, help="repository root (default: discovered from cwd)")
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--render", action="store_true", help="output the summary for /status")
     group.add_argument("--mermaid", action="store_true", help="output the dependency graph as Mermaid (graph TD)")
@@ -670,6 +671,18 @@ def main(argv: list[str] | None = None) -> int:
             "warning: --requirements/--design/--require-design/--test-plan are valid only with --trace (ignoring)",
             file=sys.stderr,
         )
+
+    if not args.path or args.trace:
+        from agentloop import repo as repo_mod  # lazy: keep the pure-graph module importable alone
+
+        try:
+            repo = repo_mod.get(args.repo)
+        except repo_mod.RepoNotFoundError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2 if args.trace else 1
+        args.path = args.path or str(repo.tasks)
+        args.requirements = args.requirements or str(repo.path(_DEFAULT_REQUIREMENTS))
+        args.design = args.design or str(repo.path(_DEFAULT_DESIGN))
 
     try:
         graph = load(args.path)

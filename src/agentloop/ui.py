@@ -37,6 +37,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from agentloop import approve, revise, status_api
+from agentloop import repo as repo_mod
 
 ACTION_TIMEOUT_SEC = 900
 _OUTPUT_LIMIT = 8000  # tail shown per stream (failures are summarized, not dumped)
@@ -240,7 +241,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="local dashboard for the AgentLoop SSOT")
     parser.add_argument("--host", default="127.0.0.1", help="bind address (default 127.0.0.1)")
     parser.add_argument("--port", type=int, default=8765, help="port (default 8765; 0 = ephemeral)")
-    parser.add_argument("--root", default=".", help="repository root holding .agentloop/ (default: cwd)")
+    parser.add_argument("--root", "--repo", dest="root", default="", help="repository root (default: discovered)")
     parser.add_argument(
         "--no-open", action="store_true", help="do not open the browser automatically (VS Code: use Simple Browser)"
     )
@@ -252,7 +253,11 @@ def main(argv: list[str] | None = None) -> int:
         help="required to bind a non-loopback host while the write endpoints are enabled",
     )
     args = parser.parse_args(argv)
-    root = Path(args.root).resolve()
+    try:
+        root = repo_mod.get(args.root or None).root
+    except repo_mod.RepoNotFoundError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
 
     if args.once:
         print(json.dumps(status_api.collect_status(root), ensure_ascii=False, indent=2))

@@ -17,11 +17,13 @@ from __future__ import annotations
 
 import argparse
 import re
+import sys
 from pathlib import Path
 
 import yaml
 
-from agentloop import build_loop, dag, events
+from agentloop import build_loop, common, dag, events
+from agentloop import repo as repo_mod
 
 OUT_PATH = ".agentloop/pr-draft.md"
 REQUIREMENTS_PATH = "docs/10-requirements.md"
@@ -55,13 +57,14 @@ def _requirement_headings(req_text: str) -> list[str]:
     return out
 
 
-def _reviewed_head() -> str:
-    m = re.search(r"^Reviewed-HEAD:\s*([0-9a-fA-F]+)", _read(build_loop.SECURITY_REVIEW_PATH), re.MULTILINE)
+def _reviewed_head(repo: repo_mod.Repo) -> str:
+    review_path = str(repo.path(build_loop.SECURITY_REVIEW_PATH))
+    m = re.search(r"^Reviewed-HEAD:\s*([0-9a-fA-F]+)", _read(review_path), re.MULTILINE)
     return m.group(1) if m else ""
 
 
-def _git(args: list[str]) -> str:
-    rc, out = build_loop._run(["git", *args], cwd=".")
+def _git(args: list[str], root: str) -> str:
+    rc, out = build_loop._run(["git", *args], cwd=root)
     return out.strip() if rc == 0 else ""
 
 
@@ -79,9 +82,11 @@ def _task_section(graph: dag.Graph) -> list[str]:
     return lines
 
 
-def build_draft(base: str) -> str:
-    state_text = _read(build_loop.STATE_PATH)
-    front = build_loop.read_frontmatter()
+def build_draft(base: str, repo: repo_mod.Repo | None = None) -> str:
+    repo = repo or repo_mod.get()
+    root = str(repo.root)
+    state_text = _read(str(repo.state))
+    front = common.parse_frontmatter(state_text) or {}
     project = str(front.get("project", ""))
     branch = str(front.get("branch", ""))
     lines: list[str] = [f"# {project}: {branch}", ""]
@@ -93,31 +98,33 @@ def build_draft(base: str) -> str:
         # on a pending one it is scaffold instruction text — don't quote that into the PR.
         lines.append(f"- [{mark}] {gate}: {value}" + (f" ({note})" if note and value == "approved" else ""))
 
-    headings = _requirement_headings(_read(REQUIREMENTS_PATH))
+    headings = _requirement_headings(_read(str(repo.path(REQUIREMENTS_PATH))))
     if headings:
         lines += ["", "## Requirements in this cycle", ""]
         lines += [f"- {h}" for h in headings]
 
     lines += ["", "## Tasks", ""]
     try:
-        graph = dag.load(build_loop.TASKS_PATH)
+        graph = dag.load(repo.tasks)
         lines += _task_section(graph)
     except (OSError, dag.DagError, yaml.YAMLError):
         lines.append("_(no readable tasks.yaml)_")
 
     lines += ["", "## Quality evidence", ""]
-    lines.append(f"- Test plan: `{TEST_PLAN_PATH}` " + ("present" if Path(TEST_PLAN_PATH).exists() else "**absent**"))
-    reviewed, head = _reviewed_head(), _git(["rev-parse", "HEAD"])
+    lines.append(
+        f"- Test plan: `{TEST_PLAN_PATH}` " + ("present" if repo.path(TEST_PLAN_PATH).exists() else "**absent**")
+    )
+    reviewed, head = _reviewed_head(repo), _git(["rev-parse", "HEAD"], root)
     if reviewed:
         # Either hash may be abbreviated — prefix-match in both directions.
         fresh = "current" if head and (head.startswith(reviewed) or reviewed.startswith(head)) else "**STALE**"
         lines.append(f"- Security review: `{build_loop.SECURITY_REVIEW_PATH}` Reviewed-HEAD {reviewed[:12]} ({fresh})")
     else:
         lines.append(f"- Security review: no `{build_loop.SECURITY_REVIEW_PATH}` report")
-    open_esc = events.open_escalations(events.load_events())
+    open_esc = events.open_escalations(events.load_events(str(repo.events)))
     lines.append(f"- Open escalations: {len(open_esc)}" + (" — resolve before merging" if open_esc else ""))
 
-    log = _git(["log", "--oneline", "--no-decorate", f"{base}..HEAD"])
+    log = _git(["log", "--oneline", "--no-decorate", f"{base}..HEAD"], root)
     lines += ["", f"## Commits ({base}..HEAD)", ""]
     lines += ["```", log or "(none — is the base branch right?)", "```", ""]
     return "\n".join(lines)
@@ -126,17 +133,25 @@ def build_draft(base: str) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="assemble a PR body from the SSOT (read-only; never calls gh)")
     parser.add_argument("--base", default="main", help="base branch for the commit list (default: main)")
-    parser.add_argument("--out", default=OUT_PATH, help=f"output path (default: {OUT_PATH})")
+    parser.add_argument("--out", default="", help=f"output path (default: {OUT_PATH} under the discovered root)")
     parser.add_argument("--stdout", action="store_true", help="print the draft instead of writing a file")
+    parser.add_argument("--repo", default=None, help="repository root (default: discovered from cwd)")
     args = parser.parse_args(argv)
-    draft = build_draft(args.base)
+    try:
+        repo = repo_mod.get(args.repo)
+    except repo_mod.RepoNotFoundError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    args.out = args.out or str(repo.path(OUT_PATH))
+    draft = build_draft(args.base, repo)
     if args.stdout:
         print(draft)
         return 0
     Path(args.out).write_text(draft, encoding="utf-8")
-    print(f"wrote {args.out}")
+    shown = repo.rel(args.out) or args.out  # repo-relative in messages; the write used the absolute path
+    print(f"wrote {shown}")
     print("review it, then create the PR yourself (outward-facing = human-run):")
-    print(f"  gh pr create --draft --base {args.base} --body-file {args.out}")
+    print(f"  gh pr create --draft --base {args.base} --body-file {shown}")
     return 0
 
 

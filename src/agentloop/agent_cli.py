@@ -24,9 +24,9 @@ import json
 import re
 import shlex
 import sys
-from pathlib import Path
 
 from agentloop import common
+from agentloop import repo as repo_mod
 
 CONFIG_PATH = common.CONFIG_PATH
 # The known headless CLIs — kept in lockstep with the comment table in .agentloop/config.yaml.
@@ -93,19 +93,25 @@ def main(argv: list[str] | None = None) -> int:
         " anything else is used as a custom command string",
     )
     parser.add_argument("cli", help="a preset name (claude | codex | gemini) or a custom command string")
+    parser.add_argument("--repo", default=None, help="repository root (default: discovered from cwd)")
     args = parser.parse_args(argv)
 
     try:
+        config_path = repo_mod.get(args.repo).config
+    except repo_mod.RepoNotFoundError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    try:
         wanted = resolve_argv(args.cli)
         try:
-            text = Path(CONFIG_PATH).read_text(encoding="utf-8")
+            text = config_path.read_text(encoding="utf-8")
         except OSError as exc:
-            raise AgentCliError(f"cannot read {CONFIG_PATH}: {exc} — run this from the repository root") from None
+            raise AgentCliError(f"cannot read {config_path}: {exc}") from None
         before = current_cmd(text)
         if before == wanted:
             print(f"headless.cmd is already {json.dumps(wanted)} (nothing to do)")
             return 0
-        Path(CONFIG_PATH).write_text(set_headless_cmd(text, wanted), encoding="utf-8")
+        config_path.write_text(set_headless_cmd(text, wanted), encoding="utf-8")
     except AgentCliError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

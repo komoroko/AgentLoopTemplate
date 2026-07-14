@@ -185,7 +185,7 @@ def test_fetch_existing_stops_when_snapshot_may_be_truncated(monkeypatch: pytest
             for i in range(issue_sync.FETCH_LIMIT)
         ]
     )
-    monkeypatch.setattr(issue_sync, "_run", lambda args: (0, page))
+    monkeypatch.setattr(issue_sync, "_run", lambda args, cwd=None: (0, page))
     with pytest.raises(issue_sync.IssueSyncError, match="truncated"):
         issue_sync.fetch_existing(cfg)
 
@@ -201,7 +201,7 @@ def test_preflight_skips_without_gh(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_preflight_skips_without_remote(monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = issue_sync.GithubConfig(enabled=True, label="agentloop", close_on_done=True, repo="")
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/gh")
-    monkeypatch.setattr(issue_sync, "_run", lambda args: (0, ""))  # `git remote` lists nothing
+    monkeypatch.setattr(issue_sync, "_run", lambda args, cwd=None: (0, ""))  # `git remote` lists nothing
     ready, reason = issue_sync.preflight(cfg)
     assert ready is False
     assert "remote" in reason
@@ -211,7 +211,7 @@ def test_preflight_ready_with_explicit_repo(monkeypatch: pytest.MonkeyPatch) -> 
     # An explicit github.repo skips the remote probe entirely (works in a detached clone).
     cfg = issue_sync.GithubConfig(enabled=True, label="agentloop", close_on_done=True, repo="owner/repo")
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/gh")
-    monkeypatch.setattr(issue_sync, "_run", lambda args: pytest.fail("must not probe git remote"))
+    monkeypatch.setattr(issue_sync, "_run", lambda args, cwd=None: pytest.fail("must not probe git remote"))
     assert issue_sync.preflight(cfg) == (True, "")
 
 
@@ -220,7 +220,7 @@ def test_apply_one_creates_then_closes_done_task(monkeypatch: pytest.MonkeyPatch
     cfg = issue_sync.GithubConfig(enabled=True, label="agentloop", close_on_done=True, repo="owner/repo")
     calls: list[list[str]] = []
 
-    def fake_run(args: list[str]) -> tuple[int, str]:
+    def fake_run(args: list[str], cwd: str | None = None) -> tuple[int, str]:
         calls.append(args)
         return 0, "https://github.com/owner/repo/issues/42\n"
 

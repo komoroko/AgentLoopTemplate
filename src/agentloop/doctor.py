@@ -30,6 +30,7 @@ from pathlib import Path
 import yaml
 
 from agentloop import build_loop, common, dag, events, revise
+from agentloop import repo as repo_mod
 
 SETTINGS_PATH = ".claude/settings.json"
 COPILOT_HOOKS_DIR = ".github/hooks"
@@ -48,10 +49,10 @@ class Finding:
 _read_yaml = common.read_yaml
 
 
-def check_binaries() -> list[Finding]:
+def check_binaries(repo: repo_mod.Repo) -> list[Finding]:
     """The binaries the loop shells out to. uv/git are load-bearing; the headless CLI/gh degrade features."""
     try:
-        headless = build_loop.Config.load().headless_cmd[0]
+        headless = build_loop.Config.load(str(repo.config)).headless_cmd[0]
     except (OSError, yaml.YAMLError, ValueError, IndexError):
         headless = "claude"  # config problems are reported by check_config; probe the default here
     out: list[Finding] = []
@@ -68,13 +69,13 @@ def check_binaries() -> list[Finding]:
     return out
 
 
-def check_config() -> tuple[list[Finding], dict[str, object]]:
+def check_config(repo: repo_mod.Repo) -> tuple[list[Finding], dict[str, object]]:
     """config.yaml must parse and its quality_gate.steps must be a loadable DoD."""
-    raw = _read_yaml(build_loop.CONFIG_PATH)
+    raw = _read_yaml(str(repo.config))
     if raw is None:
         return [Finding("FAIL", "config", f"{build_loop.CONFIG_PATH} is missing or not valid YAML")], {}
     try:
-        config = build_loop.Config.load()
+        config = build_loop.Config.load(str(repo.config))
     except (OSError, yaml.YAMLError, ValueError) as exc:
         return [Finding("FAIL", "config", f"config does not load: {exc}")], raw
     findings = [Finding("PASS", "config", f"loads; DoD steps: {', '.join(s.name for s in config.steps)}")]
@@ -144,10 +145,10 @@ def _check_step_commands(config: build_loop.Config, raw: dict[str, object]) -> l
     return out
 
 
-def check_state() -> tuple[list[Finding], dict[str, object]]:
+def check_state(repo: repo_mod.Repo) -> tuple[list[Finding], dict[str, object]]:
     """state.md's front matter: gate vocabulary, the gate-chain invariant, and the phase value."""
     try:
-        front = build_loop.read_frontmatter()
+        front = build_loop.read_frontmatter(str(repo.state))
     except OSError:
         return [Finding("FAIL", "state", f"{build_loop.STATE_PATH} is missing")], {}
     if not front:
@@ -188,12 +189,12 @@ def check_placeholders(front: dict[str, object], config: dict[str, object]) -> l
     return [Finding("FAIL", "init", f"{'/'.join(unfilled)} still placeholder — run `make init NAME=<product>`")]
 
 
-def check_tasks() -> list[Finding]:
+def check_tasks(repo: repo_mod.Repo) -> list[Finding]:
     """tasks.yaml must be a valid DAG; leftovers that stall or need a human are surfaced."""
-    if not Path(build_loop.TASKS_PATH).is_file():
+    if not repo.tasks.is_file():
         return [Finding("INFO", "tasks", f"{build_loop.TASKS_PATH} not present yet (before /tasks)")]
     try:
-        graph = dag.load(build_loop.TASKS_PATH)
+        graph = dag.load(repo.tasks)
     except (OSError, dag.DagError, yaml.YAMLError) as exc:
         return [Finding("FAIL", "tasks", f"tasks.yaml does not load: {exc}")]
     findings: list[Finding] = []
@@ -206,20 +207,20 @@ def check_tasks() -> list[Finding]:
     needy = [t.id for t in graph.tasks if t.status in ("blocked", "needs-revision")]
     if needy:
         findings.append(Finding("WARN", "tasks", f"awaiting human intervention: {', '.join(needy)}"))
-    findings.extend(_check_ticket_parity(graph))
+    findings.extend(_check_ticket_parity(graph, repo))
     if not findings:
         summary = " / ".join(f"{s}={counts[s]}" for s in dag.STATUS_ORDER if counts[s])
         findings.append(Finding("PASS", "tasks", f"valid DAG ({len(graph.tasks)} tasks: {summary or 'empty'})"))
     return findings
 
 
-def _check_ticket_parity(graph: dag.Graph) -> list[Finding]:
+def _check_ticket_parity(graph: dag.Graph, repo: repo_mod.Repo) -> list[Finding]:
     """Every task id should have its docs/tasks/T-NNN.md ticket (the implementer reads it first).
 
     A task without a ticket runs the implementer on title-only context; an orphan ticket usually
     means a task was dropped from tasks.yaml without cleaning up (or a scaffold example remains).
     """
-    tickets_dir = Path("docs/tasks")
+    tickets_dir = repo.path("docs/tasks")
     if not graph.tasks or not tickets_dir.is_dir():
         return []
     tickets = {p.stem for p in tickets_dir.glob("T-*.md")}
@@ -232,9 +233,9 @@ def _check_ticket_parity(graph: dag.Graph) -> list[Finding]:
     return out
 
 
-def check_git(front: dict[str, object], config: dict[str, object]) -> list[Finding]:
+def check_git(front: dict[str, object], config: dict[str, object], repo: repo_mod.Repo) -> list[Finding]:
     """git reality vs the SSOT: current branch, leftover worktrees, and the single-run lock."""
-    rc, out = build_loop._run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=".")
+    rc, out = build_loop._run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=str(repo.root))
     if rc != 0:
         return [Finding("FAIL", "git", "not a git repository (or git is broken here)")]
     findings: list[Finding] = []
@@ -244,13 +245,13 @@ def check_git(front: dict[str, object], config: dict[str, object]) -> list[Findi
         findings.append(Finding("WARN", "git", f"checked-out branch '{current}' ≠ state.md branch '{declared}'"))
     build_cfg = config.get("build")
     wt_cfg = build_cfg.get("worktree") if isinstance(build_cfg, dict) else None
-    wt_dir = Path(str(wt_cfg.get("dir", ".worktrees"))) if isinstance(wt_cfg, dict) else Path(".worktrees")
+    wt_dir = repo.path(str(wt_cfg.get("dir", ".worktrees"))) if isinstance(wt_cfg, dict) else repo.path(".worktrees")
     leftovers = sorted(p.name for p in wt_dir.iterdir() if p.is_dir()) if wt_dir.is_dir() else []
     if leftovers:
         findings.append(
             Finding("WARN", "git", f"leftover worktrees under {wt_dir}: {', '.join(leftovers)} (interrupted run?)")
         )
-    lock = Path(build_loop.LOCK_PATH)
+    lock = repo.path(build_loop.LOCK_PATH)
     if lock.is_file():
         try:
             pid = int(lock.read_text(encoding="utf-8").strip())
@@ -260,13 +261,13 @@ def check_git(front: dict[str, object], config: dict[str, object]) -> list[Findi
             findings.append(Finding("INFO", "git", f"a build-loop run appears active (lock PID {pid})"))
         else:
             findings.append(Finding("WARN", "git", "stale build-loop.lock (dead PID; auto-reclaimed on next run)"))
-    findings.extend(_check_leaf_branches(declared, wt_cfg if isinstance(wt_cfg, dict) else {}))
+    findings.extend(_check_leaf_branches(declared, wt_cfg if isinstance(wt_cfg, dict) else {}, repo))
     if not findings:
         findings.append(Finding("PASS", "git", f"on branch '{current}'; no leftover worktrees or lock"))
     return findings
 
 
-def _check_leaf_branches(declared: str, wt_cfg: dict[str, object]) -> list[Finding]:
+def _check_leaf_branches(declared: str, wt_cfg: dict[str, object], repo: repo_mod.Repo) -> list[Finding]:
     """Leaf branches (`<branch>-T-NNN`) left behind by parallel batches.
 
     A *merged* leaf branch is normal residue (merge_leaf removes only the worktree) — INFO with a
@@ -277,13 +278,13 @@ def _check_leaf_branches(declared: str, wt_cfg: dict[str, object]) -> list[Findi
         return []
     pattern = str(wt_cfg.get("branch_pattern", "{branch}-{task_id}"))
     glob = pattern.format(branch=declared, task_id="T-*")
-    rc, all_out = build_loop._run(["git", "branch", "--list", glob], cwd=".")
+    rc, all_out = build_loop._run(["git", "branch", "--list", glob], cwd=str(repo.root))
     if rc != 0:
         return []
     leaves = {ln.strip().lstrip("* ") for ln in all_out.splitlines() if ln.strip()}
     if not leaves:
         return []
-    rc, unmerged_out = build_loop._run(["git", "branch", "--no-merged", "HEAD", "--list", glob], cwd=".")
+    rc, unmerged_out = build_loop._run(["git", "branch", "--no-merged", "HEAD", "--list", glob], cwd=str(repo.root))
     unmerged = {ln.strip().lstrip("* ") for ln in unmerged_out.splitlines() if ln.strip()} if rc == 0 else set()
     out: list[Finding] = []
     if unmerged:
@@ -300,7 +301,7 @@ def _check_leaf_branches(declared: str, wt_cfg: dict[str, object]) -> list[Findi
     return out
 
 
-def check_hook(config: dict[str, object]) -> list[Finding]:
+def check_hook(config: dict[str, object], repo: repo_mod.Repo) -> list[Finding]:
     """The gate guard is only real if the PreToolUse hook is registered in at least one hook host.
 
     Two hosts can carry it: .claude/settings.json (Claude Code) and .github/hooks/*.json
@@ -313,13 +314,13 @@ def check_hook(config: dict[str, object]) -> list[Finding]:
         return [Finding("INFO", "hook", "gates.enforce_hook is false — convention layer only")]
     surfaces: list[str] = []
     try:
-        if "gate_guard.py" in Path(SETTINGS_PATH).read_text(encoding="utf-8"):
+        if "gate_guard" in repo.path(SETTINGS_PATH).read_text(encoding="utf-8"):
             surfaces.append("claude")
     except OSError:
         pass
-    for hook_file in sorted(Path(COPILOT_HOOKS_DIR).glob("*.json")):
+    for hook_file in sorted(repo.path(COPILOT_HOOKS_DIR).glob("*.json")):
         try:
-            if "gate_guard.py" in hook_file.read_text(encoding="utf-8"):
+            if "gate_guard" in hook_file.read_text(encoding="utf-8"):
                 surfaces.append("copilot")
                 break
         except OSError:
@@ -347,16 +348,16 @@ def check_hook(config: dict[str, object]) -> list[Finding]:
     return findings
 
 
-def check_events() -> list[Finding]:
+def check_events(repo: repo_mod.Repo) -> list[Finding]:
     """Open escalations are pending human decisions — they must not sit forgotten."""
     findings: list[Finding] = []
-    opened = events.open_escalations(events.load_events())
+    opened = events.open_escalations(events.load_events(str(repo.events)))
     if opened:
         ids = ", ".join(f"#{e.id} {e.event}({e.task or '-'})" for e in opened)
         findings.append(
             Finding("WARN", "events", f"{len(opened)} open escalation(s): {ids} — resolve via `make events`")
         )
-    log = Path(events.EVENTS_PATH)
+    log = repo.events
     if log.is_file() and log.stat().st_size > events.EVENTS_MAX_BYTES * 0.8:
         findings.append(
             Finding(
@@ -369,7 +370,7 @@ def check_events() -> list[Finding]:
     return findings or [Finding("PASS", "events", "no open escalations")]
 
 
-def check_security_review() -> list[Finding]:
+def check_security_review(repo: repo_mod.Repo) -> list[Finding]:
     """Once every task is done, the security-review report must exist and be bound to HEAD.
 
     Before that point the report legitimately doesn't exist yet, so the check stays silent.
@@ -377,13 +378,13 @@ def check_security_review() -> list[Finding]:
     old report as covering them.
     """
     try:
-        graph = dag.load(build_loop.TASKS_PATH)
+        graph = dag.load(repo.tasks)
     except (OSError, dag.DagError, yaml.YAMLError):
         return []
     if not graph.tasks or any(t.status != "done" for t in graph.tasks):
         return []
     try:
-        text = Path(build_loop.SECURITY_REVIEW_PATH).read_text(encoding="utf-8")
+        text = repo.path(build_loop.SECURITY_REVIEW_PATH).read_text(encoding="utf-8")
     except OSError:
         return [
             Finding(
@@ -395,7 +396,7 @@ def check_security_review() -> list[Finding]:
         ]
     m = re.search(r"^Reviewed-HEAD:\s*([0-9a-fA-F]+)", text, re.MULTILINE)
     reviewed = m.group(1) if m else ""
-    rc, out = build_loop._run(["git", "rev-parse", "HEAD"], cwd=".")
+    rc, out = build_loop._run(["git", "rev-parse", "HEAD"], cwd=str(repo.root))
     head = out.strip() if rc == 0 else ""
     if reviewed and head and (head.startswith(reviewed) or reviewed.startswith(head)):
         return [Finding("PASS", "security", f"security review is bound to HEAD ({reviewed[:12]})")]
@@ -431,7 +432,7 @@ def check_guard_paths(config: dict[str, object]) -> list[Finding]:
 SCHEMA_DIR = ".agentloop/schema"
 
 
-def check_schema() -> list[Finding]:
+def check_schema(repo: repo_mod.Repo) -> list[Finding]:
     """Validate config.yaml / tasks.yaml against the bundled JSON Schemas when possible.
 
     The schemas (.agentloop/schema/*.schema.json) are primarily editor tooling (the
@@ -444,12 +445,12 @@ def check_schema() -> list[Finding]:
     except ImportError:
         return [Finding("INFO", "schema", "jsonschema not installed — schema validation skipped (make doctor has it)")]
     out: list[Finding] = []
-    for data_path, schema_name in ((build_loop.CONFIG_PATH, "config"), (build_loop.TASKS_PATH, "tasks")):
-        schema_path = Path(SCHEMA_DIR) / f"{schema_name}.schema.json"
+    for data_path, schema_name in ((repo.config, "config"), (repo.tasks, "tasks")):
+        schema_path = repo.schema_dir / f"{schema_name}.schema.json"
         if not schema_path.exists():
             out.append(Finding("INFO", "schema", f"{schema_path} absent (older template) — skipped"))
             continue
-        data = _read_yaml(data_path)
+        data = _read_yaml(str(data_path))
         if data is None:
             continue  # unreadable/missing data files are already FAILed by their own checks
         try:
@@ -457,49 +458,63 @@ def check_schema() -> list[Finding]:
             jsonschema.validate(data, schema)
         except jsonschema.ValidationError as exc:
             where = "/".join(str(p) for p in exc.absolute_path) or "(root)"
-            out.append(Finding("FAIL", "schema", f"{data_path} violates its schema at {where}: {exc.message}"))
+            out.append(Finding("FAIL", "schema", f"{data_path.name} violates its schema at {where}: {exc.message}"))
         except (OSError, ValueError, jsonschema.SchemaError) as exc:
-            out.append(Finding("WARN", "schema", f"cannot validate {data_path}: {exc}"))
+            out.append(Finding("WARN", "schema", f"cannot validate {data_path.name}: {exc}"))
         else:
-            out.append(Finding("PASS", "schema", f"{data_path} matches {schema_path.name}"))
+            out.append(Finding("PASS", "schema", f"{data_path.name} matches {schema_path.name}"))
     return out
 
 
-def check_version() -> list[Finding]:
+def check_version(repo: repo_mod.Repo) -> list[Finding]:
     """Which template version this repo runs (identity only; upgrades are a human action)."""
-    manifest = _read_yaml(MANIFEST_PATH)
+    manifest = _read_yaml(str(repo.path(MANIFEST_PATH)))
     if manifest is not None:
         template = manifest.get("template") if isinstance(manifest.get("template"), dict) else {}
         version = template.get("version") if isinstance(template, dict) else None
         return [Finding("INFO", "version", f"adopt-manifest: template version {version or '(pre-0.1.0, unrecorded)'}")]
     try:
-        version_text = Path("VERSION").read_text(encoding="utf-8").strip()
+        version_text = repo.path("VERSION").read_text(encoding="utf-8").strip()
     except OSError:
         return [Finding("INFO", "version", "no adopt-manifest and no VERSION file (pre-manifest setup)")]
     return [Finding("INFO", "version", f"template repo, VERSION {version_text}")]
 
 
-def run_checks() -> list[Finding]:
-    findings = check_binaries()
-    config_findings, config = check_config()
+def run_checks(repo: repo_mod.Repo | None = None) -> list[Finding]:
+    if repo is None:
+        try:
+            repo = repo_mod.get()
+        except repo_mod.RepoNotFoundError:
+            # No .agentloop/ anywhere above: anchor at cwd so every SSOT check FAILs loudly
+            # (exactly what a diagnosis of an uninitialized directory should say).
+            repo = repo_mod.Repo(Path.cwd().resolve())
+    findings = check_binaries(repo)
+    config_findings, config = check_config(repo)
     findings += config_findings
-    state_findings, front = check_state()
+    state_findings, front = check_state(repo)
     findings += state_findings
     findings += check_placeholders(front, config)
     findings += check_guard_paths(config)
-    findings += check_tasks()
-    findings += check_git(front, config)
-    findings += check_hook(config)
-    findings += check_events()
-    findings += check_security_review()
-    findings += check_schema()
-    findings += check_version()
+    findings += check_tasks(repo)
+    findings += check_git(front, config, repo)
+    findings += check_hook(config, repo)
+    findings += check_events(repo)
+    findings += check_security_review(repo)
+    findings += check_schema(repo)
+    findings += check_version(repo)
     return findings
 
 
 def main(argv: list[str] | None = None) -> int:
-    argparse.ArgumentParser(description="diagnose the AgentLoop environment and SSOT (read-only)").parse_args(argv)
-    findings = run_checks()
+    parser = argparse.ArgumentParser(description="diagnose the AgentLoop environment and SSOT (read-only)")
+    parser.add_argument("--repo", default=None, help="repository root (default: discovered from cwd)")
+    args = parser.parse_args(argv)
+    try:
+        repo = repo_mod.get(args.repo) if args.repo else None
+    except repo_mod.RepoNotFoundError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    findings = run_checks(repo)
     for f in findings:
         print(f"  [{f.level:<4}] {f.area}: {f.message}")
     fails = sum(1 for f in findings if f.level == "FAIL")

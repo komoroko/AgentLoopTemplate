@@ -33,6 +33,7 @@ from datetime import date
 from pathlib import Path
 
 from agentloop import common, events
+from agentloop import repo as repo_mod
 
 STATE_PATH = common.STATE_PATH
 GATE_ORDER = common.GATE_ORDER
@@ -117,9 +118,15 @@ def main(argv: list[str] | None = None) -> int:
         default="",
         help="approver name, stamped on the gate line (recommended when several humans share the repo)",
     )
+    parser.add_argument("--repo", default=None, help="repository root (default: discovered from cwd)")
     args = parser.parse_args(argv)
     try:
-        today = record_approval(args.gate, args.by)
+        repo = repo_mod.get(args.repo)
+    except repo_mod.RepoNotFoundError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    try:
+        today = record_approval(args.gate, args.by, state_path=str(repo.state), events_path=str(repo.events))
     except AlreadyApproved as exc:
         print(exc.message + " (nothing to do)")
         return 0
