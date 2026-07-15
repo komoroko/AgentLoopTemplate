@@ -44,6 +44,7 @@ operations:
   approve <gate> [--by NAME]   record a human gate approval (NEVER pre-authorize this verb)
   revise --to <phase> ...      roll back upstream (gates reset in a chain)
   build [--dry-run]            the deterministic /build orchestrator (mode A)
+  dag [--render|--trace|...]   derive/inspect the task DAG (read-only; /tasks & /status use it)
   doctor                       read-only environment + SSOT diagnosis
   events [args]                view/record/resolve orchestration events
   cycle-close --name <slug>    archive the finished delta cycle and reset

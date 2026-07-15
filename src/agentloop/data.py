@@ -14,9 +14,16 @@ consumer names payload files by their data-relative posix path (e.g.
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Iterator
-from importlib.abc import Traversable
 from importlib.resources import files
+
+if sys.version_info >= (3, 11):
+    # importlib.abc.Traversable is deprecated in 3.12 and removed in 3.14; the resources.abc
+    # spelling is the supported home on 3.11+ (our floor is 3.10, hence the guard).
+    from importlib.resources.abc import Traversable
+else:
+    from importlib.abc import Traversable
 
 
 def root() -> Traversable:
