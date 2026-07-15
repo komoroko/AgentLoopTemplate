@@ -106,7 +106,7 @@ AgentLoop is itself a multi-agent orchestration, built on three axes:
 Prerequisites: WSL / Linux / macOS. Install the CLI so its hooks resolve on PATH:
 
 ```bash
-uv tool install git+https://github.com/you/AgentLoopTemplate   # provides `agentloop`
+uv tool install git+https://github.com/komoroko/AgentLoopTemplate   # provides `agentloop`
 ```
 
 Mode A (`agentloop build`) additionally needs a **headless agent CLI** — `claude -p` by default;
@@ -124,7 +124,7 @@ cd myrepo && git init            # any repo — new or existing
 # interactive wizard (recommended; asks name / branch / source / headless CLI / a brief line)
 agentloop start
 # or non-interactively (idempotent):
-#   agentloop init --name <product> [--branch build/<product>] [--source git+https://github.com/you/AgentLoopTemplate]
+#   agentloop init --name <product> [--branch build/<product>] [--source git+https://github.com/komoroko/AgentLoopTemplate]
 
 # optional, per developer environment — add an agent's surfaces on demand:
 agentloop install claude         # writes .claude/ wrappers + merges settings.json
