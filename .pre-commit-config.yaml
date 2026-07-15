@@ -8,7 +8,7 @@
     hooks:
       - id: agentloop-gate-guard
         name: agentloop gate guard (commit stage)
-        entry: uv run --no-project --with pyyaml python scripts/agentloop/gate_guard.py --check-diff
+        entry: uv run agentloop guard --check-diff
         language: system
         pass_filenames: false
         always_run: true
@@ -30,6 +30,8 @@
     - id: check-yaml
     - id: debug-statements
     - id: name-tests-test
+      # tests/ uses pytest's conventional test_*.py naming (the hook's default wants *_test.py)
+      args: [--pytest-test-first]
     - id: requirements-txt-fixer
 
   # Ruff (lint + format + import sorting; black/isort are consolidated into ruff)
@@ -81,39 +83,5 @@
           # Treat the tests' @pytest.fixture as typed (without pytest types in the isolated env,
           # strict's disallow_untyped_decorators raises an untyped-decorator error).
           - "pytest>=9.0.3"
-        minimum_pre_commit_version: "4.6.0"
-        stages: [pre-push]
-
-  # TypeScript / frontend (frontend/). Use the project's own config as-is via pnpm.
-  # Aligned with the Python side: ruff↔eslint=commit, ruff-format↔prettier and mypy↔tsc=pre-push.
-  - repo: local
-    hooks:
-      - id: eslint
-        name: eslint (frontend)
-        description: "Run ESLint for frontend TypeScript linting"
-        entry: bash -c 'cd frontend && pnpm exec eslint --fix'
-        language: system
-        files: ^frontend/.*\.(ts|tsx|mjs|cts|mts)$
-        pass_filenames: false
-        require_serial: true
-        minimum_pre_commit_version: "4.6.0"
-      - id: prettier
-        name: prettier (frontend)
-        description: "Run Prettier for frontend formatting"
-        entry: bash -c 'cd frontend && pnpm exec prettier --write .'
-        language: system
-        files: ^frontend/.*\.(ts|tsx|mjs|css|json)$
-        pass_filenames: false
-        require_serial: true
-        minimum_pre_commit_version: "4.6.0"
-        stages: [pre-push]
-      - id: tsc
-        name: tsc --noEmit (frontend)
-        description: "Run tsc for frontend type checking"
-        entry: bash -c 'cd frontend && pnpm exec tsc --noEmit'
-        language: system
-        files: ^frontend/.*\.(ts|tsx)$
-        pass_filenames: false
-        require_serial: true
         minimum_pre_commit_version: "4.6.0"
         stages: [pre-push]

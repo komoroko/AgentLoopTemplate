@@ -1,0 +1,119 @@
+"""Verify repo.py's root discovery (flag > env > walk-up) and the Repo path bundle."""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from agentloop import gate_guard
+from agentloop import repo as repo_mod
+
+
+@pytest.fixture
+def repo_root(tmp_path: Path) -> Path:
+    (tmp_path / ".agentloop").mkdir()
+    (tmp_path / "docs" / "tasks").mkdir(parents=True)
+    return tmp_path
+
+
+def test_find_root_walks_up_from_a_subdirectory(repo_root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("AGENTLOOP_ROOT", raising=False)
+    assert repo_mod.find_root(start=repo_root / "docs" / "tasks") == repo_root
+    assert repo_mod.find_root(start=repo_root) == repo_root
+
+
+def test_find_root_without_marker_raises_with_guidance(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("AGENTLOOP_ROOT", raising=False)
+    (tmp_path / "plain").mkdir()
+    with pytest.raises(repo_mod.RepoNotFoundError) as exc:
+        repo_mod.find_root(start=tmp_path / "plain")
+    assert "agentloop init" in str(exc.value) and "--repo" in str(exc.value)
+
+
+def test_find_root_env_var_wins_over_walk_up(repo_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    other = tmp_path / "other"
+    (other / ".agentloop").mkdir(parents=True)
+    monkeypatch.setenv("AGENTLOOP_ROOT", str(other))
+    assert repo_mod.find_root(start=repo_root) == other.resolve()
+
+
+def test_find_root_override_beats_env_and_must_hold_marker(
+    repo_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AGENTLOOP_ROOT", str(tmp_path / "nowhere"))
+    assert repo_mod.find_root(override=str(repo_root)) == repo_root
+    # An explicit choice without .agentloop/ is an error, never silently walked past.
+    (tmp_path / "empty").mkdir()
+    with pytest.raises(repo_mod.RepoNotFoundError):
+        repo_mod.find_root(override=str(tmp_path / "empty"))
+
+
+def test_bad_env_var_is_an_error_not_a_fallback(repo_root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AGENTLOOP_ROOT", str(repo_root / "missing"))
+    with pytest.raises(repo_mod.RepoNotFoundError):
+        repo_mod.find_root(start=repo_root)
+
+
+def test_repo_paths_are_absolute_and_root_anchored(repo_root: Path) -> None:
+    repo = repo_mod.Repo(repo_root)
+    assert repo.state == repo_root / ".agentloop/state.md"
+    assert repo.config.is_absolute() and repo.tasks.is_absolute() and repo.lock.is_absolute()
+    assert repo.path("docs/20-design.md") == repo_root / "docs/20-design.md"
+
+
+def test_repo_rel_normalizes_and_rejects_outside_paths(repo_root: Path) -> None:
+    repo = repo_mod.Repo(repo_root)
+    assert repo.rel(repo_root / "docs" / "20-design.md") == "docs/20-design.md"
+    assert repo.rel("docs/20-design.md") == "docs/20-design.md"  # relative = repo-relative
+    assert repo.rel(repo_root.parent / "elsewhere.md") is None
+
+
+def test_gate_guard_resolves_repo_from_the_payload_cwd(repo_root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A hook fired with cwd anywhere inside the repo judges paths against the discovered root."""
+    monkeypatch.delenv("AGENTLOOP_ROOT", raising=False)
+    (repo_root / ".agentloop" / "state.md").write_text(
+        "---\ngates:\n  requirements: pending\n  design: pending\n  tasks: pending\n"
+        "  build: pending\n  release: pending\n---\n",
+        encoding="utf-8",
+    )
+    (repo_root / ".agentloop" / "config.yaml").write_text(
+        "gates:\n  enforce_hook: true\n  template_mode: false\n", encoding="utf-8"
+    )
+    payload = json.dumps(
+        {
+            "cwd": str(repo_root / "docs"),
+            "tool_name": "Write",
+            "tool_input": {"file_path": str(repo_root / "docs" / "20-design.md")},
+        }
+    )
+    env = {**os.environ, "PYTHONPATH": "src"}
+    proc = subprocess.run(
+        ["python", "-m", "agentloop.gate_guard"],
+        input=payload,
+        capture_output=True,
+        text=True,
+        cwd=Path(__file__).resolve().parents[1],
+        env=env,
+    )
+    assert proc.returncode == 0
+    assert '"deny"' in proc.stdout  # requirements gate pending → the design doc write is denied
+
+
+def test_evaluate_accepts_an_explicit_repo_without_chdir(repo_root: Path) -> None:
+    (repo_root / ".agentloop" / "state.md").write_text(
+        "---\ngates:\n  requirements: approved\n  design: pending\n  tasks: pending\n"
+        "  build: pending\n  release: pending\n---\n",
+        encoding="utf-8",
+    )
+    (repo_root / ".agentloop" / "config.yaml").write_text(
+        "gates:\n  enforce_hook: true\n  template_mode: false\n", encoding="utf-8"
+    )
+    repo = repo_mod.Repo(repo_root)
+    ok, _ = gate_guard.evaluate(str(repo_root / "docs" / "20-design.md"), repo)
+    assert ok is True  # requirements approved → design doc editable
+    ok, reason = gate_guard.evaluate(str(repo_root / "docs" / "tasks" / "T-001.md"), repo)
+    assert ok is False and "design" in reason

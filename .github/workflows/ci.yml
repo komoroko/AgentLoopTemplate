@@ -32,9 +32,8 @@ jobs:
           key: pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}
 
       # `make check` == pre-commit (commit stage) + pre-push stage + template-lint (the drift
-      # canaries across the hand-maintained template files) — the full gate.
-      # Frontend hooks (eslint/prettier/tsc) are file-scoped to frontend/ and skip when absent.
-      - name: Run pre-commit and template-lint
+      # canaries) + sync-check (materialized artifacts match the packaged payload) — the full gate.
+      - name: Run pre-commit, template-lint and sync-check
         run: make check
 
   test:
@@ -62,8 +61,8 @@ jobs:
       - name: Sync dependencies
         run: uv sync
 
-      - name: Run template-tool tests
-        run: make test-tools
+      - name: Run the package test suite
+        run: uv run pytest -vv tests/
 
       - name: Validate the task DAG and the R-N trace
         # --validate: structural consistency of tasks.yaml (vocabulary, unknown ids, cycles).
@@ -71,18 +70,24 @@ jobs:
         # scaffold's example R-N headings have no tasks yet, by design). Exit 2 = "cannot
         # check" (requirements doc absent) is tolerated; a broken thread exits 1 and fails.
         run: |
-          uv run --no-project --with pyyaml python scripts/agentloop/dag.py --validate
+          uv run agentloop dag --validate
           if grep -q "id:" .agentloop/tasks.yaml; then
-            uv run --no-project --with pyyaml python scripts/agentloop/dag.py --trace || test $? -eq 2
+            uv run agentloop dag --trace || test $? -eq 2
           else
             echo "tasks.yaml holds no tasks yet: skipping --trace"
           fi
 
-      - name: Run product (backend) tests
-        # The bare template ships no backend tests yet, so pytest exits 5 ("no tests collected"),
-        # which we tolerate (real failures exit 1 and still fail). Called directly rather than via
-        # `make test` because make collapses a recipe's exit code to 2, hiding the 5.
-        run: uv run pytest backend/ || test $? -eq 5
+      - name: End-to-end smoke (init → guard deny in a fresh temp repo)
+        # Prove the packaged payload seeds a repo and the gate guard denies a pending-gate
+        # write — the product-facing path, exercised straight from this checkout via uvx.
+        run: |
+          d="$(mktemp -d)"; ( cd "$d" && git init -q )
+          uvx --from . agentloop init --name smoke --repo "$d"
+          test -f "$d/.agentloop/agentloop.lock"
+          test ! -e "$d/.claude"   # agent surfaces are opt-in
+          printf '{"cwd":"%s","tool_input":{"file_path":"%s/docs/20-design.md"}}' "$d" "$d" \
+            | uvx --from . agentloop guard | grep -q '"deny"'
+          uvx --from . agentloop sync --check --repo "$d"
 
   # Aggregate gate over the python matrix. Branch protection requires the single stable name
   # "tests" — the matrix jobs are named per version, so this is what reports it. `if: always()`
