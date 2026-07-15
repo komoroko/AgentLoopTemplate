@@ -1,15 +1,17 @@
 # scripts/
 
-Where scripts live. Split by purpose so the **two kinds are not mixed**.
+**Product-specific** scripts only (data prep, operational helpers, etc.). Add freely per product.
 
-| Path | Purpose | Owner |
-|------|------|------|
-| `scripts/agentloop/` | The AgentLoop template's foundational tools (the deterministic orchestrator `build_loop.py` / DAG derivation `dag.py` / the gate hook `gate_guard.py` / the one-way Issues mirror `issue_sync.py` / the roll-back helper `revise.py` / lifecycle setup `init.py`, `adopt.py`, `cycle.py`, and their unit tests). Shipped with the template and referenced by `make build-loop`/`make test-tools`/`make issue-sync` and the hook in `.claude/settings.json`. | template |
-| `scripts/` (directly under / other subfolders) | **Product-specific** scripts (data prep, operational helpers, etc.). Add freely per product. | product |
+The AgentLoop harness no longer lives here: it is an **installed CLI** (`uv tool install
+git+<this repo>@vX.Y.Z`, then `agentloop <verb>`) whose code ships in the `agentloop` package,
+not as copied repo source. There is therefore no `scripts/agentloop/` foundational-tools
+directory anymore — the orchestrator, DAG derivation, gate hook, Issues mirror, and lifecycle
+verbs are all reached through `agentloop …`.
 
-The contents under `scripts/agentloop/` are part of the template, so do not rewrite them for product reasons (tune behavior you want to change via `.agentloop/config.yaml`).
+## Relation to the gate (`agentloop guard`)
 
-## Relation to the gate (`gate_guard.py`)
-
-- A Write/Edit to `scripts/` (directly under / product) is treated as **implementation code** and is **denied** by the mechanism hook unless `gates.tasks` is approved (same as `backend/**`/`frontend/**`).
-- `scripts/agentloop/` (foundational tools) is **always allowed regardless of gates** (so as not to block the hook's own maintenance / speculative work).
+- A Write/Edit under `scripts/` is treated as **implementation code** and is **denied** by the
+  mechanism hook unless `gates.tasks` is approved (same as `backend/**` / `frontend/**`; see
+  `guard_paths` in `.agentloop/config.yaml`).
+- The old always-allowed carve-out for `scripts/agentloop/` is gone with the directory — the
+  installed package is not repo source, so it needs no self-protection path.

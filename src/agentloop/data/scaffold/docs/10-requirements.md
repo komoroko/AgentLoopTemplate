@@ -32,7 +32,7 @@ While drafting, mark anything undecided inline as `[NEEDS CLARIFICATION: <what>]
 
 ## Non-functional requirements (criteria)
 
-Non-functional requirements get IDs too (`NFR-1`, `NFR-2`, … in the headings), so `dag.py --trace` can
+Non-functional requirements get IDs too (`NFR-1`, `NFR-2`, … in the headings), so `agentloop dag --trace` can
 follow them into the design, tasks, and the test plan the same way as R-N. A cross-cutting NFR with no
 dedicated design section or task is fine (the trace only WARNs) — but every NFR **must** appear in
 `docs/test/test-plan.md`, which is checked mechanically at `/verify` (`--trace --test-plan`).

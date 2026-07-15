@@ -48,6 +48,22 @@ upgrade` shows the sections between the installed version, recorded in
 - `doctor` checks for the lock (readability, format, writer-version skew) and for the hook
   command's binary being resolvable on PATH.
 
+### Fixed
+- **Swept the prompts, rules, scaffolds, and config comments onto the installed CLI.**
+  The migration had left invocations that no longer run: `agentloop <verb> ARGS="…"`
+  (the old make passthrough — now a literal argv token that fails to parse), `dag.py
+  --trace|--impacted|--render|--mermaid` and `uv run … scripts/agentloop/*.py …` (the
+  retired in-repo script paths), and a few residual `make init|cycle-close|events`
+  references. They are now `agentloop dag …` / `agentloop events …` / `agentloop init` etc.
+  `config.yaml` comments and the `scripts/README.md` no longer point at the removed
+  `scripts/agentloop/` tree or its retired always-allowed guard carve-out.
+- **`agentloop dag` is listed in `--help`.** The verb was dispatched but undocumented, so
+  the prompts that reference `agentloop dag --render|--trace|--mermaid|--impacted` pointed
+  at a command the help never mentioned.
+- **`data.py` no longer imports the deprecated `importlib.abc.Traversable`** (removed in
+  Python 3.14): a `sys.version_info` guard uses `importlib.resources.abc` on 3.11+ while
+  keeping the 3.10 floor working.
+
 ### Removed
 - `VERSION`, `agentloop.mk`, the `./agentloop` shell wrapper, the `scripts/agentloop/`
   location, and the empty `backend/`/`frontend/` scaffolds (products bring their own stack).

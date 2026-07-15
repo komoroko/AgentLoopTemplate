@@ -11,7 +11,7 @@ the template's machinery: `/req` and `/design` start from the baseline this comm
   The only deliverables are `docs/05-current-state.md` and a summary block in
   `docs/00-product-brief.md`.
 - **Do not reverse-generate requirements (R-N) from existing behavior.** Exhaustive
-  reverse-specification costs far more than it returns, and it floods `dag.py --trace` with
+  reverse-specification costs far more than it returns, and it floods `agentloop dag --trace` with
   "uncovered requirement" noise forever. Requirement IDs and traceability apply to **each
   cycle's delta only**. The existing system is captured as a *baseline*, not as requirements.
 - Gates are untouched: onboarding adds no new gate, and none is set to approved by it.

@@ -1,8 +1,8 @@
 # yaml-language-server: $schema=schema/config.schema.json
 # .agentloop/config.yaml — the "single source of knobs" for deterministic orchestration
 #
-# scripts/agentloop/build_loop.py (the implementation-loop orchestrator) and
-# scripts/agentloop/gate_guard.py (the gate mechanism hook) read this file. The behavior of
+# build_loop.py (the implementation-loop orchestrator) and
+# gate_guard.py (the gate mechanism hook) read this file. The behavior of
 # parallelism, retry, worktree, and gate enforcement is all decided here. Because code (not a
 # natural-language prompt) reads it, changing this deterministically changes the execution control flow.
 
@@ -14,7 +14,7 @@ build:
 
   # The headless agent CLI mode A launches (implementer / review step / integration fixer /
   # post-build security review). The prompt is appended as the last argument — switch it with
-  # `./agentloop agent <claude|codex|gemini|"custom cmd">` (scripts/agentloop/agent_cli.py):
+  # `agentloop agent <claude|codex|gemini|"custom cmd">` (agent_cli.py):
   #   claude:  ["claude", "-p"]
   #   codex:   ["codex", "exec"]
   #   gemini:  ["gemini", "-p"]
@@ -97,12 +97,12 @@ build:
   #  in ascending task-id order — build_loop.py hardcodes it so every run joins the same way.)
 
 gates:
-  # If true, scripts/agentloop/gate_guard.py (the PreToolUse hook) mechanically blocks
+  # If true, gate_guard.py (the PreToolUse hook) mechanically blocks
   # deliverable edits while the prerequisite gate is unapproved. Set false to fall back to the convention layer (AGENTS.md) only.
   enforce_hook: true
-  # true while this repo IS the template itself: scaffold originals (docs/20-design.md, docs/tasks/**,
-  # scripts/**) share paths with product deliverables, so the guard would block its own maintenance.
-  # `make init` flips this to false when you turn the template into a product (guard goes live).
+  # true while this repo IS the template itself: scaffold originals (docs/20-design.md, docs/tasks/**)
+  # share paths with product deliverables, so the guard would block its own maintenance.
+  # `agentloop init` flips this to false when you turn the template into a product (guard goes live).
   template_mode: true
   # Which paths the guard watches, and the gate each requires. A key ending in "/" guards the whole
   # prefix; any other key guards that exact file. Exact wins over prefixes; longest prefix wins.
@@ -120,10 +120,10 @@ gates:
     app/: tasks
     backend/: tasks
     frontend/: tasks
-    scripts/: tasks        # product scripts (scripts/agentloop/ is always allowed)
+    scripts/: tasks        # product scripts (product-owned; the harness is an installed package now)
 
 github:
-  # One-way-mirror tasks.yaml to GitHub Issues (human-facing visibility). Read by scripts/agentloop/issue_sync.py.
+  # One-way-mirror tasks.yaml to GitHub Issues (human-facing visibility). Read by issue_sync.py.
   # **Off by default** = offline-safe. Even when true, auto-skips if gh / remote is absent.
   # tasks.yaml is always the SSOT; Issues are a projection that is never read back (preserving deterministic, offline operation).
   enabled: false

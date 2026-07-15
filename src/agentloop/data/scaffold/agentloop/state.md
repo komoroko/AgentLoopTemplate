@@ -31,13 +31,13 @@ updated_at: "<YYYY-MM-DD>"
 ## Task table & execution plan (generated view)
 The truth of tasks is `.agentloop/tasks.yaml` (the machine-readable SSOT of the task graph). Everything between the
 markers below is a **derived, human-facing view** — refresh it by pasting the output of
-`uv run --no-project --with pyyaml python scripts/agentloop/dag.py --render` (deterministic mode A's `build_loop.py`
+`agentloop dag --render` (deterministic mode A's `build_loop.py`
 refreshes the block automatically each iteration; keep the markers). Table, layers, critical path, frontier, and
 `fan-out` are all derived — never maintain them by hand. For the `kind`/`status` vocabulary, see the tasks.yaml
 schema / AGENTS.md.
 
 <!-- DAG-VIEW:BEGIN -->
-_(run /tasks, then paste the `dag.py --render` output here)_
+_(run /tasks, then paste the `agentloop dag --render` output here)_
 <!-- DAG-VIEW:END -->
 
 ## Speculative work log (provisional, throwaway-by-default)
@@ -49,12 +49,12 @@ Do not use it as grounds to set a gate to `approved`.
 | _(append as needed)_ |
 
 ## Escalation log (generated view)
-The truth of escalations is `.agentloop/events.ndjson` (structured events; see `scripts/agentloop/events.py`).
+The truth of escalations is `.agentloop/events.ndjson` (structured events; see `agentloop events`).
 `build_loop.py` appends `blocked` / `merge_conflict` / `integration_red` / `no_runnable` events automatically;
 record one by hand (interactive mode, or a `needs-revision`) with
-`agentloop events ARGS='--add blocked --task T-00N --detail "..."'`. Everything between the markers below is a
-**generated view** — refresh it with `agentloop events ARGS=--refresh-state` (deterministic mode A refreshes it
-automatically). Close an item with `agentloop events ARGS='--resolve <ID> --note "how it was resolved"'` —
+`agentloop events --add blocked --task T-00N --detail "..."`. Everything between the markers below is a
+**generated view** — refresh it with `agentloop events --refresh-state` (deterministic mode A refreshes it
+automatically). Close an item with `agentloop events --resolve <ID> --note "how it was resolved"` —
 /verify closes all open items before gate ⑤.
 
 <!-- ESCALATION-VIEW:BEGIN -->
@@ -63,7 +63,7 @@ _(no events yet)_
 
 ## Roll-back (revision) log
 The record of `/revise` (`agentloop revise`) resetting upstream gates to `pending` in a chain. The history of **the human rewinding approval**.
-Identify the task ripple with `dag.py --impacted` and reconcile (keep/modify/obsolete/new); record the result in the relevant task ticket.
+Identify the task ripple with `agentloop dag --impacted` and reconcile (keep/modify/obsolete/new); record the result in the relevant task ticket.
 
 | Date | Target (phase) | Gates reset to pending in chain | Reason |
 |------|---------------|-------------------------------|------|

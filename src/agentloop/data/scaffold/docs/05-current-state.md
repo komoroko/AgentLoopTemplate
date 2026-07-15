@@ -2,7 +2,7 @@
 
 > `/onboard` generates this in an adopted (brownfield) repo by surveying the existing code
 > read-only. It is the **persistent baseline**: `/req` and `/design` read it first, and it
-> survives `make cycle-close` (updated — not archived — at the end of each cycle).
+> survives `agentloop cycle-close` (updated — not archived — at the end of each cycle).
 > Existing documents are **linked from here, never converted or moved**; they stay the truth
 > where they already live. In a greenfield repo this file may simply stay unused.
 

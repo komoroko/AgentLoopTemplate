@@ -85,7 +85,7 @@ The truth is split across three files with distinct roles — do not conflate th
   (`agentloop events`; created on first event); state.md embeds only the generated view.
 - **`.agentloop/tasks.yaml`** — the machine-readable truth of the task DAG (`/tasks` generates
   it; `build_loop.py`/`dag.py` read it). `req` threads traceability requirements → design →
-  tasks (`R-N` / `NFR-N`), cross-checked by `dag.py --trace`. Derived values (fan-out,
+  tasks (`R-N` / `NFR-N`), cross-checked by `agentloop dag --trace`. Derived values (fan-out,
   frontier, layers, critical path) are **never stored**. GitHub Issues, when enabled, are a
   one-way mirror, never read back.
 - **`.agentloop/config.yaml`** — deterministic-execution knobs **and the single DoD definition
@@ -126,7 +126,7 @@ back at the human's discretion with `/revise` (`agentloop revise`): **gates rese
 (the target phase's gate and everything downstream return to `pending`; an upstream `pending`
 never leaves a downstream gate `approved`). **Rewinding approval is a human privilege** — the
 agent never rolls back on its own. **Upstream fixes always entail task impact analysis**:
-expand the affected set with `dag.py --impacted` and reclassify each task instead of
+expand the affected set with `agentloop dag --impacted` and reclassify each task instead of
 discarding tasks (procedure: the revise.md and tasks.md procedure files).
 
 ## Gate self-assessment (required)

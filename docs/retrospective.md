@@ -12,8 +12,8 @@ Classify needs-revision / blocked by origin. Upstream defects are material for i
 | | | | | |
 
 ## 2. Recovering the escalation log
-Conclude every open escalation in the event log: `make events ARGS=--render` lists them,
-`make events ARGS='--resolve <ID> --note "…"'` closes each (summarize the conclusions here).
+Conclude every open escalation in the event log: `agentloop events --render` lists them,
+`agentloop events --resolve <ID> --note "…"` closes each (summarize the conclusions here).
 
 -
 
