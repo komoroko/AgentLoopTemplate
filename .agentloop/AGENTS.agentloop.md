@@ -195,7 +195,10 @@ Rules: **keep deliverables lean; push detail out to linked files** (e.g. an `ADR
 **Compress and rotate the append-only logs** at each checkpoint — summarize resolved state.md
 log rows, keep the decision, drop the transcript (`events.ndjson` rotates itself). **Failures
 are summarized, not dumped.** **Prefer fetch-on-demand over holding everything** — read the
-slice you need.
+slice you need. **A `docs/notes/` memo is a record, not a permanent tier: once its lesson is
+promoted (into `AGENTS.md`, an `ADR-*.md`, or the code) the note has served its purpose and is
+deleted** — a note that never promotes-then-exits is how records accumulate (a copy that lands
+in a product is deletable there; it is outside `upgrade`/`uninstall`).
 
 **Compact the session at clean checkpoints, not mid-flight.** `session-compaction` is
 human-run; the agent suggests it — only at a phase or build-layer boundary, and only when the
