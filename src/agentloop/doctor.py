@@ -14,7 +14,7 @@ Read-only: doctor never repairs anything — every fix stays a deliberate human/
 
 Usage:
   agentloop doctor
-  uv run --no-project --with pyyaml python src/agentloop/doctor.py
+  agentloop doctor
 """
 
 from __future__ import annotations

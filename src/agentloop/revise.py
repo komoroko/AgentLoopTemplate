@@ -16,9 +16,9 @@ mechanically; "keep" is a deliberate, human-presented reclassification during th
 was invalidated (those revert to `todo` there).
 
 Usage:
-  uv run python src/agentloop/revise.py --to design --reason "rethink the auth method"
-  uv run python src/agentloop/revise.py --to design --impacted T-003,T-007
-  uv run python src/agentloop/revise.py --to requirements --dry-run
+  agentloop revise --to design --reason "rethink the auth method"
+  agentloop revise --to design --impacted T-003,T-007
+  agentloop revise --to requirements --dry-run
 """
 
 from __future__ import annotations

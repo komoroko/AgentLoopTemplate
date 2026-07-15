@@ -15,7 +15,8 @@ Decision (the built-in default rules; override per repo with gates.guard_paths i
 Any path not matched is allowed unconditionally — tests/** is deliberately unguarded so
 approval-wait speculative work (fixtures, harness prep) keeps flowing. A brownfield repo
 (`agentloop init` auto-detects one) typically scopes guard_paths to the docs deliverables only —
-so existing code keeps flowing — and adds its own code paths (e.g. src/) when ready.
+so existing code keeps flowing — and adds its own code paths (e.g. src/) when ready. (The harness
+is an installed package, not repo source, so there is no self-protection path carve-out.)
 
 If gates.template_mode in `.agentloop/config.yaml` is true, always allow: the repo is the
 template itself, whose scaffold originals share paths with product deliverables (`agentloop
@@ -85,18 +86,14 @@ def _repo_or_cwd(start: Path | None = None) -> repo_mod.Repo:
         return repo_mod.Repo((start or Path.cwd()).resolve())
 
 
-# Not guarded (always allowed regardless of gates). The template's foundational tools are where
-# the hook itself runs, and the build gate must not block their maintenance.
-_UNGUARDED_PREFIXES: tuple[str, ...] = ("src/agentloop/",)
-
 # Built-in guard rules: path → prerequisite gate. A key ending in "/" guards the whole prefix;
 # any other key guards that exact file. Overridable per repo via gates.guard_paths in config
 # (a brownfield repo scopes this to the docs deliverables, or maps its own layout).
 # The code prefixes cover the common layouts (src/lib/app/backend/frontend/scripts); tests/ is
 # deliberately NOT guarded — preparing fixtures/harness while a gate is pending is sanctioned
 # speculative work (AGENTS.md "Minimizing the approval-wait bottleneck").
-# scripts/ requires tasks approval as product-script implementation code
-# (src/agentloop/ is filtered out earlier by the exclusion above).
+# scripts/ requires tasks approval as product-script implementation code. (The harness itself is
+# an installed package now, not repo source, so no self-protection carve-out is needed.)
 _DEFAULT_GUARD_PATHS: dict[str, str] = {
     "docs/20-design.md": "requirements",
     "docs/decisions/": "requirements",
@@ -127,8 +124,6 @@ def required_gate(file_path: str, rules: dict[str, str] | None = None, repo: rep
     repo = repo or _repo_or_cwd()
     rel = repo.rel(file_path)
     if rel is None:
-        return None
-    if any(rel.startswith(p) for p in _UNGUARDED_PREFIXES):
         return None
     if rules is None:
         rules = _guard_paths(repo)

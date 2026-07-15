@@ -23,7 +23,7 @@ Idempotent: already-archived items are skipped; `--dry-run` prints the plan only
 
 Usage:
   agentloop cycle-close --name payment-refactor
-  uv run python src/agentloop/cycle.py --name payment-refactor [--dry-run]
+  agentloop cycle-close --name payment-refactor [--dry-run]
 """
 
 from __future__ import annotations

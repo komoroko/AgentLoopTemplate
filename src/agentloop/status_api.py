@@ -6,7 +6,7 @@ as natural language in .agentloop/prompts/commands/status.md — computes the **
 deterministically from the phase/gate/task state (first-match decision table in `next_action`).
 Consumed by src/agentloop/ui.py (the local dashboard) and runnable standalone:
 
-  uv run --no-project --with pyyaml python src/agentloop/status_api.py --json
+  agentloop status --json
 
 Read-only: this module never writes to the SSOT. Reads are tolerant — a missing tasks.yaml (normal before
 /tasks) or a half-edited config must degrade to a warning, never a crash (the dashboard has to stay up

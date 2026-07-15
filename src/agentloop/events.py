@@ -17,9 +17,9 @@ Writers: build_loop.py appends automatically; a human or the interactive-mode ag
 skipped, never a crash (the log must not be able to take the orchestrator down).
 
 Usage:
-  uv run --no-project --with pyyaml python src/agentloop/events.py --render
-  uv run --no-project --with pyyaml python src/agentloop/events.py --add blocked --task T-003 --detail "..."
-  uv run --no-project --with pyyaml python src/agentloop/events.py --resolve 3 --note "fixed by abc123"
+  agentloop events --render
+  agentloop events --add blocked --task T-003 --detail "..."
+  agentloop events --resolve 3 --note "fixed by abc123"
 """
 
 from __future__ import annotations

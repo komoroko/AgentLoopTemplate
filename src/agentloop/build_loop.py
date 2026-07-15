@@ -21,8 +21,8 @@ This script **does not set gates.build to approved** (only the human opens a gat
 After all tasks are done it prints a summary and stops, leaving it to the human's approval (/build's gate ④).
 
 Usage:
-  uv run python src/agentloop/build_loop.py            # run
-  uv run python src/agentloop/build_loop.py --dry-run  # check the control flow without calling the agent CLI/git
+  agentloop build            # run
+  agentloop build --dry-run  # check the control flow without calling the agent CLI/git
 
 --dry-run is strictly read-only: task statuses advance only in an in-memory overlay, and no SSOT
 file, event log, or lock file is written — running it never changes what a later real run sees.

@@ -73,7 +73,6 @@ def test_required_gate_mapping(in_tmp: Path) -> None:
     assert gate_guard.required_gate("scripts/my_product_tool.py") == "tasks"  # product script
     assert gate_guard.required_gate("docs/test/test-plan.md") == "build"
     # not guarded
-    assert gate_guard.required_gate("src/agentloop/dag.py") is None  # foundational tools are excluded
     assert gate_guard.required_gate("docs/10-requirements.md") is None
     assert gate_guard.required_gate("README.md") is None
     assert gate_guard.required_gate("tests/test_main.py") is None  # deliberate: speculative fixtures may flow
@@ -100,15 +99,11 @@ def test_blocks_product_script_when_tasks_pending(in_tmp: Path) -> None:
     assert "tasks" in reason
 
 
-def test_allows_agentloop_tooling_even_when_pending(in_tmp: Path) -> None:
-    # Foundational tools are always allowed regardless of gates (do not block the hook's own maintenance).
-    _setup(in_tmp, tasks="pending")
-    assert gate_guard.evaluate("src/agentloop/build_loop.py") == (True, "")
-
-
 def test_allows_unguarded_path(in_tmp: Path) -> None:
     _setup(in_tmp)
-    assert gate_guard.evaluate("src/agentloop/gate_guard.py") == (True, "")
+    # tests/ is deliberately unguarded so approval-wait speculative work keeps flowing.
+    assert gate_guard.evaluate("tests/test_feature.py") == (True, "")
+    assert gate_guard.evaluate("README.md") == (True, "")
 
 
 def test_enforce_hook_false_allows_everything(in_tmp: Path) -> None:
@@ -168,12 +163,6 @@ def test_guard_paths_absent_falls_back_to_defaults(in_tmp: Path) -> None:
     _setup(in_tmp, tasks="pending", config=_CONFIG_ON)
     allowed, _ = gate_guard.evaluate("backend/app/main.py")
     assert allowed is False
-
-
-def test_guard_paths_agentloop_tools_stay_unguarded(in_tmp: Path) -> None:
-    # The self-protection exclusion is hardcoded and cannot be re-guarded via config.
-    _setup(in_tmp, tasks="pending", config="gates:\n  guard_paths:\n    scripts/: tasks\n")
-    assert gate_guard.evaluate("src/agentloop/build_loop.py") == (True, "")
 
 
 def test_template_mode_allows_everything(in_tmp: Path) -> None:

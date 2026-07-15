@@ -15,7 +15,7 @@ template. test_template_lint.py runs the same checks against the live repo under
 `make test-tools`, which is how CI catches a drifting commit.
 
 Usage:
-  uv run --no-project --with pyyaml python src/agentloop/template_lint.py
+  agentloop template-lint
 """
 
 from __future__ import annotations
