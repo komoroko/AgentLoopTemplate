@@ -1,6 +1,6 @@
 # /onboard — Map an existing codebase into AgentLoop (brownfield only)
 
-Run once right after `adopt.py` installed AgentLoop into an ongoing repository (harmless to
+Run once right after `agentloop init` seeded AgentLoop into an ongoing repository (harmless to
 re-run — it refreshes the baseline). This is what makes the existing implementation visible to
 the template's machinery: `/req` and `/design` start from the baseline this command produces.
 (Capability terms like `structured-question` resolve per AGENTS.md "Capability vocabulary" and your agent's capability mapping.)

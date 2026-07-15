@@ -9,7 +9,7 @@ between prose and code, so these checks are *canaries*: they assert the load-bea
 vocabulary and structure survive verbatim in every file that reads them. A tripped canary
 usually means "propagate the change everywhere", not "revert the change".
 
-Template-repo only: after `make init` flips `gates.template_mode` to false, a product owns
+Template-repo only: after `agentloop init` flips `gates.template_mode` to false, a product owns
 its READMEs (and may replace them wholesale), so `main()` skips unless this repo IS the
 template. test_template_lint.py runs the same checks against the live repo under
 `make test-tools`, which is how CI catches a drifting commit.
@@ -43,9 +43,10 @@ _WRAPPER_SETS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
     (".agentloop/prompts/agents", ((".claude/agents", "{stem}.md"), (".github/agents", "{stem}.agent.md"))),
 )
 
-# Only backticked `make <target>` mentions count — prose like "make tasks visible" must not.
-# The optional `-f \S+` arm covers the `make -f agentloop.mk agentloop-upgrade` form.
+# Only backticked command mentions count — prose like "make tasks visible" or "agentloop
+# repositories" must not. make survives for the package's own dev targets (check/test/...).
 _MAKE_MENTION_RE = re.compile(r"`make (?:-f \S+ )?([a-z][a-z0-9_-]*)")
+_AGENTLOOP_MENTION_RE = re.compile(r"`agentloop ([a-z][a-z0-9-]*)")
 _SCRIPT_MENTION_RE = re.compile(r"src/agentloop/(\w+\.py)")
 # A capability token is the backticked kebab word opening a mapping-table row.
 _CAPABILITY_ROW_RE = re.compile(r"^\|\s*`([a-z][a-z-]+)`\s*\|", re.MULTILINE)
@@ -191,7 +192,11 @@ def check_readme_parity(en: str, ja: str) -> list[str]:
     n_ja = len(re.findall(r"^## ", ja, re.MULTILINE))
     if n_en != n_ja:
         failures.append(f"README.md has {n_en} `##` sections but README.ja.md has {n_ja}")
-    for what, pattern in (("make-target", _MAKE_MENTION_RE), ("script", _SCRIPT_MENTION_RE)):
+    for what, pattern in (
+        ("make-target", _MAKE_MENTION_RE),
+        ("agentloop-verb", _AGENTLOOP_MENTION_RE),
+        ("script", _SCRIPT_MENTION_RE),
+    ):
         only_en = set(pattern.findall(en)) - set(pattern.findall(ja))
         only_ja = set(pattern.findall(ja)) - set(pattern.findall(en))
         for name in sorted(only_en):

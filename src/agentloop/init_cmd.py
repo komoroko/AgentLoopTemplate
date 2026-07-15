@@ -60,7 +60,7 @@ _CODE_MARKERS = (
 )
 
 
-# --- pure text surgery (under test; ported from the retired init.py/adopt.py) ----
+# --- pure text surgery (under test) --------------------------------------------
 
 
 def fill_state(text: str, project: str, branch: str, today: str) -> str:

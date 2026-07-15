@@ -1,4 +1,4 @@
-"""Switch the headless agent CLI (`./agentloop agent <cli>`) without hand-editing config.yaml.
+"""Switch the headless agent CLI (`agentloop agent <cli>`) without hand-editing config.yaml.
 
 `build.headless.cmd` in .agentloop/config.yaml is the command mode A launches for every
 headless run (implementer / review step / integration fixer / post-build security review).
@@ -6,15 +6,14 @@ Editing one YAML line is easy to get wrong (quoting, list syntax) and hard to di
 this small operation rewrites exactly that line: pass a known preset name (the same table the
 config comment shows) or any custom command string, which is shlex-split into the argv list.
 
-Like init.py's fills, the rewrite is surgical line surgery (never a YAML round-trip), so every
-comment and the file layout survive. The prompt is appended by build_loop.py as the last
+The rewrite is surgical line surgery (never a YAML round-trip), so every comment and the file
+layout survive. The prompt is appended by build_loop.py as the last
 argument — a CLI that cannot take it that way is the documented (and deliberately unbuilt)
 extension point in the config comment, not this tool's concern.
 
 Usage:
-  ./agentloop agent codex
-  ./agentloop agent "mytool run --flag"
-  uv run --no-project --with pyyaml python src/agentloop/agent_cli.py codex
+  agentloop agent codex
+  agentloop agent "mytool run --flag"
 """
 
 from __future__ import annotations
@@ -49,7 +48,7 @@ def resolve_argv(cli: str) -> list[str]:
     if not argv:
         raise AgentCliError(
             f"empty command — pass a preset ({', '.join(PRESETS)}) or a custom command string,"
-            ' e.g. ./agentloop agent "mytool run"'
+            ' e.g. agentloop agent "mytool run"'
         )
     return argv
 
@@ -117,7 +116,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     shown_before = json.dumps(before) if before is not None else "(unreadable)"
     print(f"headless.cmd: {shown_before} → {json.dumps(wanted)}")
-    print("  used by mode A (`make build-loop`) for implementer/review/security-review launches;")
+    print("  used by mode A (`agentloop build`) for implementer/review/security-review launches;")
     print("  the prompt is appended as the last argument.")
     return 0
 

@@ -32,27 +32,27 @@ def _action(**overrides: object) -> status_api.Recommendation:
 
 def test_row1_template_mode_recommends_init() -> None:
     rec = _action(template_mode=True)
-    assert rec.command.startswith("make init") and rec.kind == "setup"
+    assert rec.command.startswith("agentloop init") and rec.kind == "setup"
     assert rec.also == ()
 
 
 def test_row1_placeholders_recommend_init_with_onboard_when_adopted() -> None:
     rec = _action(placeholders=True, has_adopt_manifest=True)
-    assert rec.command.startswith("make init")
+    assert rec.command.startswith("agentloop init")
     assert "/onboard" in rec.also
 
 
 def test_row2_broken_gate_chain_recommends_doctor() -> None:
     gates = dict(_ALL_PENDING, design="approved")  # approved below a pending requirements gate
     rec = _action(gates=gates, current_phase="design")
-    assert rec.command == "make doctor" and rec.kind == "fix"
+    assert rec.command == "agentloop doctor" and rec.kind == "fix"
 
 
 def test_row3_needs_revision_recommends_tasks_reconcile() -> None:
     gates = dict(_ALL_APPROVED, build="pending", release="pending")
     rec = _action(current_phase="build", gates=gates, counts={"needs-revision": 2, "todo": 1})
     assert rec.command == "/tasks" and rec.kind == "reconcile"
-    assert "make revise" in rec.also
+    assert "agentloop revise" in rec.also
 
 
 def test_row4_open_escalations_block_verify() -> None:
@@ -93,14 +93,14 @@ def test_row7_phase_gate_progression(phase: str, gates: dict[str, str], command:
 
 def test_row7_build_recommendation_offers_headless_loop() -> None:
     gates = dict(_ALL_APPROVED, build="pending", release="pending")
-    assert "make build-loop" in _action(current_phase="build", gates=gates).also  # own phase
+    assert "agentloop build" in _action(current_phase="build", gates=gates).also  # own phase
     gates2 = {**_ALL_PENDING, "requirements": "approved", "design": "approved", "tasks": "approved"}
-    assert "make build-loop" in _action(current_phase="tasks", gates=gates2).also  # advancing into build
+    assert "agentloop build" in _action(current_phase="tasks", gates=gates2).also  # advancing into build
 
 
 def test_unknown_phase_falls_back_to_doctor() -> None:
     rec = _action(current_phase="biuld")
-    assert rec.command == "make doctor" and rec.kind == "fix"
+    assert rec.command == "agentloop doctor" and rec.kind == "fix"
 
 
 # --- collect_status: tolerant aggregation over a fixture repo ------------------
@@ -213,7 +213,7 @@ def test_main_next_prints_command_why_and_also(repo: Path, capsys: pytest.Captur
     lines = capsys.readouterr().out.splitlines()
     assert lines[0] == "next: /build"
     assert lines[1].startswith("  why: ")
-    assert lines[2] == "  also: make build-loop"
+    assert lines[2] == "  also: agentloop build"
 
 
 def test_main_next_json_is_the_recommendation_object_only(repo: Path, capsys: pytest.CaptureFixture[str]) -> None:

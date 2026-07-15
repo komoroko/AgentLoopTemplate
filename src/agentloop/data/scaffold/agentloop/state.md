@@ -3,18 +3,18 @@
 # Every command/agent reads this file first and updates it after working.
 # gates values are one of pending | approved. You cannot advance to the next phase
 # unless the prerequisite gate is approved (see AGENTS.md "Gate rules").
-# An approval is recorded with `make approve GATE=<gate> [BY=<name>]` — the operation stamps
+# An approval is recorded with `agentloop approve <gate> [--by <name>]` — the operation stamps
 # the date (and approver) on the gate line, e.g. `tasks: approved   # 2026-07-07 alice`, and
 # logs the gate_approved event. gate_guard denies a gate line edited to approved by hand.
 project: "<enter the product name>"
 branch: "<enter the work branch name>"  # e.g. build/<product>. Implement on this branch.
 current_phase: brief          # brief | requirements | design | tasks | build | verify | done
 gates:
-  requirements: pending       # approved via `make approve GATE=requirements` after the human OKs the /req result
-  design: pending             # approved via `make approve GATE=design` after the human OKs the /design technical choices
-  tasks: pending              # approved via `make approve GATE=tasks` after the human OKs the /tasks plan
-  build: pending              # approved via `make approve GATE=build` after the human OKs the /build implementation review
-  release: pending            # approved via `make approve GATE=release` after the human OKs the /verify release decision
+  requirements: pending       # approved via `agentloop approve requirements` after the human OKs the /req result
+  design: pending             # approved via `agentloop approve design` after the human OKs the /design technical choices
+  tasks: pending              # approved via `agentloop approve tasks` after the human OKs the /tasks plan
+  build: pending              # approved via `agentloop approve build` after the human OKs the /build implementation review
+  release: pending            # approved via `agentloop approve release` after the human OKs the /verify release decision
 updated_at: "<YYYY-MM-DD>"
 ---
 
@@ -52,9 +52,9 @@ Do not use it as grounds to set a gate to `approved`.
 The truth of escalations is `.agentloop/events.ndjson` (structured events; see `scripts/agentloop/events.py`).
 `build_loop.py` appends `blocked` / `merge_conflict` / `integration_red` / `no_runnable` events automatically;
 record one by hand (interactive mode, or a `needs-revision`) with
-`make events ARGS='--add blocked --task T-00N --detail "..."'`. Everything between the markers below is a
-**generated view** — refresh it with `make events ARGS=--refresh-state` (deterministic mode A refreshes it
-automatically). Close an item with `make events ARGS='--resolve <ID> --note "how it was resolved"'` —
+`agentloop events ARGS='--add blocked --task T-00N --detail "..."'`. Everything between the markers below is a
+**generated view** — refresh it with `agentloop events ARGS=--refresh-state` (deterministic mode A refreshes it
+automatically). Close an item with `agentloop events ARGS='--resolve <ID> --note "how it was resolved"'` —
 /verify closes all open items before gate ⑤.
 
 <!-- ESCALATION-VIEW:BEGIN -->
@@ -62,7 +62,7 @@ _(no events yet)_
 <!-- ESCALATION-VIEW:END -->
 
 ## Roll-back (revision) log
-The record of `/revise` (`make revise`) resetting upstream gates to `pending` in a chain. The history of **the human rewinding approval**.
+The record of `/revise` (`agentloop revise`) resetting upstream gates to `pending` in a chain. The history of **the human rewinding approval**.
 Identify the task ripple with `dag.py --impacted` and reconcile (keep/modify/obsolete/new); record the result in the relevant task ticket.
 
 | Date | Target (phase) | Gates reset to pending in chain | Reason |

@@ -19,11 +19,12 @@ maps AGENTS.md's capability vocabulary onto VS Code Copilot mechanisms.
 | `session-compaction` | the human starts a new chat; the next command rehydrates from the SSOT (`.agentloop/state.md`, `tasks.yaml`, `docs/**`) |
 | `role-delegation` | custom agents `@requirements-analyst` / `@architect` / `@implementer` (`.github/agents/*.agent.md`); if delegation is unavailable, adopt the role inline per its file in `.agentloop/prompts/agents/` — parallel leaves degrade to serial |
 | `autonomous-build-iteration` | re-invoke the `/build` prompt each iteration (no /loop equivalent); the lead re-enacts mode B by hand |
-| `command-preauthorization` | VS Code's tool-approval settings (allow the AgentLoop `make`/`uv run … scripts/agentloop/*` commands) |
+| `command-preauthorization` | VS Code's tool-approval settings (allow the `agentloop <verb>` commands) |
 
 Notes:
-- **Headless mode A (`make build-loop`) requires a headless agent CLI** (installed and authenticated) — the orchestrator launches the command in `build.headless.cmd` (default `claude -p`; `codex exec` / `gemini -p` also work), so Copilot may invoke it too when such a CLI is present. Without one, run the interactive mode B in `/build`.
-- The gates' **mechanism layer** also runs under Copilot: `.github/hooks/agentloop.json` registers `scripts/agentloop/gate_guard.py` as a PreToolUse hook (VS Code agent hooks, preview), which denies edits to next-phase deliverables while the prerequisite gate is `pending`. VS Code may additionally parse `.claude/settings.json` and run the same guard twice — harmless (read-only, idempotent deny).
+- `agentloop install copilot` writes this instruction file and the `.github/` prompt/agent/hook wrappers into a product repo; the `agentloop` CLI must be on PATH (`uv tool install git+<the agentloop repo>`).
+- **Headless mode A (`agentloop build`) requires a headless agent CLI** (installed and authenticated) — the orchestrator launches the command in `build.headless.cmd` (default `claude -p`; `codex exec` / `gemini -p` also work), so Copilot may invoke it too when such a CLI is present. Without one, run the interactive mode B in `/build`.
+- The gates' **mechanism layer** also runs under Copilot: `.github/hooks/agentloop.json` registers `agentloop guard` as a PreToolUse hook (VS Code agent hooks, preview), which denies edits to next-phase deliverables while the prerequisite gate is `pending`. VS Code may additionally parse `.claude/settings.json` and run the same guard twice — harmless (read-only, idempotent deny).
 - The security review before gate ④ / at `/verify`: Copilot has no `/security-review` command — perform an equivalent security-focused review pass and record it the same way (`.agentloop/security-review.md` with the reviewed HEAD hash, and the test plan's security column).
 
 ## Role-agent tool mapping (single source)

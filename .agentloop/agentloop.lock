@@ -11,18 +11,18 @@ schema:
 prompts:
   version: 0.7.0
   files:
-    AGENTS.agentloop.md: sha256:0b15f609849e8fe67d8f66949ad0af2107df5506d44041a852c39888b08a4c11
+    AGENTS.agentloop.md: sha256:8eaf994d01bb9d8537b251521330a66326dc22f55aa52259d8cd378c4c4d88a1
     prompts/agents/architect.md: sha256:d36360652d81f2dcfae8861557cd49a679f2f29241551b13e4aa5364ffbf6479
     prompts/agents/implementer.md: sha256:8946f34cee40752191febba05f91d65dbbf71bfd00b664090344c70823baff1d
     prompts/agents/requirements-analyst.md: sha256:f856541626e80f3439a3681c70a9ab09f557b0e3dc5c4ddd229f214b5f8efab3
-    prompts/commands/build.md: sha256:bd1fd1f5b8b06dbf509128610aca97498ff4a2b95f1f05d554363039855eaa36
-    prompts/commands/design.md: sha256:bb30e8e19f3187eeea673b72ac8fb356abe629108f9bb76ca1b10bd710b4955e
-    prompts/commands/onboard.md: sha256:044f55304d12b6bc35eb173fa0b48d3bbd0500bf5e419ab6ddfe3b429b2474bc
-    prompts/commands/req.md: sha256:676dd98726643d9001d793de40875b3e0d0bab66ed2002121573f794d7fecdc6
-    prompts/commands/revise.md: sha256:313097053a9f53d8eb29a5d3c4ff1666b6be96189e510778175eca212d135e49
-    prompts/commands/status.md: sha256:e5b7f8ee51517c92fe4c2ca370d006488f8a57bebee6af8fb548706b5c0440c2
-    prompts/commands/tasks.md: sha256:9e23e8e4d9a6b1133a612ff971c481055d5b1b1b52e1eec0a1c6d5698fd1ea2f
-    prompts/commands/verify.md: sha256:f0b04e0730cadbbe8fe8a33fe53ed80d1a2cd9199c931441e56b339a9da3a3d0
+    prompts/commands/build.md: sha256:d53b6920def9cca5cd8251dba9d75b53239db08c8a7771bf2fb8f0b8b515aab1
+    prompts/commands/design.md: sha256:a31a8e79fbb77118c55f42771710cf456eaaca18ff9a4696eea465a75d7a10fa
+    prompts/commands/onboard.md: sha256:de550307b6be351de7ff08e005e90595f229f4de598f8e205c9f6cc0e84dd206
+    prompts/commands/req.md: sha256:cb9a49a1d6a5b6283212dbc64ab8f75b704007eb5c8de1a6b2583a40ba925784
+    prompts/commands/revise.md: sha256:abb974758bcd33d727395e30888c3922ab6f475038848b9bedb2a77730f74d98
+    prompts/commands/status.md: sha256:42c4dd5378fafb89130ae30025390d1a07f34215dd284c1aa1b19576b4192984
+    prompts/commands/tasks.md: sha256:1bc9128d3bfb11ed505364dd2c8061cd49f4c3b53e8b9377fba36006b68bf90f
+    prompts/commands/verify.md: sha256:0af93fa108bafa58e22a25adb4342c8cda62441d3abd9fb1da842e167fd9af34
     schema/config.schema.json: sha256:7ab4d34fac29e12beec8dfd81e50f50df882701da7d4540e94c7c9ab63692e70
     schema/tasks.schema.json: sha256:9e45b44bfab0a319b6a263b0df58e475a4f838c6f37041039bb06ac8d268fb7b
 integrations:
@@ -94,7 +94,7 @@ integrations:
       .github/agents/implementer.agent.md: sha256:72b023a6bc76d716f17f4d03bc8039bf676958494241bcbb88f35b3d899a7fac
       .github/agents/requirements-analyst.agent.md: sha256:df2935215e0abb20b74e8db9d03e17b67d8bd1bfe3278f0c7ae988e0e8838e40
       .github/hooks/agentloop.json: sha256:644d68ef30d12ed1a6995119a5f39234c6348012e9bf464f86ea79857109d4a3
-      .github/instructions/agentloop.instructions.md: sha256:8a24f95bac1cc2cfd00199a0d66679054c4660bbc8a613f5447b8942cae7f333
+      .github/instructions/agentloop.instructions.md: sha256:b3ad87bc66237882a891350265d1611aa9425ba88e5880d0d183e748e28227fc
       .github/prompts/build.prompt.md: sha256:d04891c3c79c7623c585b0eb0d334517b657b8945d6eace2753eeb4ec780fb86
       .github/prompts/design.prompt.md: sha256:94779c23a76e2f1d2afab3e7d288b419b96e11116c75a03515644b45ae5f9c06
       .github/prompts/onboard.prompt.md: sha256:2b219934c99b09a95be9209114a8c563bc48e1e89b0b0a1a9f3adfca71c13b46
@@ -105,4 +105,4 @@ integrations:
       .github/prompts/verify.prompt.md: sha256:3c2a69cbe70eeb9cceba3b62bb71b5382375b27acb880b61671b321664bc9739
 seeded: {}
 created_at: '2026-07-14'
-updated_at: '2026-07-14'
+updated_at: '2026-07-15'

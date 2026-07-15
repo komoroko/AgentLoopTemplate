@@ -7,8 +7,8 @@ misinterpretation away. Now the flip is an *operation*: this script stamps the g
 the date (and approver), advances `current_phase`, and appends a `gate_approved` event to
 `.agentloop/events.ndjson` — the machine record the commit-stage gate guard cross-checks a
 state.md flip against. gate_guard.py denies agent Write/Edit flips at edit time, so the only
-ways a gate opens are a human running this (directly, via `make approve`, or acknowledging
-the agent's *non-pre-authorized* `make approve` permission prompt) or a human editing
+ways a gate opens are a human running this (directly, via `agentloop approve`, or acknowledging
+the agent's *non-pre-authorized* `agentloop approve` permission prompt) or a human editing
 state.md by hand.
 
 Like revise.py it preserves state.md byte-for-byte outside the touched lines
@@ -21,8 +21,7 @@ state.md) so ui.py's approval endpoint can map failures to responses directly; t
 them all to exit 1 (except the already-approved no-op, exit 0).
 
 Usage:
-  uv run --no-project --with pyyaml python src/agentloop/approve.py design --by alice
-  make approve GATE=design BY=alice
+  agentloop approve design --by alice
 """
 
 from __future__ import annotations

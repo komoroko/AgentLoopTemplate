@@ -120,7 +120,7 @@ def test_main_broken_config_names_the_file_and_next_step(project: Path, capsys: 
     (project / ".agentloop" / "config.yaml").write_text("build: [broken", encoding="utf-8")
     assert build_loop.main(["--dry-run"]) == 1
     err = capsys.readouterr().err
-    assert ".agentloop/config.yaml" in err and "make doctor" in err  # cause + the next step
+    assert ".agentloop/config.yaml" in err and "agentloop doctor" in err  # cause + the next step
 
 
 def _snapshot(project: Path) -> dict[str, bytes | None]:

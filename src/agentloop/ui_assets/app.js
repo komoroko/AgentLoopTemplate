@@ -105,7 +105,7 @@ function renderStepper(d) {
       esc(p) + "</span>" + gate + "</div>";
   }).join("");
   document.getElementById("stepper").innerHTML =
-    rail + '<span class="rloop" title="delta cycle → make cycle-close">↻</span>';
+    rail + '<span class="rloop" title="delta cycle → agentloop cycle-close">↻</span>';
 }
 
 function renderNext(d) {
@@ -258,13 +258,13 @@ function renderOps(d) {
     : '<span class="empty">all gates approved</span>';
   const phases = ["requirements", "design", "tasks", "build"].map(p => "<option>" + p + "</option>").join("");
   document.getElementById("ops").innerHTML =
-    '<div class="ops">' + gateBtn + '<button onclick="runDoctor()">make doctor</button></div>' +
+    '<div class="ops">' + gateBtn + '<button onclick="runDoctor()">agentloop doctor</button></div>' +
     '<div class="ops" style="margin-top:.6rem">' +
     '<select id="revPhase">' + phases + "</select>" +
     '<input id="revReason" placeholder="revise reason" size="28">' +
-    '<button class="danger" onclick="runRevise()">make revise</button>' +
+    '<button class="danger" onclick="runRevise()">agentloop revise</button>' +
     '<input id="closeSlug" placeholder="cycle slug" size="16">' +
-    '<button class="danger" onclick="runCycleClose()">make cycle-close</button></div>';
+    '<button class="danger" onclick="runCycleClose()">agentloop cycle-close</button></div>';
 }
 
 function tickAgo() {

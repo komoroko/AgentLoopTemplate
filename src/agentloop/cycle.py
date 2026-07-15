@@ -1,4 +1,4 @@
-"""Close a delta cycle (`make cycle-close NAME=<slug>`): archive the filled deliverables and reset.
+"""Close a delta cycle (`agentloop cycle-close --name <slug>`): archive the filled deliverables and reset.
 
 An adopted/ongoing repo runs AgentLoop as a series of **delta cycles** — each cycle's
 requirements/design/tasks/test docs describe one change, not the whole product. When a cycle
@@ -9,7 +9,7 @@ reaches `done` (release approved at gate ⑤ and the retrospective is written), 
      orchestration event log (`.agentloop/events.ndjson` + its `.1` rotation) moves with them.
      `00-product-brief.md` and `05-current-state.md` (the persistent baseline) stay.
   2. Fresh scaffolds are restored from the snapshot in `.agentloop/scaffold/docs/`
-     (taken by `make init` / `adopt.py` while the docs were still pristine).
+     (taken by `agentloop init` while the docs were still pristine).
   3. `tasks.yaml` resets to an empty task list; every gate resets to pending and
      `current_phase` returns to brief. state.md's human-facing body (phase progress,
      task table, execution plan, escalation/speculative logs, and the stale gate
@@ -22,7 +22,7 @@ Closing a cycle is a human decision, like opening a gate — the agent never run
 Idempotent: already-archived items are skipped; `--dry-run` prints the plan only.
 
 Usage:
-  make cycle-close NAME=payment-refactor
+  agentloop cycle-close --name payment-refactor
   uv run python src/agentloop/cycle.py --name payment-refactor [--dry-run]
 """
 
@@ -57,7 +57,7 @@ CYCLE_ITEMS: tuple[str, ...] = (
 def snapshot_scaffold(docs_dir: str = DOCS_DIR, scaffold_dir: str = SCAFFOLD_DIR) -> bool:
     """Copy the pristine docs scaffolds *and* state.md aside, once. Returns True if anything was taken.
 
-    Called by init.py / adopt.py while docs/ and state.md are still pristine. A no-op per target
+    Called by init_cmd while docs/ and state.md are still pristine. A no-op per target
     when its snapshot already exists — re-running init after they are filled must not overwrite the
     pristine copy. The state.md snapshot is what `reset_state_text` restores the human-facing body
     from at cycle-close (each is guarded independently, so an older repo can gain the state snapshot
@@ -77,7 +77,7 @@ def snapshot_scaffold(docs_dir: str = DOCS_DIR, scaffold_dir: str = SCAFFOLD_DIR
                 shutil.copy2(item, dst / item.name)
         took = True
     # state.md lives beside docs/ (repo root = docs_dir's parent), so derive both from docs_dir —
-    # this keeps the snapshot target-relative for adopt.py, which passes a foreign repo's paths.
+    # this keeps the snapshot root-relative so a foreign repo root works too.
     root = Path(docs_dir).parent
     state_dst = root / SCAFFOLD_STATE
     state_src = root / revise.STATE_PATH
@@ -204,7 +204,7 @@ def main(argv: list[str] | None = None) -> int:
 
     slug = args.name.strip()
     if not slug:
-        print("usage: make cycle-close NAME=<slug>", file=sys.stderr)
+        print("usage: agentloop cycle-close --name <slug>", file=sys.stderr)
         return 2
     try:
         repo = repo_mod.get(args.repo)
@@ -220,7 +220,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if not repo.path(SCAFFOLD_DIR).is_dir():
         print(
-            f"no scaffold snapshot at {SCAFFOLD_DIR} — run `make init` (or adopt.py) first so fresh"
+            f"no scaffold snapshot at {SCAFFOLD_DIR} — run `agentloop init` first so fresh"
             " scaffolds can be restored after archiving.",
             file=sys.stderr,
         )

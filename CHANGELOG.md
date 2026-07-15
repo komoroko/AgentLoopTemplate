@@ -25,13 +25,41 @@ upgrade` shows the sections between the installed version, recorded in
   (replacing `.agentloop/adopt-manifest.yaml`); the tool refuses lock formats and
   `schema_version`s newer than it knows, and warns on tool↔lock version skew.
 
+- **Agent integrations are opt-in.** `.claude/` and `.github/` surfaces no longer land
+  unconditionally: `agentloop install claude|copilot` writes them (settings.json merged
+  marker-guarded, hooks invoking `agentloop guard`), `agentloop uninstall <agent>|--all`
+  retracts them (pristine files only), and the lock records what is installed with a hash
+  per file so a locally modified wrapper is never overwritten or removed silently.
+- **`agentloop init` replaces the copy-the-template + `make adopt` split.** One command
+  seeds a repo (greenfield or brownfield, auto-detected) purely from the packaged payload —
+  SSOT trio, docs scaffolds, materialized artifacts, scaffold snapshot, AGENTS.md pointer,
+  lock — and never touches product build files. Brownfield detection scopes `guard_paths`
+  to docs and fills the quality-gate commands from the repo's tooling.
+- **The daily verbs and every make target are now `agentloop <verb>`.** Gate approval moves
+  to `agentloop approve <gate> [--by <name>]` (still never pre-authorized). Products need no
+  `make`; the template repo keeps a makefile only for its own dev workflow.
+
 ### Added
+- `agentloop sync [--check|--force]` rematerializes `.agentloop/prompts|schema|rules` from
+  the installed package; `agentloop upgrade` shows the changelog transition and refreshes
+  everything materialized (upgrading the code itself is `uv tool upgrade agentloop`).
 - `schema_version: 1` in `config.yaml`/`tasks.yaml` (validated by the bundled JSON
   schemas; `dag.load`/`Config.load` refuse newer versions with an upgrade hint).
-- `doctor` checks for the lock (readability, format, writer-version skew).
+- `doctor` checks for the lock (readability, format, writer-version skew) and for the hook
+  command's binary being resolvable on PATH.
 
 ### Removed
-- `VERSION` (see above).
+- `VERSION`, `agentloop.mk`, the `./agentloop` shell wrapper, the `scripts/agentloop/`
+  location, and the empty `backend/`/`frontend/` scaffolds (products bring their own stack).
+
+### Migration (from a repo adopted by ≤ 0.6.0)
+A clean break — no automated migration. In the old repo, remove the previous machinery
+(`make -f agentloop.mk agentloop-uninstall` if it is still present, or delete the copied
+`scripts/agentloop/`, `agentloop.mk`, `agentloop`, and the `.claude`/`.github` wrappers by
+hand). Then, with the CLI installed (`uv tool install git+<this repo>`), run `agentloop
+init --name <same-product>` followed by `agentloop install claude` (and/or `copilot`). Your
+`.agentloop/state.md`, `config.yaml`, `tasks.yaml`, and filled `docs/**` survive — `init`
+never overwrites an existing file — so the lifecycle continues where it left off.
 
 ## [0.6.0] - 2026-07-14
 

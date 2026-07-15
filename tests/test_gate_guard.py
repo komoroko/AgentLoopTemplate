@@ -303,7 +303,7 @@ def test_write_flipping_a_gate_to_approved_is_denied(
     rc, out = _run_main(payload, monkeypatch, capsys)
     assert rc == 0
     reason = _deny_reason(out)
-    assert "gates.requirements" in reason and "make approve" in reason
+    assert "gates.requirements" in reason and "agentloop approve" in reason
 
 
 def test_edit_flipping_a_gate_to_approved_is_denied(
@@ -321,7 +321,7 @@ def test_edit_flipping_a_gate_to_approved_is_denied(
     )
     rc, out = _run_main(payload, monkeypatch, capsys)
     assert rc == 0
-    assert "make approve" in _deny_reason(out)
+    assert "agentloop approve" in _deny_reason(out)
 
 
 def test_multiedit_and_camelcase_flips_are_denied(
@@ -399,7 +399,7 @@ def test_flip_denial_ignores_template_mode_but_respects_enforce_hook(
     )
     _setup(in_tmp, config=_CONFIG_TEMPLATE)
     rc, out = _run_main(payload, monkeypatch, capsys)
-    assert "make approve" in _deny_reason(out)
+    assert "agentloop approve" in _deny_reason(out)
     _setup(in_tmp, config=_CONFIG_OFF)
     rc, out = _run_main(payload, monkeypatch, capsys)
     assert (rc, out) == (0, "")
@@ -509,7 +509,7 @@ def test_check_diff_denies_gate_flip_without_event(in_tmp: Path, capsys: pytest.
     (in_tmp / ".agentloop" / "state.md").write_text(flipped, encoding="utf-8")
     assert gate_guard.main(["--check-diff"]) == 1
     err = capsys.readouterr().err
-    assert "gates.requirements" in err and "make approve" in err
+    assert "gates.requirements" in err and "agentloop approve" in err
 
 
 def test_check_diff_passes_gate_flip_with_event(in_tmp: Path) -> None:

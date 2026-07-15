@@ -1,13 +1,17 @@
-# AgentLoopTemplate — Agent Operating Rules
+# AgentLoop — Agent Operating Rules
 
-This repository is a template for developing software **Human on the Loop**: a coding agent
-performs the work, produces the deliverables, and self-tests at every phase; **humans only
-review and approve/decide at the "gate" on each phase boundary**.
+AgentLoop develops software **Human on the Loop**: a coding agent performs the work, produces
+the deliverables, and self-tests at every phase; **humans only review and approve/decide at
+the "gate" on each phase boundary**. The machinery is an installed CLI (`agentloop`, from
+`uv tool install git+<the agentloop repo>`); the repository carries only its **state** —
+`.agentloop/` (the SSOT, the lock, and the materialized prompts/schema) and `docs/`
+(deliverables).
 
 This file holds the **always-true rules** for **every coding agent**; each phase's procedure
 lives in `.agentloop/prompts/commands/*.md` — consult those when running a phase. Your
 **capability mapping** (`CLAUDE.md` for Claude Code,
-`.github/instructions/agentloop.instructions.md` for VS Code Copilot) says how to realize the
+`.github/instructions/agentloop.instructions.md` for VS Code Copilot — each present only when
+its integration is installed via `agentloop install claude|copilot`) says how to realize the
 capability vocabulary below; with no mapping file (e.g. Codex, reading this natively), use the
 table's degradation column.
 
@@ -52,14 +56,14 @@ brief → requirements → design → tasks → build → verify → done
 | build        | `/build`  | implementation code + tests | ④ implementation review |
 | verify       | `/verify` | `docs/test/test-plan.md` execution results | ⑤ release decision |
 
-Check progress anytime with `/status`; humans also have `./agentloop next` (the next command
-only) and `make ui` / `./agentloop ui` for the same board in a local browser (next command
+Check progress anytime with `/status`; humans also have `agentloop next` (the next command
+only) and `agentloop ui` for the same board in a local browser (next command
 computed in code; a fixed whitelist of safe operations, never phase execution).
 At `done`, `/verify` records `docs/retrospective.md` and closes open logs. An upstream defect
 rolls back via `/revise` (see "Roll back").
 
 **Cycles**: an ongoing repo repeats this lifecycle as **delta cycles** — each cycle's docs
-describe one change. After `done`, the human runs `make cycle-close NAME=<slug>`: deliverables
+describe one change. After `done`, the human runs `agentloop cycle-close --name <slug>`: deliverables
 archive to `docs/archive/`, gates/phase reset; `docs/00-product-brief.md` and the baseline
 `docs/05-current-state.md` persist (in a brownfield repo the latter is the existing codebase's
 baseline — `/req`/`/design` read it first; traceability R-N / NFR-N covers the delta only).
@@ -69,7 +73,7 @@ addition defers to the next cycle or reopens gate ① via `/revise` — never wi
 requirements silently. An emergency hotfix is a *minimal* delta cycle (gates in order,
 one-paragraph deliverables); if even that is too slow the human fixes outside the loop — log
 the escalation, fold it into `docs/05-current-state.md` at the next `/verify`. Abandonment is
-`make cycle-close NAME=abandoned-<slug>` (archives partials, resets gates/phase).
+`agentloop cycle-close --name abandoned-<slug>` (archives partials, resets gates/phase).
 
 ## Single Source of Truth (SSOT)
 
@@ -78,7 +82,7 @@ The truth is split across three files with distinct roles — do not conflate th
 - **`.agentloop/state.md`** — phase, gate approvals, and the logs. **Read it when starting
   work; update it after.** `gates.<name>` is `pending` | `approved` — **never set `approved`
   without human approval.** The escalation log's machine truth is `.agentloop/events.ndjson`
-  (`make events`; created on first event); state.md embeds only the generated view.
+  (`agentloop events`; created on first event); state.md embeds only the generated view.
 - **`.agentloop/tasks.yaml`** — the machine-readable truth of the task DAG (`/tasks` generates
   it; `build_loop.py`/`dag.py` read it). `req` threads traceability requirements → design →
   tasks (`R-N` / `NFR-N`), cross-checked by `dag.py --trace`. Derived values (fan-out,
@@ -94,23 +98,23 @@ The truth is split across three files with distinct roles — do not conflate th
 2. **Only humans open a gate.** Go only as far as an `approval-presentation`; record the
    approval only after a human acknowledges it or says an explicit "approve". **Invoking the
    next-phase command is not itself approval.** Recording is an **operation, not a file
-   edit**: `make approve GATE=<gate> [BY=<approver>]` (scripts/agentloop/approve.py) stamps
+   edit**: `agentloop approve <gate> [--by <approver>]` stamps
    the date/approver comment on the gate line (e.g. `tasks: approved   # 2026-07-07 alice`),
    advances `current_phase`, and logs the `gate_approved` event. Never edit a gate line to
    `approved` yourself — the guard denies it (see below); and never pre-authorize
-   `make approve` (its permission prompt is the human's confirmation).
+   `agentloop approve` (its permission prompt is the human's confirmation).
 3. **Do not silently fix problems in requirements/design.** On an upstream defect, set the
    affected task to `needs-revision`, record it in the escalation log, and raise it to the
    human.
 
-**Enforcement is layered.** Convention: rule 1, checked by each command. Mechanism:
-`scripts/agentloop/gate_guard.py` denies in code at three checkpoints — **edit-time** (editor
-hook on deliverable writes), **commit-stage** (`--check-diff` in pre-commit / `make check`),
-and **merge-stage** (`build_loop.py` re-checks every path a task changed before it lands;
-violations escalate as `gate_violation`). Guarded paths: `gates.guard_paths`;
-`scripts/agentloop/**` is always allowed; unreadable gates **fail closed**. Rule 2 has its
+**Enforcement is layered.** Convention: rule 1, checked by each command. Mechanism: the
+installed `agentloop guard` denies in code at three checkpoints — **edit-time** (editor
+hook on deliverable writes), **commit-stage** (`agentloop guard --check-diff` in pre-commit
+/ the quality gate), and **merge-stage** (`agentloop build` re-checks every path a task
+changed before it lands; violations escalate as `gate_violation`). Guarded paths:
+`gates.guard_paths`; unreadable gates **fail closed**. Rule 2 has its
 own mechanism layer: an edit that flips a state.md gate to `approved` is denied edit-time,
-and a commit-stage flip without a matching `gate_approved` event fails — `make approve` is
+and a commit-stage flip without a matching `gate_approved` event fails — `agentloop approve` is
 the only sanctioned write path (not relaxed by `template_mode`). Escape hatches:
 `gates.enforce_hook: false`; `gates.template_mode: true` while the repo IS the template.
 Detail: `gate_guard.py`'s docstring and the config comments.
@@ -118,7 +122,7 @@ Detail: `gate_guard.py`'s docstring and the config comments.
 ## Roll back (returning upstream)
 
 When an upstream defect is confirmed — or `/verify` reopens the build (`--to build`) — roll
-back at the human's discretion with `/revise` (`make revise`): **gates reset in a chain**
+back at the human's discretion with `/revise` (`agentloop revise`): **gates reset in a chain**
 (the target phase's gate and everything downstream return to `pending`; an upstream `pending`
 never leaves a downstream gate `approved`). **Rewinding approval is a human privilege** — the
 agent never rolls back on its own. **Upstream fixes always entail task impact analysis**:
@@ -184,7 +188,7 @@ three tiers, each with its own refresh cycle and exit** — no tier grows withou
 | Tier | Lives in | Refresh cycle | Exit (folds into the next tier) |
 |------|----------|---------------|--------------------------------|
 | **Short** — session | conversation, open log rows in `state.md`, `in_progress` state | each checkpoint (gate approval / build-layer boundary): flush → compress resolved rows → suggest `session-compaction` | only decisions/outcomes survive, into deliverables and resolved log rows |
-| **Mid** — cycle | phase deliverables (`docs/**`), `state.md`, retrospective | written per phase, committed at each gate; logs closed at `/verify` | archived by `make cycle-close`; durable lessons promoted to the long tier |
+| **Mid** — cycle | phase deliverables (`docs/**`), `state.md`, retrospective | written per phase, committed at each gate; logs closed at `/verify` | archived by `agentloop cycle-close`; durable lessons promoted to the long tier |
 | **Long** — permanent | `AGENTS.md`, the capability mappings, `.agentloop/prompts/**`, `docs/00-product-brief.md`, `docs/05-current-state.md`, `docs/archive/` | promotions at gate ⑤; `05-current-state.md` updated at `/verify`; archive appended at `cycle-close` | none — always loaded, keep it leanest |
 
 Rules: **keep deliverables lean; push detail out to linked files** (e.g. an `ADR-*.md`).
@@ -204,20 +208,21 @@ rehydrates afterwards.
 
 ## Quality-check commands
 
-The bundled `makefile` provides `make test` (pytest), `make check` (lint / format /
-type-check, both hook stages — the gate uses this, never `pre-commit run` alone),
-`make test-tools` (self-tests of `scripts/agentloop/`), `make audit` (dependency
-vulnerabilities), and `make doctor` (read-only environment + SSOT diagnosis — run it first
-when anything behaves oddly). In a project without `make`, substitute its commands in
-`quality_gate.steps`.
+The DoD's commands are the project's own, named once in `quality_gate.steps` of
+`.agentloop/config.yaml` (the shipped defaults `make test` / `make check` are placeholders —
+`agentloop init` fills detected commands in a brownfield repo; substitute yours otherwise).
+`agentloop doctor` is the read-only environment + SSOT diagnosis — run it first when anything
+behaves oddly. `agentloop sync --check` verifies the materialized prompts/schema still match
+the installed tool's payload.
 
 ## Security gate
 
-Three layers: **gitleaks** at commit stage (in `make check`) / a **security review** mandatory
-before gate ④ — mode A auto-runs it headless and binds the report to the reviewed HEAD in
-`.agentloop/security-review.md`; otherwise run your agent's security-review command or an
-equivalent pass, recorded the same way / a **security review + `make audit`** mandatory in
-`/verify`, recorded in `docs/test/test-plan.md`.
+Three layers: **gitleaks** at commit stage (a pre-commit hook the project installs) / a
+**security review** mandatory before gate ④ — mode A auto-runs it headless and binds the
+report to the reviewed HEAD in `.agentloop/security-review.md`; otherwise run your agent's
+security-review command or an equivalent pass, recorded the same way / a **security review +
+a dependency audit** (e.g. `make audit`, pip-audit, npm audit) mandatory in `/verify`,
+recorded in `docs/test/test-plan.md`.
 
 ## Branch / commit conventions
 
@@ -232,21 +237,22 @@ equivalent pass, recorded the same way / a **security review + `make audit`** ma
 
 **Gate approvals** (①–⑤) are the Human-on-the-Loop essence — never reduce them.
 **Tool-execution permission prompts** are separate: `command-preauthorization` of known-safe
-commands cuts repeated prompts without touching the gates. Template-owned settings hold only
+commands cuts repeated prompts without touching the gates. The installed settings hold only
 **generic AgentLoop commands**; **product-specific** ones go in the product's own committed
-settings. Destructive / outward-facing actions (push, PR, merge, `make cycle-close`) stay
-human-run — never pre-authorize them, and never pre-authorize `make approve` either: its
+settings. Destructive / outward-facing actions (push, PR, merge, `agentloop cycle-close`) stay
+human-run — never pre-authorize them, and never pre-authorize `agentloop approve` either: its
 permission prompt is the human's approval confirmation (gate rule 2).
 
 ## Directories
 
 - `.agentloop/` — SSOT (`state.md`, `tasks.yaml`, `config.yaml`), the event log
-  (`events.ndjson`, created on first event), and **`prompts/`** (shared phase procedures and
-  role definitions)
-- `scripts/agentloop/` — deterministic orchestration (`dag.py`, `build_loop.py`,
-  `gate_guard.py`, …). **Product scripts go directly under `scripts/`, not mixed in here.**
+  (`events.ndjson`, created on first event), **`agentloop.lock`** (which tool version wrote
+  this repo's artifacts, with a hash per installed file), and the **materialized artifacts**
+  the installed tool refreshes via `agentloop sync`: `prompts/` (shared phase procedures and
+  role definitions), `schema/`, and `AGENTS.agentloop.md` (the rules body)
 - `docs/` — phase deliverables; `docs/retrospective.md` holds the retrospective at `done`
 - `.claude/commands/`, `.github/prompts/` — per-agent entry points (thin wrappers over
-  `.agentloop/prompts/commands/`)
+  `.agentloop/prompts/commands/`), present only where `agentloop install <agent>` was run
 - `.claude/agents/`, `.github/agents/` — role-agent wrappers (role definitions in
   `.agentloop/prompts/agents/`)
+- the orchestration code itself lives in the installed `agentloop` package, not in the repo

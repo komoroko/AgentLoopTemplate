@@ -94,7 +94,7 @@ def mark_impacted(seeds: list[str], dry_run: bool, repo: repo_mod.Repo | None = 
         graph = dag.load(repo.tasks)
     except (OSError, dag.DagError, yaml.YAMLError) as exc:
         print(
-            f"cannot load .agentloop/tasks.yaml: {exc} — fix it (or run `make doctor` to diagnose the SSOT)",
+            f"cannot load .agentloop/tasks.yaml: {exc} — fix it (or run `agentloop doctor` to diagnose the SSOT)",
             file=sys.stderr,
         )
         return 1

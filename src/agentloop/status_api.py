@@ -76,7 +76,7 @@ def next_action(
     # 1. Not a product yet: the template must be initialized (or was adopted brownfield → survey first).
     if template_mode or placeholders:
         return Recommendation(
-            command="make init NAME=<product>",
+            command="agentloop init --name <product>",
             kind="setup",
             reason="This checkout is still the raw template (template_mode / placeholder state.md); "
             "initialize it into a product first.",
@@ -85,7 +85,7 @@ def next_action(
     # 2. A corrupt gate chain means the SSOT itself needs repair — do not guess a phase from it.
     if _gate_chain_broken(gates):
         return Recommendation(
-            command="make doctor",
+            command="agentloop doctor",
             kind="fix",
             reason="Gate chain invariant is broken (a downstream gate is approved while an upstream one is "
             "pending); diagnose before continuing.",
@@ -96,12 +96,12 @@ def next_action(
             command="/tasks",
             kind="reconcile",
             reason="needs-revision tasks exist; reconcile them (keep/modify/obsolete/new) and re-approve gate ③.",
-            also=("make revise",),
+            also=("agentloop revise",),
         )
     # 4. /verify must close every open escalation before presenting gate ⑤.
     if current_phase == "verify" and open_escalation_count > 0:
         return Recommendation(
-            command="make events ARGS='--resolve <ID> --note \"...\"'",
+            command='agentloop events --resolve <ID> --note "..."',
             kind="resolve",
             reason=f"{open_escalation_count} open escalation(s) must be closed before the gate ⑤ release decision.",
         )
@@ -115,7 +115,7 @@ def next_action(
     # 6. Everything approved: the cycle is over.
     if current_phase == "done" or all(gates.get(g) == "approved" for g in GATE_ORDER):
         return Recommendation(
-            command="make cycle-close NAME=<slug>",
+            command="agentloop cycle-close --name <slug>",
             kind="close",
             reason="All gates are approved; archive this delta cycle's deliverables and reset for the next one.",
         )
@@ -124,7 +124,7 @@ def next_action(
     if gate is not None:
         index = GATE_ORDER.index(gate) + 1
         if gates.get(gate) != "approved":
-            also = ("make build-loop",) if current_phase == "build" else ()
+            also = ("agentloop build",) if current_phase == "build" else ()
             return Recommendation(
                 command=_PHASE_COMMAND[current_phase],
                 kind="run_phase",
@@ -135,11 +135,11 @@ def next_action(
         next_phase = PHASE_ORDER[PHASE_ORDER.index(current_phase) + 1]
         if next_phase == "done":  # release approved but phase not yet flipped — same as row 6
             return Recommendation(
-                command="make cycle-close NAME=<slug>",
+                command="agentloop cycle-close --name <slug>",
                 kind="close",
                 reason="The release gate is approved; close the cycle.",
             )
-        also = ("make build-loop",) if next_phase == "build" else ()
+        also = ("agentloop build",) if next_phase == "build" else ()
         return Recommendation(
             command=_PHASE_COMMAND[next_phase],
             kind="run_phase",
@@ -148,7 +148,7 @@ def next_action(
         )
     # Unknown phase value — the SSOT is off-vocabulary; diagnose instead of guessing.
     return Recommendation(
-        command="make doctor",
+        command="agentloop doctor",
         kind="fix",
         reason=f"current_phase '{current_phase}' is not in the lifecycle vocabulary; diagnose the SSOT.",
     )
@@ -350,7 +350,7 @@ def collect_status(root: str | Path = ".") -> dict[str, object]:
 
 
 def render_next(next_obj: dict[str, object]) -> str:
-    """The recommendation as 2–3 human lines (`./agentloop next`): command, why, and the also row if any."""
+    """The recommendation as 2–3 human lines (`agentloop next`): command, why, and the also row if any."""
     lines = [f"next: {next_obj.get('command', '')}", f"  why: {next_obj.get('reason', '')}"]
     also = next_obj.get("also") or ()
     if isinstance(also, (list, tuple)) and also:

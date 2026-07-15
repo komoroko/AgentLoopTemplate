@@ -17,9 +17,9 @@ custom header without a CORS preflight, and no CORS headers are ever sent); `--r
 POST entirely.
 
 Usage:
-  make ui                 # serve on 127.0.0.1:8765 and open the browser
-  make ui ARGS=--no-open  # print the URL only
-  make ui ARGS=--read-only
+  agentloop ui                 # serve on 127.0.0.1:8765 and open the browser
+  agentloop ui --no-open  # print the URL only
+  agentloop ui --read-only
 """
 
 from __future__ import annotations
@@ -186,7 +186,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def _approve_gate(self, body: dict[str, object]) -> None:
         # Delegates to approve.py — the single sanctioned pending→approved write path — so the
         # UI click stamps the gate line, advances current_phase, and records the gate_approved
-        # event exactly as `make approve` does. ApproveError already carries the HTTP status.
+        # event exactly as `agentloop approve` does. ApproveError already carries the HTTP status.
         gate = str(body.get("gate") or "")
         try:
             today = approve.record_approval(

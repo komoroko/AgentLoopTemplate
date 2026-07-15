@@ -166,7 +166,7 @@ def test_main_impacted_broken_tasks_yaml_names_the_file_and_next_step(
     (project / ".agentloop" / "tasks.yaml").write_text("tasks: [broken\n", encoding="utf-8")
     assert revise.main(["--impacted", "T-001"]) == 1  # a YAML parse error must not traceback
     err = capsys.readouterr().err
-    assert ".agentloop/tasks.yaml" in err and "make doctor" in err  # cause + the next step
+    assert ".agentloop/tasks.yaml" in err and "agentloop doctor" in err  # cause + the next step
 
 
 def test_main_combines_to_and_impacted(project: Path) -> None:

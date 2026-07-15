@@ -2,25 +2,24 @@
 while its prerequisite gate is unapproved.
 
 It blocks in code, not relying on AGENTS.md's convention layer (each command checks its own gate).
-Registered as a PreToolUse hook in `.claude/settings.json` (Claude Code, matched to Write/Edit)
-and `.github/hooks/agentloop.json` (VS Code Copilot agent hooks, which ignore matchers and fire
-on every tool), it cross-checks the edit's target path against the gates in `.agentloop/state.md`
-and **denies** unless the prerequisite is approved.
+Registered as a PreToolUse hook by `agentloop install claude|copilot` (into
+.claude/settings.json for Claude Code, .github/hooks/agentloop.json for VS Code Copilot), it
+cross-checks the edit's target path against the gates in `.agentloop/state.md` and **denies**
+unless the prerequisite is approved.
 
 Decision (the built-in default rules; override per repo with gates.guard_paths in config):
   docs/20-design.md, docs/decisions/**           → requirements must be approved
   docs/tasks/**                                  → design       must be approved
   src/**, lib/**, app/**, backend/**, frontend/**, scripts/** (impl code) → tasks must be approved
   docs/test/** (filling in test results)          → build        must be approved
-However, src/agentloop/** (the template's foundational tools) is **always allowed** (so as not to block
-the hook's own maintenance / speculative work). Any path not matched is also allowed unconditionally —
-tests/** is deliberately unguarded so approval-wait speculative work (fixtures, harness prep) keeps flowing.
-A brownfield repo (adopted into via adopt.py) typically scopes guard_paths to the docs deliverables
-only — so existing code keeps flowing — and adds its own code paths (e.g. src/) when ready.
+Any path not matched is allowed unconditionally — tests/** is deliberately unguarded so
+approval-wait speculative work (fixtures, harness prep) keeps flowing. A brownfield repo
+(`agentloop init` auto-detects one) typically scopes guard_paths to the docs deliverables only —
+so existing code keeps flowing — and adds its own code paths (e.g. src/) when ready.
 
 If gates.template_mode in `.agentloop/config.yaml` is true, always allow: the repo is the
-template itself, whose scaffold originals share paths with product deliverables (`make init`
-flips it to false when the template becomes a product).
+template itself, whose scaffold originals share paths with product deliverables (`agentloop
+init` flips it to false in a product).
 If gates.enforce_hook is false, always allow
 (if config cannot be read, it defaults to enabled = enforce-on, template_mode off).
 If the state.md gates are unreadable (file missing / malformed front-matter), **fail closed (deny)**
@@ -47,7 +46,7 @@ tool hook (e.g. a shell redirect), is still gate-checked mechanically before the
 
 Besides the deliverable-path rules, both checkpoints guard **gate approval itself** (AGENTS.md
 gate rule 2: only humans open a gate). The sanctioned pending→approved write path is
-approve.py (`make approve`), which also records a `gate_approved` event. Edit-time, a
+approve.py (`agentloop approve`), which also records a `gate_approved` event. Edit-time, a
 Write/Edit whose result flips any state.md gate to `approved` is denied outright; commit-stage,
 a flip against HEAD without a matching `gate_approved` event in `.agentloop/events.ndjson`
 fails (that is how a shell-redirect flip that never passed the tool hook is still caught).
@@ -252,7 +251,7 @@ def gate_flip_denial(tool_input: dict[str, Any], repo: repo_mod.Repo | None = No
     """Deny reason when this edit would flip a state.md gate to approved; "" to allow.
 
     Approval is a human operation: the only sanctioned write path is approve.py
-    (`make approve`), so any tool edit whose *result* turns a not-approved gate `approved`
+    (`agentloop approve`), so any tool edit whose *result* turns a not-approved gate `approved`
     is denied — regardless of template_mode (see the module docstring). An edit payload
     whose shape cannot be simulated is allowed with a stderr trace; the commit-stage flip
     check still covers whatever it wrote.
@@ -276,7 +275,7 @@ def gate_flip_denial(tool_input: dict[str, Any], repo: repo_mod.Repo | None = No
         return ""
     return (
         f"Blocked: this edit would set gates.{', gates.'.join(flips)} to approved. Opening a gate is a"
-        " human operation — ask the human to run `make approve GATE=<gate>` (src/agentloop/approve.py),"
+        " human operation — ask the human to run `agentloop approve <gate>`,"
         " which stamps the approval and records the gate_approved event. Never edit a gate line directly."
     )
 
@@ -316,7 +315,7 @@ def _flip_failures(repo: repo_mod.Repo) -> list[str]:
     recorded = {e.gate for e in events.load_events(str(repo.events)) if e.event == "gate_approved"}
     return [
         f"gates.{g}: flipped to approved with no gate_approved event — approvals are recorded with"
-        f" `make approve GATE={g}` (approve.py), never by editing state.md"
+        f" `agentloop approve {g}`, never by editing state.md"
         for g in flips
         if g not in recorded
     ]

@@ -8,9 +8,9 @@ security-review binding, and the commit list. This tool aggregates those into
 `gh pr create` line, not re-transcribing the SSOT by hand. It never invokes gh itself.
 
 Usage:
-  make pr-draft                       # writes .agentloop/pr-draft.md against base 'main'
-  make pr-draft ARGS='--base develop'
-  make pr-draft ARGS='--stdout'       # print instead of writing
+  agentloop pr-draft                       # writes .agentloop/pr-draft.md against base 'main'
+  agentloop pr-draft ARGS='--base develop'
+  agentloop pr-draft ARGS='--stdout'       # print instead of writing
 """
 
 from __future__ import annotations

@@ -887,7 +887,7 @@ class Orchestrator:
         project = self.front.get("project")
         if isinstance(project, str) and project.startswith("<"):
             print(
-                "state.md still carries the template placeholders. Run `make init NAME=<product>` first.",
+                "state.md still carries the template placeholders. Run `agentloop init --name <product>` first.",
                 file=sys.stderr,
             )
             return 2
@@ -1199,7 +1199,7 @@ def main(argv: list[str] | None = None) -> int:
         config = Config.load(str(repo.config))
     except (OSError, yaml.YAMLError, ValueError) as exc:
         print(
-            f"cannot load .agentloop/config.yaml: {exc} — fix it (`make doctor` validates it against the schema)",
+            f"cannot load .agentloop/config.yaml: {exc} — fix it (`agentloop doctor` validates it against the schema)",
             file=sys.stderr,
         )
         return 1

@@ -299,12 +299,12 @@ def test_missing_state_fails(project: Path) -> None:
 def test_placeholders_fail_in_product_but_info_in_template(project: Path) -> None:
     placeholder = _STATE.replace('project: "demo"', 'project: "<enter the product name>"')
     (project / ".agentloop" / "state.md").write_text(placeholder, encoding="utf-8")
-    assert any("make init" in m for m in _messages(doctor.run_checks(), "FAIL"))
+    assert any("agentloop init" in m for m in _messages(doctor.run_checks(), "FAIL"))
     (project / ".agentloop" / "config.yaml").write_text(
         _CONFIG.replace("template_mode: false", "template_mode: true"), encoding="utf-8"
     )
     findings = doctor.run_checks()
-    assert not any("make init" in m for m in _messages(findings, "FAIL"))
+    assert not any("agentloop init" in m for m in _messages(findings, "FAIL"))
     assert any("template_mode" in m for m in _messages(findings, "INFO"))
 
 

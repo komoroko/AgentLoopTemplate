@@ -22,7 +22,8 @@ The harness ships everything non-code inside the wheel (see data.py); a reposito
                code materialized.
 
 The settings.json merge/unmerge and the CLAUDE.md/AGENTS.md marker blocks reuse the pure
-functions proven under adopt.py (moved here when the copy-distribution model was retired).
+settings-merge and marker-block functions (the copy-distribution model that first used them
+is retired; the functions themselves are unit-tested and unchanged).
 """
 
 from __future__ import annotations
@@ -76,7 +77,7 @@ class PlanItem:
     note: str = ""
 
 
-# --- pure helpers moved from adopt.py (same semantics, unit-tested) -------------
+# --- pure settings/marker helpers (unit-tested) --------------------------------
 
 
 def claude_import_block() -> str:

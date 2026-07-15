@@ -12,8 +12,8 @@ whose id its `ref` names. Escalation kinds (`blocked` / `merge_conflict` / `inte
 `no_runnable` / `gate_violation`) stay **open** until resolved — /verify closes them before gate ⑤.
 
 Writers: build_loop.py appends automatically; a human or the interactive-mode agent appends via
-`make events ARGS='--add blocked --task T-003 --detail "..."'` and resolves via
-`make events ARGS='--resolve 3 --note "fixed by abc123"'`. Reads are tolerant: a corrupt line is
+`agentloop events --add blocked --task T-003 --detail "..."` and resolves via
+`agentloop events --resolve 3 --note "fixed by abc123"`. Reads are tolerant: a corrupt line is
 skipped, never a crash (the log must not be able to take the orchestrator down).
 
 Usage:
@@ -188,7 +188,7 @@ def render_view(events: list[Event]) -> str:
         if e.event in counts:
             counts[e.event] += 1
     lines = ["Events: " + " / ".join(f"{kind}={counts[kind]}" for kind in EVENT_ORDER), ""]
-    lines.append("### Open escalations (resolve with `make events ARGS='--resolve <ID> --note \"...\"'`)")
+    lines.append('### Open escalations (resolve with `agentloop events --resolve <ID> --note "..."`)')
     opened = open_escalations(events)
     if opened:
         lines.append("| ID | Date | Event | Task | Step | Detail |")
@@ -310,7 +310,7 @@ def main(argv: list[str] | None = None) -> int:
         if target is None or target.event not in ESCALATION_EVENTS:
             print(
                 f"error: no escalation event with id {args.resolve} — list the open ones with"
-                " `make events ARGS=--render`",
+                " `agentloop events --render`",
                 file=sys.stderr,
             )
             return 2

@@ -13,7 +13,7 @@ Levels: FAIL = broken invariant, fix before running the loop (exit code 1).
 Read-only: doctor never repairs anything — every fix stays a deliberate human/agent action.
 
 Usage:
-  make doctor
+  agentloop doctor
   uv run --no-project --with pyyaml python src/agentloop/doctor.py
 """
 
@@ -186,7 +186,7 @@ def check_placeholders(front: dict[str, object], config: dict[str, object]) -> l
         return [Finding("PASS", "init", "project/branch are filled in")]
     if template_mode:
         return [Finding("INFO", "init", f"{'/'.join(unfilled)} still placeholder (fine: template_mode is on)")]
-    return [Finding("FAIL", "init", f"{'/'.join(unfilled)} still placeholder — run `make init NAME=<product>`")]
+    return [Finding("FAIL", "init", f"{'/'.join(unfilled)} still placeholder — run `agentloop init --name <product>`")]
 
 
 def check_tasks(repo: repo_mod.Repo) -> list[Finding]:
@@ -361,7 +361,7 @@ def check_events(repo: repo_mod.Repo) -> list[Finding]:
     if opened:
         ids = ", ".join(f"#{e.id} {e.event}({e.task or '-'})" for e in opened)
         findings.append(
-            Finding("WARN", "events", f"{len(opened)} open escalation(s): {ids} — resolve via `make events`")
+            Finding("WARN", "events", f"{len(opened)} open escalation(s): {ids} — resolve via `agentloop events`")
         )
     log = repo.events
     if log.is_file() and log.stat().st_size > events.EVENTS_MAX_BYTES * 0.8:
@@ -443,13 +443,14 @@ def check_schema(repo: repo_mod.Repo) -> list[Finding]:
 
     The schemas (.agentloop/schema/*.schema.json) are primarily editor tooling (the
     yaml-language-server modeline); here they double as a lint. jsonschema is an optional
-    extra — `make doctor` provides it via `--with`, a bare python run degrades to INFO —
+    extra — `agentloop doctor` provides it via `--with`, a bare python run degrades to INFO —
     so the ordinary agentloop runtime stays pyyaml-only.
     """
     try:
         import jsonschema
     except ImportError:
-        return [Finding("INFO", "schema", "jsonschema not installed — schema validation skipped (make doctor has it)")]
+        msg = "jsonschema not installed — schema validation skipped (`agentloop doctor` has it)"
+        return [Finding("INFO", "schema", msg)]
     out: list[Finding] = []
     for data_path, schema_name in ((repo.config, "config"), (repo.tasks, "tasks")):
         schema_path = repo.schema_dir / f"{schema_name}.schema.json"

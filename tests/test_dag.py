@@ -413,7 +413,7 @@ def test_trace_cli_exit2_when_tasks_yaml_missing(tmp_path: Path, capsys: pytest.
     rc = dag.main([str(tmp_path / "none.yaml"), "--trace", "--requirements", str(reqs)])
     assert rc == 2
     err = capsys.readouterr().err
-    assert "none.yaml" in err and "make doctor" in err  # cause + the next step
+    assert "none.yaml" in err and "agentloop doctor" in err  # cause + the next step
 
 
 # ---- NFR dimension (non-functional requirements trace with softer rules) ----
