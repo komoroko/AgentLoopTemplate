@@ -1,0 +1,66 @@
+name: release
+
+# Cut a GitHub Release from the current pyproject version. Human-initiated: someone runs this
+# from the Actions tab (workflow_dispatch) once the version bump + CHANGELOG section have merged
+# to main. The job derives the tag `v<version>` from pyproject (the single version source),
+# creates it, and publishes a notes-only Release whose body is the matching CHANGELOG section.
+# Distribution stays git-tag + `uv tool install git+<repo>@vX.Y.Z`, so no build artifacts are
+# attached. Cutting a release is outward-facing — the Run button is the human's deliberate act.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write # create/push the tag and the Release (workflows default to read-only)
+
+jobs:
+  release:
+    name: cut GitHub Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # need the full tag list to detect an already-released version
+
+      - name: Derive version and tag from pyproject
+        run: |
+          version="$(grep -m1 '^version = ' pyproject.toml | sed 's/^version = "\(.*\)"/\1/')"
+          if [ -z "$version" ]; then
+            echo "could not read [project] version from pyproject.toml" >&2
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "TAG=v$version"    >> "$GITHUB_ENV"
+          echo "releasing v$version"
+
+      - name: Guard against re-releasing an existing tag
+        run: |
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "tag $TAG already exists — bump the version in pyproject.toml before releasing" >&2
+            exit 1
+          fi
+
+      - name: Extract release notes from CHANGELOG
+        run: |
+          awk -v ver="$VERSION" '
+            $0 ~ "^## \\[" ver "\\]" {grab=1; next}
+            grab && /^## \[/ {exit}
+            grab {print}
+          ' CHANGELOG.md > notes.md
+          # Trim leading/trailing blank lines; fail loudly if the section is missing/empty.
+          if ! grep -q '[^[:space:]]' notes.md; then
+            echo "no CHANGELOG section for $VERSION — add one before releasing" >&2
+            exit 1
+          fi
+
+      - name: Create and push the tag
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "$TAG"
+          git push origin "$TAG"
+
+      - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$TAG" --title "$TAG" --notes-file notes.md

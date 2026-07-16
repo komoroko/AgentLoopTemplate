@@ -3,13 +3,13 @@
 # upgrades never overwrite local edits. Do not edit by hand.
 version: 1
 agentloop:
-  version: 0.7.0
+  version: 0.7.1
   source: ''
 schema:
   config: 1
   tasks: 1
 prompts:
-  version: 0.7.0
+  version: 0.7.1
   files:
     AGENTS.agentloop.md: sha256:446693db9d15f2c264208b33f3c9ac154910e23ca06a584e1175bae8ef8b7dbd
     prompts/agents/architect.md: sha256:d36360652d81f2dcfae8861557cd49a679f2f29241551b13e4aa5364ffbf6479
