@@ -5,17 +5,30 @@ upgrade` shows the sections between the installed version, recorded in
 `.agentloop/agentloop.lock`, and the new one). The version's single source is
 `pyproject.toml [project] version`.
 
+## [0.7.2] - 2026-07-16
+
+### Added
+- **Release notes now carry install instructions.** `release.yml` appends a generated
+  Install footer to the release body after extracting the CHANGELOG section: the pinned
+  `uv tool install git+<repo>@vX.Y.Z` line plus the upgrade one-liner (`uv tool upgrade
+  agentloop`, then `agentloop upgrade` in each adopted repo). The repo URL is derived from
+  the workflow context, not hardcoded.
+
+### Changed
+- **README.ja.md rewritten in natural Japanese.** The Japanese README was a near-literal
+  translation of README.md (long sentences, English dash insertions carried over verbatim).
+  Rewritten for clarity and concision with the same information and structure; the
+  template-lint EN↔JA parity canaries are unchanged and stay green.
+
 ## [0.7.1] - 2026-07-16
 
 ### Added
 - **CI can now cut GitHub Releases.** A new `.github/workflows/release.yml` runs on manual
   dispatch (Actions tab): it derives the tag `vX.Y.Z` from the `pyproject.toml` version (the
   single version source), refuses to re-release an existing tag, extracts the matching
-  `CHANGELOG.md` section as the release body — followed by a generated install footer (the
-  pinned `uv tool install git+<repo>@vX.Y.Z` line plus the upgrade one-liner), so every
-  release page carries minimal install instructions — then creates and pushes the tag and
-  publishes a notes-only GitHub Release. Distribution stays git-tag, so no build artifacts
-  are attached.
+  `CHANGELOG.md` section as the release body, then creates and pushes the tag and publishes a
+  notes-only GitHub Release. Distribution stays git-tag + `uv tool install git+<repo>@vX.Y.Z`,
+  so no build artifacts are attached.
 
 ## [0.7.0] - 2026-07-14
 
