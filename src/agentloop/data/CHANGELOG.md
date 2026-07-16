@@ -5,6 +5,16 @@ upgrade` shows the sections between the installed version, recorded in
 `.agentloop/agentloop.lock`, and the new one). The version's single source is
 `pyproject.toml [project] version`.
 
+## [0.7.1] - 2026-07-16
+
+### Added
+- **CI can now cut GitHub Releases.** A new `.github/workflows/release.yml` runs on manual
+  dispatch (Actions tab): it derives the tag `vX.Y.Z` from the `pyproject.toml` version (the
+  single version source), refuses to re-release an existing tag, extracts the matching
+  `CHANGELOG.md` section as the release body, then creates and pushes the tag and publishes a
+  notes-only GitHub Release. Distribution stays git-tag + `uv tool install git+<repo>@vX.Y.Z`,
+  so no build artifacts are attached.
+
 ## [0.7.0] - 2026-07-14
 
 ### Changed
