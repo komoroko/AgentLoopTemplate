@@ -5,6 +5,21 @@ upgrade` shows the sections between the installed version, recorded in
 `.agentloop/agentloop.lock`, and the new one). The version's single source is
 `pyproject.toml [project] version`.
 
+## [0.7.2] - 2026-07-16
+
+### Added
+- **Release notes now carry install instructions.** `release.yml` appends a generated
+  Install footer to the release body after extracting the CHANGELOG section: the pinned
+  `uv tool install git+<repo>@vX.Y.Z` line plus the upgrade one-liner (`uv tool upgrade
+  agentloop`, then `agentloop upgrade` in each adopted repo). The repo URL is derived from
+  the workflow context, not hardcoded.
+
+### Changed
+- **README.ja.md rewritten in natural Japanese.** The Japanese README was a near-literal
+  translation of README.md (long sentences, English dash insertions carried over verbatim).
+  Rewritten for clarity and concision with the same information and structure; the
+  template-lint EN↔JA parity canaries are unchanged and stay green.
+
 ## [0.7.1] - 2026-07-16
 
 ### Added

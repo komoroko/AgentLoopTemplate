@@ -3,7 +3,8 @@ name: release
 # Cut a GitHub Release from the current pyproject version. Human-initiated: someone runs this
 # from the Actions tab (workflow_dispatch) once the version bump + CHANGELOG section have merged
 # to main. The job derives the tag `v<version>` from pyproject (the single version source),
-# creates it, and publishes a notes-only Release whose body is the matching CHANGELOG section.
+# creates it, and publishes a notes-only Release whose body is the matching CHANGELOG section
+# plus a generated install footer (pinned `uv tool install` + upgrade one-liner).
 # Distribution stays git-tag + `uv tool install git+<repo>@vX.Y.Z`, so no build artifacts are
 # attached. Cutting a release is outward-facing — the Run button is the human's deliberate act.
 on:
@@ -51,6 +52,20 @@ jobs:
             echo "no CHANGELOG section for $VERSION — add one before releasing" >&2
             exit 1
           fi
+
+      - name: Append install instructions
+        run: |
+          cat >> notes.md <<EOF
+
+          ## Install
+
+          \`\`\`bash
+          uv tool install git+${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}@${TAG}
+          \`\`\`
+
+          Upgrading an existing install: \`uv tool upgrade agentloop\`, then \`agentloop upgrade\`
+          in each adopted repo to refresh the materialized artifacts.
+          EOF
 
       - name: Create and push the tag
         run: |
