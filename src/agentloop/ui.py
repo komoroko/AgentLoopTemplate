@@ -1,20 +1,30 @@
-"""Local web dashboard for the AgentLoop SSOT — state, gates, tasks, and the next recommended command.
+"""Local web dashboard for the AgentLoop SSOT — the human's cockpit for a Human-on-the-Loop run.
 
-Serves the page in `ui_assets/` (index.html + app.css + app.js — real files so the frontend is
-lintable and diffable, not a string inside Python) over stdlib `http.server`. Everything is served
-same-origin with zero external references, so the dashboard stays offline-safe; the data comes from
-status_api.collect_status(). Guidance-first: the page shows where the lifecycle stands and which
-command to run next. A small **fixed whitelist** of safe operations can also be executed from the
-page (gate-approval recording — a human privilege exercised by a human clicking — plus doctor /
-events-resolve / revise / cycle-close). The client only ever sends an action id and typed
-parameters; command lines are built server-side (`action_argv`), so arbitrary command execution is
-structurally impossible. Outward-facing operations (push / PR / merge) are deliberately absent.
+Serves the ES-module page in `ui_assets/` (real files so the frontend is lintable and diffable, not
+strings inside Python) over stdlib `http.server`, same-origin with zero external references so the
+dashboard stays offline-safe. Four hash-routed tabs: **Overview** (lifecycle rail, next recommended
+command, needs-attention — from status_api.collect_status()), **Review** (the gate under decision:
+its deliverables rendered server-side by mdlite with the self-assessment pinned, gate ④'s diff and
+security-review freshness — from review_api.collect_review() — ending in the approval footer),
+**Tasks** (DAG, layer progress, frontier, traceability), and **Activity** (the events.ndjson feed
+plus the operations console). The page also notifies the approval-wait: browser notifications are
+opt-in behind the bell; the tab title and favicon always carry the waiting state.
+
+What the page may do is bounded by principle, not habit: (a) **read** inside the target repository
+— every GET resolves paths server-side from fixed specs, never from the client; (b) run **local,
+side-effect-free diagnostics** whose argv is fixed here (`action_argv`: doctor, tests); (c) record
+**human decisions that already have a single sanctioned CLI write path** (gate approval via
+approve.py — a human privilege exercised by a human clicking — plus events-resolve / revise /
+cycle-close). The client only ever sends an action id and typed parameters; command lines are built
+server-side, so arbitrary command execution is structurally impossible. Phase execution (/req …
+/build) and outward-facing operations (push / PR / merge) are deliberately absent.
 
 Safety layers: binds 127.0.0.1 by default, and a non-loopback bind with the write endpoints enabled
 requires an explicit `--allow-remote`; every POST requires the `X-AgentLoop-Token` header whose value
 is generated per server start and embedded only in the served page (a cross-origin page cannot set a
 custom header without a CORS preflight, and no CORS headers are ever sent); `--read-only` disables
-POST entirely.
+POST entirely — reviewing stays fully readable. Deliverable markdown is rendered by mdlite's
+escape-first constructor precisely because this page holds that token (see mdlite's threat model).
 
 Usage:
   agentloop ui                 # serve on 127.0.0.1:8765 and open the browser

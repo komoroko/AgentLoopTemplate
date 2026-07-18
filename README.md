@@ -86,7 +86,7 @@ buttons — `agentloop --help` lists them all):
 ```bash
 agentloop start        # first run: interactive setup wizard; afterwards: where you are + what's next
 agentloop next         # only the next recommended command (--json for integrations)
-agentloop ui           # local dashboard — approve gates, run doctor/revise/cycle-close from the page
+agentloop ui           # local dashboard — read the gate's deliverables and approve from the page
 agentloop agent codex  # switch the headless agent CLI (claude | codex | gemini | a custom command)
 agentloop project add  # register a repo the dashboard's project switcher can target
 ```
@@ -200,10 +200,15 @@ Existing files are **never overwritten** (idempotent re-runs). Then, inside the 
    marks task impact (`agentloop revise --impacted T-00x` sets seeds and their transitive
    dependents to `needs-revision`).
 5. **Check progress** anytime: `agentloop next` prints just the next recommended command (`--json`
-   for integrations), `/status` gives the full picture in chat, and `agentloop ui` shows the same
-   board in a browser (read-only by default; a fixed whitelist of safe operations and gate-approval
-   recording can run from the page). Render the task dependency diagram with `agentloop dag
-   --mermaid`.
+   for integrations), `/status` gives the full picture in chat, and `agentloop ui` opens the
+   dashboard: an Overview board, a **Review tab** where the gate under decision is read and
+   approved in one pane (deliverables with their self-assessment pinned, gate ④'s diff and
+   security-review freshness), a Tasks tab (DAG, layer progress), and an Activity tab (live event
+   feed, operations). The page can notify you when a gate or escalation starts waiting (opt-in
+   bell; the tab title/favicon always show it). Actions stay a fixed whitelist — reads, fixed
+   diagnostics (doctor, tests), and decision recording (approve / resolve / revise / cycle-close);
+   phase execution and push/PR/merge are deliberately absent. Render the task dependency diagram
+   with `agentloop dag --mermaid`.
 6. **Ship as a PR**: `agentloop pr-draft` assembles the PR body from the SSOT into
    `.agentloop/pr-draft.md` (read-only); creating/pushing the PR stays yours.
 7. **Close the cycle** after gate ⑤: `agentloop cycle-close --name <slug>` archives to

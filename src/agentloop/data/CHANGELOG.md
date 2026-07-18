@@ -7,6 +7,27 @@ upgrade` shows the sections between the installed version, recorded in
 
 ## [Unreleased]
 
+### Added
+- **The dashboard is now a gate-review cockpit.** `agentloop ui` reorganizes into four tabs
+  (Overview / Review / Tasks / Activity). The new **Review tab** renders the gate under
+  decision's deliverables in the page — self-assessment block pinned on top with its confidence
+  badged, gate ④ showing the work-branch diff plus the security-review report's freshness —
+  and ends in the approval footer, so "read, then approve" completes in one pane (approval still
+  routes through `approve.py`, the single sanctioned write path). Deliverable markdown is
+  rendered server-side by a new escape-first converter (`mdlite.py`): every input character is
+  HTML-escaped before any markup is constructed, making deliverable-borne XSS structurally
+  impossible on the page that holds the approval token.
+- **The page signals when the loop is waiting on you.** Opt-in browser notifications (the bell)
+  plus an always-on tab-title and favicon badge fire when the gate under decision changes, an
+  escalation or needs-revision appears, or a build finishes its tasks.
+- **Build supervision.** The Activity tab tails `.agentloop/events.ndjson` live
+  (`GET /api/events`), the Tasks tab adds per-layer progress rows, and in-progress DAG nodes
+  pulse — a headless `agentloop build` can be watched, not polled by hand.
+- The action whitelist grows exactly one entry: `tests` (`make test`), so a reviewer can confirm
+  green with their own eyes before approving. The whitelist's principle is now documented in
+  `ui.py`: reads, fixed local diagnostics, and recording of human decisions that already have a
+  sanctioned CLI write path — phase execution and push/PR/merge stay deliberately absent.
+
 ### Changed
 - **The `init` wizard now asks only what needs a human: the product name and a brief line.**
   Three low-value questions were dropped from the interactive flow. The work branch keeps its
