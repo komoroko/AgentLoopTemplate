@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from agentloop import ui
+from agentloop import registry, ui
 
 _STATE = """---
 project: "demo"
@@ -75,6 +75,20 @@ def test_action_argv_rejects_invalid(action: str, params: dict[str, object]) -> 
 
 
 # --- HTTP surface ---------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def isolate_config_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep every ui.main / registry write off the developer's real ~/.config during tests."""
+    monkeypatch.setenv("AGENTLOOP_CONFIG_HOME", str(tmp_path / "cfg"))
+
+
+def _seed_repo(base: Path, project: str) -> Path:
+    loop = base / ".agentloop"
+    loop.mkdir(parents=True)
+    (loop / "state.md").write_text(_STATE.replace('project: "demo"', f'project: "{project}"'), encoding="utf-8")
+    (loop / "config.yaml").write_text(_CONFIG, encoding="utf-8")
+    return base
 
 
 @pytest.fixture
@@ -210,3 +224,74 @@ def test_open_mode_targets_vscode_over_external_browser() -> None:
     assert ui.open_mode(no_open=False, term_program=None) == "browser"
     assert ui.open_mode(no_open=False, term_program="Apple_Terminal") == "browser"
     assert ui.open_mode(no_open=True, term_program="vscode") == "none"  # --no-open overrides detection
+
+
+# --- project switcher -----------------------------------------------------------
+
+
+@pytest.fixture
+def multi_server(tmp_path: Path) -> Iterator[tuple[ui.DashboardServer, dict[str, Path]]]:
+    """A server backed by a real registry with two projects (alpha active, beta second)."""
+    alpha = _seed_repo(tmp_path / "alpha", "alpha")
+    beta = _seed_repo(tmp_path / "beta", "beta")
+    reg_path = registry.registry_path()
+    reg = registry.Registry()
+    reg.add("alpha", alpha)
+    reg.add("beta", beta)
+    reg.set_active("alpha")
+    registry.save(reg, reg_path)
+
+    srv = ui.DashboardServer(("127.0.0.1", 0), root=alpha, read_only=False, registry_path=reg_path)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        yield srv, {"alpha": alpha, "beta": beta}
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+def test_get_projects_lists_registry_with_active(multi_server: tuple[ui.DashboardServer, dict[str, Path]]) -> None:
+    srv, _ = multi_server
+    status, data = _request(srv, "GET", "/api/projects")
+    assert status == 200
+    payload = json.loads(data)
+    assert payload["active"] == "alpha"
+    by_name = {p["name"]: p for p in payload["projects"]}
+    assert set(by_name) == {"alpha", "beta"}
+    assert by_name["alpha"]["active"] is True and by_name["alpha"]["exists"] is True
+
+
+def test_status_follows_the_active_project(multi_server: tuple[ui.DashboardServer, dict[str, Path]]) -> None:
+    srv, _ = multi_server
+    assert json.loads(_request(srv, "GET", "/api/status")[1])["project"] == "alpha"
+    status, _ = _request(srv, "POST", "/api/project/select", {"name": "beta"}, token=srv.token)
+    assert status == 200
+    # the switch persisted, so /api/status now reports the beta repo
+    assert json.loads(_request(srv, "GET", "/api/status")[1])["project"] == "beta"
+    assert json.loads(_request(srv, "GET", "/api/projects")[1])["active"] == "beta"
+
+
+def test_select_unknown_project_is_400(multi_server: tuple[ui.DashboardServer, dict[str, Path]]) -> None:
+    srv, _ = multi_server
+    status, _ = _request(srv, "POST", "/api/project/select", {"name": "ghost"}, token=srv.token)
+    assert status == 400
+
+
+def test_select_without_token_is_403(multi_server: tuple[ui.DashboardServer, dict[str, Path]]) -> None:
+    srv, _ = multi_server
+    status, _ = _request(srv, "POST", "/api/project/select", {"name": "beta"})
+    assert status == 403
+
+
+def test_pinned_server_reports_single_project_and_refuses_select(server: ui.DashboardServer) -> None:
+    # The `server` fixture builds a registry_path-less (pinned) server from a single repo.
+    payload = json.loads(_request(server, "GET", "/api/projects")[1])
+    assert len(payload["projects"]) == 1 and payload["projects"][0]["active"] is True
+    status, _ = _request(server, "POST", "/api/project/select", {"name": "whatever"}, token=server.token)
+    assert status == 409  # no registry backs a pinned server
+
+
+def test_main_once_does_not_touch_the_registry(repo: Path) -> None:
+    # --once is a scripting/inspection path: it prints status and must not mutate user-global state.
+    assert ui.main(["--once", "--root", str(repo)]) == 0
+    assert not registry.registry_path().exists()

@@ -88,7 +88,14 @@ agentloop start        # first run: interactive setup wizard; afterwards: where 
 agentloop next         # only the next recommended command (--json for integrations)
 agentloop ui           # local dashboard — approve gates, run doctor/revise/cycle-close from the page
 agentloop agent codex  # switch the headless agent CLI (claude | codex | gemini | a custom command)
+agentloop project add  # register a repo the dashboard's project switcher can target
 ```
+
+Working across several repos? `agentloop project add <name> <path>` registers each one; the
+dashboard grows a **project switcher** (a dropdown in its header) that retargets the whole board
+without restarting the server, and `agentloop ui` always adds the repo you launched it from. Ad-hoc
+targeting stays available too — `agentloop --repo <path> <verb>` (or `AGENTLOOP_ROOT=<path>`) points
+any single command at another repo without changing directory.
 
 ## Design principles
 

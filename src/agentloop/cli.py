@@ -41,6 +41,7 @@ daily verbs:
   next [--json]           only the next recommended command (deterministic; --json for integrations)
   ui [args]               local dashboard — approve gates, run doctor/revise/cycle-close from the page
   agent <cli>             switch the headless agent CLI (claude | codex | gemini | a custom command)
+  project [add|use|...]   the named repos the ui switches between (add/list/remove/use)
   status [--json]         the full status object (/status reads this)
 
 operations:
@@ -145,6 +146,10 @@ def main(argv: list[str] | None = None) -> int:
         return ui.main(rest)
     if verb == "agent":
         return agent_cli.main(rest)
+    if verb == "project":
+        from agentloop import registry
+
+        return registry.main(rest)
     if verb == "init":
         return init_cmd.main(rest)
     if verb == "install":
