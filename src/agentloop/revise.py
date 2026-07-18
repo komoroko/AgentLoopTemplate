@@ -24,11 +24,13 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import sys
+import logging
 from datetime import date
 
 from agentloop import common
 from agentloop import repo as repo_mod
+
+logger = logging.getLogger(__name__)
 
 STATE_PATH = common.STATE_PATH
 # The forward gate order (defined once in common.py). Reset the target onward to pending in a chain.
@@ -93,15 +95,14 @@ def mark_impacted(seeds: list[str], dry_run: bool, repo: repo_mod.Repo | None = 
     try:
         graph = dag.load(repo.tasks)
     except (OSError, dag.DagError, yaml.YAMLError) as exc:
-        print(
-            f"cannot load .agentloop/tasks.yaml: {exc} — fix it (or run `agentloop doctor` to diagnose the SSOT)",
-            file=sys.stderr,
+        logger.error(
+            f"cannot load .agentloop/tasks.yaml: {exc} — fix it (or run `agentloop doctor` to diagnose the SSOT)"
         )
         return 1
     known = {t.id for t in graph.tasks}
     unknown = [s for s in seeds if s not in known]
     if unknown:
-        print(f"unknown task id(s): {', '.join(unknown)}", file=sys.stderr)
+        logger.error(f"unknown task id(s): {', '.join(unknown)}")
         return 1
     impacted = sorted(set(seeds) | graph.dependents_closure(seeds))
     prefix = "[dry-run] would mark" if dry_run else "marked"
@@ -131,13 +132,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dry-run", action="store_true", help="show the plan only without writing anything")
     parser.add_argument("--repo", default=None, help="repository root (default: discovered from cwd)")
     args = parser.parse_args(argv)
+    common.configure_logging()
     seeds = [s.strip() for s in args.impacted.split(",") if s.strip()]
     if not args.to and not seeds:
         parser.error("nothing to do: pass --to <phase> and/or --impacted <ids>")
     try:
         repo = repo_mod.get(args.repo)
     except repo_mod.RepoNotFoundError as exc:
-        print(str(exc), file=sys.stderr)
+        logger.error(str(exc))
         return 1
     state_path = repo.state
 
@@ -152,7 +154,7 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 text = state_path.read_text(encoding="utf-8")
             except OSError as exc:
-                print(f"cannot read state.md: {exc}", file=sys.stderr)
+                logger.error(f"cannot read state.md: {exc}")
                 return 1
             state_path.write_text(apply_revision(text, args.to, args.reason, today), encoding="utf-8")
             print(f"roll-back complete: phase={args.to}. gates reset to pending: {', '.join(gates)}")

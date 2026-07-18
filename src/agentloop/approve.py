@@ -16,9 +16,9 @@ Like revise.py it preserves state.md byte-for-byte outside the touched lines
 YAML round-trip), and it enforces the gate-chain invariant: approving a gate whose upstream
 is still pending is refused.
 
-ApproveError carries an HTTP-ish `status` (400 bad request / 409 conflict / 500 broken
-state.md) so ui.py's approval endpoint can map failures to responses directly; the CLI folds
-them all to exit 1 (except the already-approved no-op, exit 0).
+ApproveError carries an `http.HTTPStatus` (BAD_REQUEST / CONFLICT / INTERNAL_SERVER_ERROR for a
+broken state.md) so ui.py's approval endpoint can map failures to responses directly; the CLI
+folds them all to exit 1 (except the already-approved no-op, exit 0).
 
 Usage:
   agentloop approve design --by alice
@@ -27,12 +27,15 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import sys
+import logging
 from datetime import date
+from http import HTTPStatus
 from pathlib import Path
 
 from agentloop import common, events
 from agentloop import repo as repo_mod
+
+logger = logging.getLogger(__name__)
 
 STATE_PATH = common.STATE_PATH
 GATE_ORDER = common.GATE_ORDER
@@ -41,9 +44,9 @@ NEXT_PHASE = {"requirements": "design", "design": "tasks", "tasks": "build", "bu
 
 
 class ApproveError(Exception):
-    """A refused approval. `status` is an HTTP-ish code so ui.py can answer with it directly."""
+    """A refused approval. `status` is an `http.HTTPStatus` so ui.py can answer with it directly."""
 
-    def __init__(self, status: int, message: str) -> None:
+    def __init__(self, status: HTTPStatus, message: str) -> None:
         super().__init__(message)
         self.status = status
         self.message = message
@@ -53,7 +56,7 @@ class AlreadyApproved(ApproveError):
     """The gate is already approved — a no-op for the CLI, a 409 for the UI."""
 
     def __init__(self, gate: str) -> None:
-        super().__init__(409, f"gate '{gate}' is already approved")
+        super().__init__(HTTPStatus.CONFLICT, f"gate '{gate}' is already approved")
 
 
 def apply_approval(text: str, gate: str, today: str, by: str = "") -> str:
@@ -66,24 +69,28 @@ def apply_approval(text: str, gate: str, today: str, by: str = "") -> str:
     import yaml  # lazy: match the toolset convention (module import stays stdlib+common only)
 
     if gate not in GATE_ORDER:
-        raise ApproveError(400, f"unknown gate '{gate}' (one of {', '.join(GATE_ORDER)})")
+        raise ApproveError(HTTPStatus.BAD_REQUEST, f"unknown gate '{gate}' (one of {', '.join(GATE_ORDER)})")
     try:
         front = common.parse_frontmatter(text)
     except yaml.YAMLError as exc:
-        raise ApproveError(500, f"state.md front-matter is not valid YAML: {exc}") from None
+        raise ApproveError(
+            HTTPStatus.INTERNAL_SERVER_ERROR, f"state.md front-matter is not valid YAML: {exc}"
+        ) from None
     if front is None:
-        raise ApproveError(500, "state.md has no YAML front-matter")
+        raise ApproveError(HTTPStatus.INTERNAL_SERVER_ERROR, "state.md has no YAML front-matter")
     gates = common.gates_of(front) or {}
     current = gates.get(gate, "")
     if current == "approved":
         raise AlreadyApproved(gate)
     upstream = common.pending_upstream(gates, gate)
     if upstream is not None:
-        raise ApproveError(409, f"cannot approve '{gate}': upstream gate '{upstream}' is still pending")
+        raise ApproveError(HTTPStatus.CONFLICT, f"cannot approve '{gate}': upstream gate '{upstream}' is still pending")
     stamp = f"approved   # {today} {by}".rstrip()
     new_text, n = common.rewrite_gate_line(text, gate, current, stamp, keep_trailer=False)
     if n == 0:
-        raise ApproveError(500, f"gate line '{gate}: {current}' not found in state.md front-matter")
+        raise ApproveError(
+            HTTPStatus.INTERNAL_SERVER_ERROR, f"gate line '{gate}: {current}' not found in state.md front-matter"
+        )
     new_text = common.set_current_phase(new_text, NEXT_PHASE[gate])
     new_text = common.set_updated_at(new_text, today)
     return new_text
@@ -100,7 +107,7 @@ def record_approval(
     try:
         text = Path(state_path).read_text(encoding="utf-8")
     except OSError as exc:
-        raise ApproveError(500, f"cannot read {state_path}: {exc}") from None
+        raise ApproveError(HTTPStatus.INTERNAL_SERVER_ERROR, f"cannot read {state_path}: {exc}") from None
     today = date.today().isoformat()
     Path(state_path).write_text(apply_approval(text, gate, today, by), encoding="utf-8")
     events.append_event("gate_approved", gate=gate, detail=by, path=events_path)
@@ -119,10 +126,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--repo", default=None, help="repository root (default: discovered from cwd)")
     args = parser.parse_args(argv)
+    common.configure_logging()
     try:
         repo = repo_mod.get(args.repo)
     except repo_mod.RepoNotFoundError as exc:
-        print(str(exc), file=sys.stderr)
+        logger.error(str(exc))
         return 1
     try:
         today = record_approval(args.gate, args.by, state_path=str(repo.state), events_path=str(repo.events))
@@ -130,7 +138,7 @@ def main(argv: list[str] | None = None) -> int:
         print(exc.message + " (nothing to do)")
         return 0
     except ApproveError as exc:
-        print(f"error: {exc.message}", file=sys.stderr)
+        logger.error(f"error: {exc.message}")
         return 1
     print(
         f"gate '{args.gate}' approved   # {today}{' ' + args.by if args.by else ''} — "

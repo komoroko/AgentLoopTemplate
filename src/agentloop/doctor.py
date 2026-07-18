@@ -21,9 +21,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import re
 import shutil
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -31,6 +31,8 @@ import yaml
 
 from agentloop import build_loop, common, dag, events, install, lock, revise
 from agentloop import repo as repo_mod
+
+logger = logging.getLogger(__name__)
 
 SETTINGS_PATH = ".claude/settings.json"
 COPILOT_HOOKS_DIR = ".github/hooks"
@@ -540,10 +542,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="diagnose the AgentLoop environment and SSOT (read-only)")
     parser.add_argument("--repo", default=None, help="repository root (default: discovered from cwd)")
     args = parser.parse_args(argv)
+    common.configure_logging()
     try:
         repo = repo_mod.get(args.repo) if args.repo else None
     except repo_mod.RepoNotFoundError as exc:
-        print(str(exc), file=sys.stderr)
+        logger.error(str(exc))
         return 1
     findings = run_checks(repo)
     for f in findings:
@@ -552,7 +555,7 @@ def main(argv: list[str] | None = None) -> int:
     warns = sum(1 for f in findings if f.level == "WARN")
     print(f"\ndoctor: {fails} FAIL / {warns} WARN / {len(findings)} checks")
     if fails:
-        print("fix the FAIL items before running the loop.", file=sys.stderr)
+        logger.error("fix the FAIL items before running the loop.")
     return 1 if fails else 0
 
 

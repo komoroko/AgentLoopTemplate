@@ -16,14 +16,16 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import logging
 import re
-import sys
 from pathlib import Path
 
 import yaml
 
 from agentloop import build_loop, common, dag, events
 from agentloop import repo as repo_mod
+
+logger = logging.getLogger(__name__)
 
 OUT_PATH = ".agentloop/pr-draft.md"
 REQUIREMENTS_PATH = "docs/10-requirements.md"
@@ -137,10 +139,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--stdout", action="store_true", help="print the draft instead of writing a file")
     parser.add_argument("--repo", default=None, help="repository root (default: discovered from cwd)")
     args = parser.parse_args(argv)
+    common.configure_logging()
     try:
         repo = repo_mod.get(args.repo)
     except repo_mod.RepoNotFoundError as exc:
-        print(str(exc), file=sys.stderr)
+        logger.error(str(exc))
         return 1
     args.out = args.out or str(repo.path(OUT_PATH))
     draft = build_draft(args.base, repo)

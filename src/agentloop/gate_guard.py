@@ -59,6 +59,7 @@ false` disables it.
 from __future__ import annotations
 
 import json
+import logging
 import subprocess
 import sys
 from pathlib import Path
@@ -68,6 +69,8 @@ import yaml
 
 from agentloop import common
 from agentloop import repo as repo_mod
+
+logger = logging.getLogger(__name__)
 
 STATE_PATH = common.STATE_PATH
 CONFIG_PATH = common.CONFIG_PATH
@@ -258,10 +261,9 @@ def gate_flip_denial(tool_input: dict[str, Any], repo: repo_mod.Repo | None = No
         current_text = ""
     proposed_text = _proposed_state_text(current_text, tool_input)
     if proposed_text is None:
-        print(
+        logger.warning(
             "gate_guard: state.md write with an unrecognized payload shape — allowing"
-            " (the commit-stage --check-diff flip check still applies)",
-            file=sys.stderr,
+            " (the commit-stage --check-diff flip check still applies)"
         )
         return ""
     current = _gates_or_empty(current_text)
@@ -349,11 +351,12 @@ def check_diff(repo: repo_mod.Repo | None = None) -> int:
     enforce_hook, and the fail-closed rule for an unreadable state.md all carry over.
     """
     repo = repo or _repo_or_cwd()
+    common.configure_logging()
     paths = _changed_paths(repo)
     if paths is None:
         # Nothing to enforce against (not a git repo / git unavailable). The tool-hook layer,
         # where present, still guards individual edits.
-        print("gate_guard --check-diff: git status unavailable; skipping.", file=sys.stderr)
+        logger.warning("gate_guard --check-diff: git status unavailable; skipping.")
         return 0
     # git status paths are repo-relative; anchor them so evaluate() judges them against the
     # discovered root no matter where the process was launched.
@@ -364,15 +367,16 @@ def check_diff(repo: repo_mod.Repo | None = None) -> int:
     if not denied and not flips:
         return 0
     if denied:
-        print("gate_guard: changes to gate-guarded paths whose prerequisite gate is not approved:", file=sys.stderr)
+        logger.error("gate_guard: changes to gate-guarded paths whose prerequisite gate is not approved:")
         for path, reason in denied:
-            print(f"  {path}: {reason}", file=sys.stderr)
+            logger.error(f"  {path}: {reason}")
     for failure in flips:
-        print(f"  {failure}", file=sys.stderr)
+        logger.error(f"  {failure}")
     return 1
 
 
 def main(argv: list[str] | None = None) -> int:
+    common.configure_logging()
     if argv is None:
         argv = sys.argv[1:]
     if "--check-diff" in argv:
@@ -383,7 +387,7 @@ def main(argv: list[str] | None = None) -> int:
         # Fail-open by design: some hosts fire hooks for every tool and a malformed payload must
         # not block path-less tools — but leave a trace, so a guard that stopped guarding is
         # visible in the hook log instead of silently absent.
-        print("gate_guard: unparseable hook payload on stdin — allowing without a gate check", file=sys.stderr)
+        logger.warning("gate_guard: unparseable hook payload on stdin — allowing without a gate check")
         return 0
     tool_input = payload.get("tool_input") or {}
     # Claude Code sends snake_case, VS Code Copilot camelCase — accept both.

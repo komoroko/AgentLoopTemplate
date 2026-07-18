@@ -23,7 +23,7 @@ jobs:
           enable-cache: true
 
       - name: Sync dependencies
-        run: uv sync
+        run: uv sync --frozen
 
       - name: Cache pre-commit environments
         uses: actions/cache@v4
@@ -59,10 +59,10 @@ jobs:
         run: uv python install ${{ matrix.python-version }}
 
       - name: Sync dependencies
-        run: uv sync
+        run: uv sync --frozen
 
       - name: Run the package test suite
-        run: uv run pytest -vv tests/
+        run: uv run --frozen pytest -vv tests/
 
       - name: Validate the task DAG and the R-N trace
         # --validate: structural consistency of tasks.yaml (vocabulary, unknown ids, cycles).
@@ -70,9 +70,9 @@ jobs:
         # scaffold's example R-N headings have no tasks yet, by design). Exit 2 = "cannot
         # check" (requirements doc absent) is tolerated; a broken thread exits 1 and fails.
         run: |
-          uv run agentloop dag --validate
+          uv run --frozen agentloop dag --validate
           if grep -q "id:" .agentloop/tasks.yaml; then
-            uv run agentloop dag --trace || test $? -eq 2
+            uv run --frozen agentloop dag --trace || test $? -eq 2
           else
             echo "tasks.yaml holds no tasks yet: skipping --trace"
           fi

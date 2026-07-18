@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from agentloop import cli, init_cmd, ui
+from agentloop import cli, init_cmd, registry, ui
 
 _STATE = """---
 project: "demo"
@@ -52,7 +52,7 @@ def repo(tmp_path: Path) -> Iterator[Path]:
 def test_help_lists_the_verbs_and_the_operations(capsys: pytest.CaptureFixture[str]) -> None:
     assert cli.main([]) == 0
     out = capsys.readouterr().out
-    for verb in ("start", "next", "ui", "agent", "init", "install", "sync", "upgrade", "approve", "guard"):
+    for verb in ("start", "next", "ui", "agent", "project", "init", "install", "sync", "upgrade", "approve", "guard"):
         assert verb in out
     assert "NEVER pre-authorize" in out  # gate rule 2's single guarded spelling stays discoverable
     assert cli.main(["--help"]) == 0
@@ -86,6 +86,18 @@ def test_ui_passes_its_args_through(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(ui, "main", fake_ui_main)
     assert cli.main(["ui", "--read-only", "--port", "0"]) == 0
     assert seen == [["--read-only", "--port", "0"]]
+
+
+def test_project_passes_through_to_registry(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[list[str]] = []
+
+    def fake_registry_main(argv: list[str]) -> int:
+        seen.append(list(argv))
+        return 0
+
+    monkeypatch.setattr(registry, "main", fake_registry_main)
+    assert cli.main(["project", "add", "web", "/tmp/x"]) == 0
+    assert seen == [["add", "web", "/tmp/x"]]
 
 
 # --- start: wizard on a fresh copy, orientation afterwards -------------------------
