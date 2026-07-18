@@ -37,7 +37,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from agentloop import approve, common, revise, status_api
+from agentloop import approve, common, review_api, revise, status_api
 from agentloop import registry as registry_mod
 from agentloop import repo as repo_mod
 
@@ -187,6 +187,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
         elif self.path == "/api/projects":
             reg = self.server.registry()
             self._send_json(HTTPStatus.OK, {"projects": reg.entries(), "active": reg.active})
+        elif self.path.startswith("/api/review/"):
+            # The path carries only a gate *name*; review_api maps it to a fixed set of repo files
+            # server-side, so a traversal-shaped suffix is just an unknown gate (404).
+            gate = self.path[len("/api/review/") :]
+            try:
+                payload = review_api.collect_review(self.server.active_root(), gate)
+            except review_api.ReviewError as exc:
+                self._send_json(HTTPStatus.NOT_FOUND, {"error": str(exc)})
+                return
+            except Exception as exc:  # same posture as /api/status: a broken repo must not 500 the pane
+                payload = {"error": f"{type(exc).__name__}: {exc}"}
+            self._send_json(HTTPStatus.OK, payload)
         else:
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
 

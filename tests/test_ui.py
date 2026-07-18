@@ -226,6 +226,41 @@ def test_open_mode_targets_vscode_over_external_browser() -> None:
     assert ui.open_mode(no_open=True, term_program="vscode") == "none"  # --no-open overrides detection
 
 
+# --- review endpoint ------------------------------------------------------------
+
+
+def test_get_review_serves_rendered_deliverable(server: ui.DashboardServer, repo: Path) -> None:
+    doc = repo / "docs" / "10-requirements.md"
+    doc.parent.mkdir(parents=True)
+    doc.write_text(
+        "# Requirements\n<script>steal(TOKEN)</script>\n\n## Self-assessment\n- **Confidence**: low\n",
+        encoding="utf-8",
+    )
+    status, data = _request(server, "GET", "/api/review/requirements")
+    assert status == 200
+    payload = json.loads(data)
+    assert payload["is_awaiting"] is True and payload["index"] == 1
+    (main,) = payload["deliverables"]
+    assert "<h1>Requirements</h1>" in main["html"]
+    assert "<script" not in main["html"]  # XSS regression: agent markup arrives inert
+    assert main["self_assessment"]["confidence"] == "low"
+
+
+@pytest.mark.parametrize("path", ["/api/review/nope", "/api/review/../state", "/api/review/", "/api/review/Build"])
+def test_get_review_unknown_gate_is_404(server: ui.DashboardServer, path: str) -> None:
+    assert _request(server, "GET", path)[0] == 404
+
+
+def test_review_is_readable_on_a_read_only_server(repo: Path) -> None:
+    srv = ui.DashboardServer(("127.0.0.1", 0), root=repo, read_only=True)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        assert _request(srv, "GET", "/api/review/requirements")[0] == 200  # reviewing is view-only
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
 # --- project switcher -----------------------------------------------------------
 
 
