@@ -84,9 +84,7 @@ def apply_approval(text: str, gate: str, today: str, by: str = "") -> str:
         raise AlreadyApproved(gate)
     upstream = common.pending_upstream(gates, gate)
     if upstream is not None:
-        raise ApproveError(
-            HTTPStatus.CONFLICT, f"cannot approve '{gate}': upstream gate '{upstream}' is still pending"
-        )
+        raise ApproveError(HTTPStatus.CONFLICT, f"cannot approve '{gate}': upstream gate '{upstream}' is still pending")
     stamp = f"approved   # {today} {by}".rstrip()
     new_text, n = common.rewrite_gate_line(text, gate, current, stamp, keep_trailer=False)
     if n == 0:

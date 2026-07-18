@@ -618,9 +618,7 @@ def _run_trace(
         return 2
     design_text = _read_optional(design_path)
     if design_text is None and require_design:
-        logger.error(
-            f"error: cannot read the design document: {design_path} (required when --require-design is given)"
-        )
+        logger.error(f"error: cannot read the design document: {design_path} (required when --require-design is given)")
         return 2
     test_plan_text: str | None = None
     if test_plan_path is not None:
@@ -704,9 +702,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         graph = load(args.path)
     except (OSError, DagError, yaml.YAMLError) as exc:
-        logger.error(
-            f"error: cannot load {args.path}: {exc} — fix it (or run `agentloop doctor` to diagnose)"
-        )
+        logger.error(f"error: cannot load {args.path}: {exc} — fix it (or run `agentloop doctor` to diagnose)")
         # With --trace, represent "cannot check" with 2 (tasks.yaml unreadable = trace not established).
         return 2 if args.trace else 1
 
