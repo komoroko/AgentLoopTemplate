@@ -114,7 +114,7 @@ function diffHtml(diff, meta) {
       : line.startsWith("+") ? "add"
       : line.startsWith("-") ? "del" : "";
     return '<span class="dl ' + cls + '">' + esc(line) + "</span>";
-  }).join("\n");
+  }).join("");  // .dl spans are display:block — a "\n" separator would double the line height
   return badge +
     '<div class="subhead">FILES (base ' + esc((diff.base || "").slice(0, 12)) + " on " + esc(diff.base_ref || "") +
     ')</div><div class="scroll"><table>' + files + "</table></div>" +

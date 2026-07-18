@@ -51,6 +51,7 @@ export function resolveEsc(id) {
   if (note !== null) post("/api/run", { action:"events_resolve", params:{ id:id, note:note } });
 }
 function runDoctor() { post("/api/run", { action:"doctor", params:{} }); }
+function runTests() { post("/api/run", { action:"tests", params:{} }); }
 function runRevise() {
   const phase = document.getElementById("revPhase").value;
   const reason = document.getElementById("revReason").value.trim();
@@ -88,7 +89,8 @@ export function renderOps() {
   }
   const phases = ["requirements", "design", "tasks", "build"].map(p => "<option>" + p + "</option>").join("");
   document.getElementById("ops").innerHTML =
-    '<div class="ops"><button onclick="runDoctor()">agentloop doctor</button></div>' +
+    '<div class="ops"><button onclick="runDoctor()">agentloop doctor</button>' +
+    '<button onclick="runTests()">make test</button></div>' +
     '<div class="ops" style="margin-top:.6rem">' +
     '<select id="revPhase">' + phases + "</select>" +
     '<input id="revReason" placeholder="revise reason" size="28">' +
@@ -100,5 +102,6 @@ export function renderOps() {
 // Named by generated onclick= handlers (module scope is not global scope).
 window.resolveEsc = resolveEsc;
 window.runDoctor = runDoctor;
+window.runTests = runTests;
 window.runRevise = runRevise;
 window.runCycleClose = runCycleClose;
