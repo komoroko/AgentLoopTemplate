@@ -1,7 +1,7 @@
 // Entry module: hash-routed tabs, the 3-second status poll, theme, and the project switcher.
 // Rendering lives in the view-* modules; shared plumbing in api.js.
 
-import { READ_ONLY, TOKEN, esc, state, toast } from "/assets/api.js";
+import { READ_ONLY, TOKEN, awaitingGate, esc, state, toast } from "/assets/api.js";
 import { renderAttention, renderNext, renderStepper } from "/assets/view-overview.js";
 import { renderReview } from "/assets/view-review.js";
 import { renderTasks, renderTrace } from "/assets/view-tasks.js";
@@ -25,7 +25,7 @@ function showView() {
 
 function updateReviewBadge(d) {
   const badge = document.getElementById("reviewBadge");
-  const awaiting = (d.gates || []).find(g => g.status !== "approved");
+  const awaiting = awaitingGate(d);
   if (awaiting) { badge.textContent = "◆ g" + awaiting.index; badge.style.display = ""; }
   else badge.style.display = "none";
 }
@@ -70,6 +70,7 @@ function toggleTheme() {
   const val = !cur ? "dark" : (cur === "dark" ? "light" : "");
   if (val) localStorage.setItem("agentloop-theme", val); else localStorage.removeItem("agentloop-theme");
   applyTheme(val);
+  document.dispatchEvent(new CustomEvent("agentloop:theme", { detail: val }));
 }
 applyTheme(localStorage.getItem("agentloop-theme") || "");
 

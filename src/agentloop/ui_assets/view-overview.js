@@ -1,11 +1,11 @@
 // Overview: the lifecycle rail, the next recommended command, and what needs attention.
 
-import { READ_ONLY, chip, esc } from "/assets/api.js";
+import { READ_ONLY, awaitingGate, chip, esc } from "/assets/api.js";
 
 export function renderStepper(d) {
   const gatesByPhase = {};
   d.gates.forEach(g => { gatesByPhase[g.phase] = g; });
-  const awaiting = (d.gates.find(g => g.status !== "approved") || {}).name;  // the gate the human is at now
+  const awaiting = (awaitingGate(d) || {}).name;
   const idx = d.phase_order.indexOf(d.current_phase);
   const rail = d.phase_order.map((p, i) => {
     const g = gatesByPhase[p];

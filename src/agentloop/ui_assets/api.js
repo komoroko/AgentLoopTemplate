@@ -53,11 +53,32 @@ export function taskById(id) {
   return (state.data && state.data.tasks) ? state.data.tasks.tasks.find(x => x.id === id) : null;
 }
 
+// The gate the human is standing at: the first one not yet approved. Derived here once — the
+// stepper, the tab badge, the review pane and the notifier all have to agree on it.
+export function awaitingGate(d) {
+  return ((d || {}).gates || []).find(g => g.status !== "approved") || null;
+}
+
 export function chip(id, status, critical, clickable) {
-  const clk = clickable ? " clk" : "";
-  const onc = clickable ? ' onclick="showTaskDetail(\'' + id + '\')"' : "";
-  return '<span class="chip ' + esc(status) + (critical ? " critical" : "") + clk + '" title="' +
-    esc(status) + '"' + onc + ">" + esc(id) + "</span>";
+  return '<span class="chip ' + esc(status) + (critical ? " critical" : "") + (clickable ? " clk" : "") +
+    '" title="' + esc(status) + '"' + taskAttr(clickable && id) + ">" + esc(id) + "</span>";
+}
+
+// Task ids come from tasks.yaml, which is agent-written and *not* pattern-validated on load
+// (dag.py takes `str(raw["id"])` as-is). Interpolating one into an inline `onclick="f('…')"` would
+// let a single quote in an id close the JS string and run arbitrary script on this page — the page
+// that holds the approval token, i.e. exactly the XSS→self-approval path mdlite.py exists to make
+// impossible. So the id travels as an escaped *attribute value* and a delegated listener reads it
+// back with getAttribute; no id ever becomes code.
+export function taskAttr(id) {
+  return id ? ' data-task="' + esc(id) + '"' : "";
+}
+
+export function onTaskClick(handler) {
+  document.addEventListener("click", e => {
+    const el = e.target.closest && e.target.closest("[data-task]");
+    if (el) handler(el.getAttribute("data-task"));
+  });
 }
 
 export function tableFrom(headers, rows) {

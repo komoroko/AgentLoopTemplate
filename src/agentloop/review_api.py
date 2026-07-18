@@ -35,8 +35,16 @@ _GIT_TIMEOUT_SEC = 10
 _GLOB_NAME_RE = re.compile(r"^(T|ADR)-[A-Za-z0-9_.-]+\.md$")
 _TEMPLATE_NAMES = frozenset({"T-template.md", "ADR-template.md"})
 _REVIEWED_HEAD_RE = re.compile(r"^Reviewed-HEAD:\s*([0-9a-fA-F]+)", re.MULTILINE)
-_CONFIDENCE_LINE_RE = re.compile(r"^.*\bconfidence\b.*$", re.IGNORECASE | re.MULTILINE)
+# The *labelled* confidence line ("- **Confidence**: …"), not any prose mentioning the word: the
+# label must be what precedes the colon, so a sentence like "we have high confidence in X" is not
+# mistaken for the assessment. The value is everything after that colon.
+_CONFIDENCE_LINE_RE = re.compile(r"^[^:\n]*\bconfidence\b[^:\n]*:(?P<value>.*)$", re.IGNORECASE | re.MULTILINE)
 _LEVEL_RE = re.compile(r"\b(high|medium|low)\b", re.IGNORECASE)
+# The scaffold's unfilled placeholder is the three levels as a slash run ("high / medium / low",
+# optionally "per area …"). A genuinely filled per-area line separates them differently
+# ("architecture=high / choices=medium"), so this run is a precise "nobody answered" signal.
+_PLACEHOLDER_RE = re.compile(r"\bhigh\s*/\s*medium\s*/\s*low\b", re.IGNORECASE)
+_LEVEL_RANK = {"low": 0, "medium": 1, "high": 2}
 
 # Gate -> what the human reads to open it. "main" is the deliverable under approval, "context" the
 # upstream document it is judged against. ("glob", dir, pattern) expands inside that fixed
@@ -60,18 +68,25 @@ class ReviewError(Exception):
 
 
 def _confidence(section_md: str) -> str | None:
-    """The single stated confidence level, or None when unset/ambiguous.
+    """The confidence level the pane badges, or None when the author never stated one.
 
-    The scaffold placeholder line reads `high / medium / low (…)` — several levels on one line
-    means the agent never filled it in, which the pane must show as unset, not as "high". Lines
-    mentioning confidence without a level (the section heading itself) are skipped.
+    Two rules, both in service of "the badge must never look better than the document":
+
+    - Read only the value of a **labelled** `Confidence:` line. The word also occurs in the section
+      heading and in prose ("we have high confidence the runner exists"), and taking the first
+      level found anywhere would let that prose badge a `low` self-assessment as `high`.
+    - AGENTS.md asks for confidence *by area*, so one line legitimately carries several levels
+      ("high (API surface), low (integration)"). Report the **weakest** — the low spot is the part
+      the human must not miss. The unfilled scaffold placeholder is recognised separately and
+      reads as unset rather than as a real `low`.
     """
     for line in _CONFIDENCE_LINE_RE.finditer(section_md):
-        levels = {m.group(1).lower() for m in _LEVEL_RE.finditer(line.group(0))}
-        if len(levels) == 1:
-            return next(iter(levels))
-        if len(levels) > 1:
+        value = line.group("value")
+        if _PLACEHOLDER_RE.search(value):
             return None
+        levels = {m.group(1).lower() for m in _LEVEL_RE.finditer(value)}
+        if levels:
+            return min(levels, key=lambda lv: _LEVEL_RANK[lv])
     return None
 
 

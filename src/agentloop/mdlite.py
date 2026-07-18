@@ -36,8 +36,21 @@ _BOLD_RE = re.compile(r"\*\*([^*]+)\*\*")
 _PLACEHOLDER_RE = re.compile(r"\x00(\d+)\x00")
 
 
+def _strip_nul(text: str) -> str:
+    """Drop NUL, the one character the stash placeholders are built from.
+
+    `_inline` parks generated fragments in `\\x00<index>\\x00` markers while it rewrites the rest of
+    the line. A NUL surviving from the input would be read back as a marker and index into a stash
+    that never held it (IndexError) — a deliverable carrying stray binary would take the whole
+    gate's review pane down. NUL is not text, so removing it costs nothing.
+    """
+    return text.replace("\x00", "")
+
+
 def _safe_href(href: str) -> bool:
-    """Only http(s), in-page anchors, and relative paths may become a real link."""
+    """Only http(s), in-page anchors, and same-origin relative paths may become a real link."""
+    if href.startswith("//"):
+        return False  # scheme-relative: reads as a path but resolves cross-origin
     scheme = _SCHEME_RE.match(href)
     if scheme:
         return scheme.group(0).lower() in ("http:", "https:")
@@ -46,7 +59,7 @@ def _safe_href(href: str) -> bool:
 
 def _inline(text: str) -> str:
     """Render the inline trio over already-escaped text (escape-first: no input char survives raw)."""
-    escaped = html.escape(text, quote=True)
+    escaped = html.escape(_strip_nul(text), quote=True)
     stash: list[str] = []
 
     def _stash(fragment: str) -> str:
@@ -60,7 +73,9 @@ def _inline(text: str) -> str:
         href = html.unescape(m.group(2))
         if not _safe_href(href):
             return m.group(0)  # stays visible as escaped text — the reviewer sees the attempt
-        return _stash(f'<a href="{html.escape(href, quote=True)}" rel="noopener">{m.group(1)}</a>')
+        # noreferrer too: the dashboard URL is not secret, but nothing about this page needs to
+        # travel to a target an agent chose.
+        return _stash(f'<a href="{html.escape(href, quote=True)}" rel="noopener noreferrer">{m.group(1)}</a>')
 
     escaped = _LINK_RE.sub(_link, escaped)
     escaped = _BOLD_RE.sub(r"<strong>\1</strong>", escaped)
@@ -134,7 +149,7 @@ def _list(lines: list[str], start: int, out: list[str]) -> int:
 
 def render(text: str) -> str:
     """The whole document as HTML built only from this module's own tags (see the module docstring)."""
-    lines = _COMMENT_RE.sub("", text).splitlines()
+    lines = _COMMENT_RE.sub("", _strip_nul(text)).splitlines()
     out: list[str] = []
     paragraph: list[str] = []
     i = 0

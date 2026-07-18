@@ -1,6 +1,6 @@
 // Tasks: the dependency DAG, the frontier order, task detail, and the traceability table.
 
-import { chip, esc, taskById } from "/assets/api.js";
+import { chip, esc, onTaskClick, taskAttr, taskById } from "/assets/api.js";
 
 // ---- dependency graph as inline SVG (no external namespace literal → stays offline-safe) ----
 function buildDag(t, byId) {
@@ -24,7 +24,7 @@ function buildDag(t, byId) {
   t.layers.forEach(ids => ids.forEach(id => {
     const tk = byId[id] || { status:"todo" };
     const c = crit.has(id) ? " crit" : "", x = X(id), y = Y(id);
-    nodes += '<g onclick="showTaskDetail(\'' + id + '\')">' +
+    nodes += "<g" + taskAttr(id) + ">" +
       '<rect class="nd ' + esc(tk.status) + c + '" x="' + x + '" y="' + y + '" width="' + nodeW +
       '" height="' + nodeH + '" rx="6"/>' +
       '<text x="' + (x + 8) + '" y="' + (y + 21) + '">' + esc(id) + "</text></g>";
@@ -53,7 +53,7 @@ function layersBar(t, byId) {
     const running = ids.filter(id => st(id) === "in_progress").length;
     const segs = ids.map(id =>
       '<span class="seg ' + esc(st(id)) + ' clk" title="' + esc(id) + " (" + esc(st(id)) +
-      ')" onclick="showTaskDetail(\'' + id + '\')"></span>').join("");
+      ')"' + taskAttr(id) + "></span>").join("");
     return '<div class="lrow"><span class="lname">L' + i + '</span><span class="lbar">' + segs +
       '</span><span class="lcount">' + done + "/" + ids.length +
       (running ? " · " + running + " running" : "") + "</span></div>";
@@ -71,7 +71,7 @@ export function renderTasks(d) {
   const graph = t.tasks.length ? layersBar(t, byId) + buildDag(t, byId) : '<div class="empty">(no tasks)</div>';
   const frontier = t.frontier.length
     ? '<div class="scroll"><table><tr><th>ID</th><th>Title</th><th>Kind</th><th>fan-out</th></tr>' +
-      t.frontier.map(f => '<tr class="clk" onclick="showTaskDetail(\'' + f.id + '\')"><td class="mono">' +
+      t.frontier.map(f => '<tr class="clk"' + taskAttr(f.id) + '><td class="mono">' +
         esc(f.id) + "</td><td>" + esc(f.title) + "</td><td>" + esc(f.kind) + "</td><td>" + f.fan_out +
         "</td></tr>").join("") + "</table></div>"
     : '<div class="empty">(no startable todo)</div>';
@@ -102,4 +102,4 @@ export function renderTrace(d) {
     rows + "</table></div>" + findings;
 }
 
-window.showTaskDetail = showTaskDetail;  // named by generated onclick= handlers
+onTaskClick(showTaskDetail);  // one delegated listener for every [data-task] the views emit

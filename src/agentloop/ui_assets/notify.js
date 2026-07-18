@@ -4,13 +4,13 @@
 // badge, and a canvas-drawn favicon (offline self-contained: no image assets, no external URLs).
 // Transitions are detected client-side by diffing consecutive /api/status payloads — no new API.
 
-import { state, toast } from "/assets/api.js";
+import { awaitingGate, state, toast } from "/assets/api.js";
 
 let enabled = localStorage.getItem("agentloop-notify") === "on";
 let prev = null;  // last snapshot; transitions only fire within the same project
 
 function snapshot(d) {
-  const awaiting = (d.gates || []).find(g => g.status !== "approved") || null;
+  const awaiting = awaitingGate(d);
   const counts = ((d.tasks || {}).counts) || {};
   return {
     project: d.project || "",
@@ -29,19 +29,29 @@ function notify(body) {
   catch (e) { /* headless/denied environments: the title/favicon badges still carry the signal */ }
 }
 
+// teal = quiet loop, amber = a gate waits on the human, red = an escalation waits on the human
+function faviconColor(s) {
+  const styles = getComputedStyle(document.documentElement);
+  const raw = s.openEsc > 0 ? (styles.getPropertyValue("--bad") || "#c23b2f")
+    : s.awaiting ? (styles.getPropertyValue("--gate") || "#b3760f")
+    : (styles.getPropertyValue("--accent") || "#0c7d73");
+  return raw.trim();
+}
+
+// Only three distinct icons exist, but the status poll fires every 3 seconds for the whole life of
+// a supervised build — so repaint only when the colour actually changes. Otherwise each tick would
+// allocate a canvas, PNG-encode it, and hand the browser a fresh data: URI to decode.
+let lastColor = null;
 function favicon(s) {
+  const color = faviconColor(s);
+  if (color === lastColor) return;
   const canvas = document.createElement("canvas");
   canvas.width = canvas.height = 32;
   const g = canvas.getContext("2d");
   if (!g) return;
-  // teal = quiet loop, amber = a gate waits on the human, red = an escalation waits on the human
-  const styles = getComputedStyle(document.documentElement);
-  const color = s.openEsc > 0 ? (styles.getPropertyValue("--bad") || "#c23b2f")
-    : s.awaiting ? (styles.getPropertyValue("--gate") || "#b3760f")
-    : (styles.getPropertyValue("--accent") || "#0c7d73");
   g.beginPath();
   g.arc(16, 16, 13, 0, Math.PI * 2);
-  g.fillStyle = color.trim();
+  g.fillStyle = color;
   g.fill();
   let link = document.querySelector('link[rel="icon"]');
   if (!link) {
@@ -50,6 +60,7 @@ function favicon(s) {
     document.head.appendChild(link);
   }
   link.href = canvas.toDataURL("image/png");
+  lastColor = color;
 }
 
 function badges(s) {
@@ -99,4 +110,7 @@ function paintBell() {
 
 document.getElementById("bellBtn").onclick = toggle;
 document.addEventListener("agentloop:status", e => onStatus(e.detail));
+// The badge colours come from theme variables, and an idle repo can go a long time without a
+// changed status payload — so a theme switch has to invalidate the cached icon itself.
+document.addEventListener("agentloop:theme", () => { lastColor = null; if (prev) badges(prev); });
 paintBell();

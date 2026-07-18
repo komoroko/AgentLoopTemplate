@@ -42,6 +42,7 @@ import re
 import secrets
 import shlex
 import subprocess
+import threading
 import urllib.parse
 import webbrowser
 from http import HTTPStatus
@@ -75,6 +76,30 @@ _ASSET_TYPES = {
     "notify.js": _JS,
 }
 _LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
+
+# events.ndjson, parsed at most once per version of the file. The Activity feed polls every 3s
+# while it is open, and answering it means parsing the *whole* log (an escalation's open/closed
+# state depends on a `resolve` that may appear anywhere in it) to return the last 50 rows. Keyed
+# on the file's identity, so an append is picked up on the next poll and a stale entry cannot be
+# served. One slot: the dashboard reads one project at a time, and a project switch just re-reads.
+_events_cache: tuple[tuple[str, int, int], list[events_mod.Event]] | None = None
+_events_lock = threading.Lock()
+
+
+def _load_events_cached(path: Path) -> list[events_mod.Event]:
+    global _events_cache
+    try:
+        stat = path.stat()
+        key = (str(path), stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        return []  # same tolerance as load_events: an unreadable log is an empty log
+    with _events_lock:
+        if _events_cache is not None and _events_cache[0] == key:
+            return _events_cache[1]
+    loaded = events_mod.load_events(str(path))
+    with _events_lock:
+        _events_cache = (key, loaded)
+    return loaded
 
 
 class UiActionError(Exception):
@@ -246,7 +271,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         limit = max(1, min(limit, 200))
         root = self.server.active_root()
-        events = events_mod.load_events(str(root / ".agentloop" / "events.ndjson"))
+        events = _load_events_cached(root / ".agentloop" / "events.ndjson")
         open_ids = {e.id for e in events_mod.open_escalations(events)}
         self._send_json(
             HTTPStatus.OK,

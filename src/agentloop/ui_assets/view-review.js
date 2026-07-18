@@ -2,14 +2,14 @@
 // Deliverable HTML arrives pre-rendered from the server (mdlite, escape-first); the diff arrives as
 // raw text and is escaped here line by line. Nothing in this module puts unescaped input in the DOM.
 
-import { READ_ONLY, esc, post, state } from "/assets/api.js";
+import { READ_ONLY, awaitingGate, esc, post, state } from "/assets/api.js";
 
 const DIFF_ID = "__diff__";  // the synthetic "change set" entry on the build gate's list
 let current = null;    // selected gate name
 let review = null;     // last /api/review payload for `current`
 let selected = null;   // selected deliverable id
 let tabVisible = false;
-let fetching = false;      // one review fetch in flight at a time (polls must not stack them)
+let fetchSeq = 0;          // newest request wins; older responses are dropped on arrival
 let reviewProject = null;  // which project `review` was fetched for (switcher invalidation)
 const readSets = {};   // "project:gate" -> Set of deliverable ids the human opened (client-side only)
 
@@ -20,17 +20,24 @@ function readSet() {
 
 function defaultGate() {
   const gates = (state.data || {}).gates || [];
-  return ((gates.find(g => g.status !== "approved") || gates[0]) || {}).name || null;
+  return ((awaitingGate(state.data) || gates[0]) || {}).name || null;
 }
 
+// Every response is tagged with the request that asked for it. A gate clicked while an earlier
+// fetch is still in flight must not be dropped (the pane would keep showing the old gate's
+// deliverables under the new gate's name — and the approval footer is computed from this payload,
+// so the human could approve one gate having read another). Newest request wins; stale responses
+// are discarded, never painted.
 async function fetchReview() {
-  if (!current || fetching) return;
-  fetching = true;
+  if (!current) return;
+  const gate = current, seq = ++fetchSeq;
+  let payload;
   try {
-    const res = await fetch("/api/review/" + current);
-    review = await res.json();
-  } catch (e) { review = { error: "request failed: " + e }; }
-  finally { fetching = false; }
+    const res = await fetch("/api/review/" + gate);
+    payload = await res.json();
+  } catch (e) { payload = { error: "request failed: " + e }; }
+  if (seq !== fetchSeq) return;  // superseded by a later selection
+  review = payload;
   reviewProject = (state.data || {}).project || null;
   if (!review.error) {
     const items = mainEntries();
@@ -54,6 +61,9 @@ function selectDeliverable(id) {
 }
 
 function approveCurrent() {
+  // The footer is drawn from `review`; refuse to act if it is not the payload for the selected
+  // gate, so an approval can never be recorded against deliverables the human did not see.
+  if (!review || review.error || review.gate !== current) return;
   const unread = mainEntries().filter(x => !readSet().has(x.id)).map(x => x.label);
   let msg = "Record HUMAN approval for gate " + review.index + " (" + current + ") in state.md?";
   if (unread.length) msg += "\n\nNot opened here yet:\n  " + unread.join("\n  ");
@@ -163,8 +173,8 @@ function paint() {
   if (!state.data) { el.innerHTML = '<div class="empty">waiting for status…</div>'; return; }
   if (!current) current = defaultGate();
   let inner = barHtml();
-  if (!review) inner += '<div class="empty">loading…</div>';
-  else if (review.error) inner += '<div class="warn">' + esc(review.error) + "</div>";
+  if (review && review.error) inner += '<div class="warn">' + esc(review.error) + "</div>";
+  else if (!review || review.gate !== current) inner += '<div class="empty">loading…</div>';
   else inner +=
     '<div class="rv-grid"><aside class="rv-list">' + listHtml() + '</aside>' +
     '<div class="rv-body">' + bodyHtml() + "</div></div>" +

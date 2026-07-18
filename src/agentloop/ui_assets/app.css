@@ -166,6 +166,7 @@
   .lrow { display:flex; align-items:center; gap:.55rem; }
   .lname { font-family:var(--mono); font-size:.68rem; color:var(--muted); width:1.6rem; text-align:right; }
   .lbar { display:flex; gap:2px; flex:0 1 auto; }
+  .seg.clk { cursor:pointer; }
   .seg { display:inline-block; width:1.15rem; height:.5rem; border-radius:2px; background:var(--todo-bg);
          border:1px solid var(--todo-bd); }
   .seg.in_progress { background:var(--prog-bg); border-color:var(--prog-bd); }

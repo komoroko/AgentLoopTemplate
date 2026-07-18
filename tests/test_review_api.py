@@ -79,6 +79,44 @@ class TestGateMapping:
         (main,) = _review(root, "requirements")["deliverables"]
         assert main["self_assessment"]["confidence"] is None
 
+    def test_prose_mentioning_a_level_does_not_become_the_confidence(self, make_repo: MakeRepo) -> None:
+        # The badge must never look better than the document: only the *labelled* Confidence line
+        # counts, or an assumption written as "we have high confidence …" would badge a low
+        # self-assessment as high.
+        root = make_repo()
+        _write(
+            root,
+            "docs/10-requirements.md",
+            "## Self-assessment\n"
+            "- **Assumptions made**: we have high confidence the runner exists\n"
+            "- **Confidence**: low (integration unverified)\n",
+        )
+        (main,) = _review(root, "requirements")["deliverables"]
+        assert main["self_assessment"]["confidence"] == "low"
+
+    def test_per_area_confidence_reports_the_weakest_area(self, make_repo: MakeRepo) -> None:
+        # AGENTS.md asks for confidence by area, so several levels on one line is the filled-in
+        # form, not the placeholder — and the low spot is the part the human must not miss.
+        root = make_repo()
+        _write(
+            root,
+            "docs/10-requirements.md",
+            "## Self-assessment\n- **Confidence**: high (API surface), low (integration with CI)\n",
+        )
+        (main,) = _review(root, "requirements")["deliverables"]
+        assert main["self_assessment"]["confidence"] == "low"
+
+    def test_per_area_placeholder_prose_still_reads_unset(self, make_repo: MakeRepo) -> None:
+        # docs/20-design.md's scaffold line — "per area high / medium / low (e.g. …)".
+        root = make_repo()
+        _write(
+            root,
+            "docs/20-design.md",
+            "## Self-assessment\n- **Confidence**: per area high / medium / low (e.g. architecture=high)\n",
+        )
+        main = _review(root, "design")["deliverables"][0]
+        assert main["self_assessment"]["confidence"] is None
+
     def test_design_glob_excludes_template_and_sorts(self, make_repo: MakeRepo) -> None:
         root = make_repo()
         for name in ("ADR-002.md", "ADR-001.md", "ADR-template.md"):

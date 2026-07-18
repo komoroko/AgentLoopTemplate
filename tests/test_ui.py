@@ -155,6 +155,22 @@ def test_get_page_is_offline_self_contained(server: ui.DashboardServer) -> None:
         assert marker in bundle, marker
 
 
+def test_no_asset_builds_a_click_handler_out_of_a_task_id() -> None:
+    """Task ids are agent-written and not pattern-validated on load (dag.py takes them as-is).
+
+    Interpolating one into an inline `onclick="f('<id>')"` lets a quote in the id close the JS
+    string and run script on the page that holds the approval token — the XSS→self-approval path
+    mdlite.py exists to close. Ids must travel as escaped attribute values read back by a delegated
+    listener, so no generated handler may name a task-detail call at all.
+    """
+    sources = {p.name: p.read_text(encoding="utf-8") for p in ui.ASSETS_DIR.iterdir() if p.suffix == ".js"}
+    for name, text in sources.items():
+        assert 'onclick="showTaskDetail' not in text, name
+        assert "showTaskDetail('" not in text.replace("onTaskClick(showTaskDetail)", ""), name
+    bundle = "".join(sources.values())
+    assert 'data-task="' in bundle and 'getAttribute("data-task")' in bundle
+
+
 def test_shipped_assets_match_the_allowlist_exactly() -> None:
     # _ASSET_TYPES is a hand-maintained allowlist (auditability over convenience); this catches a
     # file added to ui_assets/ but forgotten in the dict — which would 404 at runtime — and vice versa.
@@ -261,6 +277,24 @@ def test_get_events_returns_tail_newest_first_with_open_flag(server: ui.Dashboar
 def test_get_events_defaults_and_rejects_bad_limit(server: ui.DashboardServer, repo: Path) -> None:
     assert json.loads(_request(server, "GET", "/api/events")[1]) == {"events": [], "total": 0}
     assert _request(server, "GET", "/api/events?limit=abc")[0] == 400
+
+
+def test_events_are_parsed_once_per_version_of_the_log(server: ui.DashboardServer, repo: Path) -> None:
+    # The Activity feed polls every 3s and answering it means parsing the *whole* log (an
+    # escalation's open state depends on a resolve that may sit anywhere in it). Cache on the
+    # file's identity — but an append must still be visible on the very next request.
+    _seed_events(repo, count=5)
+    log = repo / ".agentloop" / "events.ndjson"
+    first = ui._load_events_cached(log)
+    assert ui._load_events_cached(log) is first  # unchanged file: the same parsed list, not a re-parse
+
+    with log.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"id": 6, "ts": "2026-07-19T02:00:00", "event": "task_done"}) + "\n")
+    payload = json.loads(_request(server, "GET", "/api/events")[1])
+    assert payload["total"] == 6 and payload["events"][0]["id"] == 6
+
+    missing = repo / ".agentloop" / "nope.ndjson"
+    assert ui._load_events_cached(missing) == []  # same tolerance as load_events
 
 
 # --- review endpoint ------------------------------------------------------------

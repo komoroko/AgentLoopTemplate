@@ -30,7 +30,7 @@ class TestRenderDialect:
         assert "<h2>Summary</h2>" in html
         assert "<strong>yes</strong>" in html
         assert "<code>x &lt; 1</code>" in html
-        assert '<a href="https://example.com" rel="noopener">docs</a>' in html
+        assert '<a href="https://example.com" rel="noopener noreferrer">docs</a>' in html
 
     def test_checkbox_list_renders_markers(self) -> None:
         html = mdlite.render("- [ ] open item\n- [x] done item")
@@ -102,6 +102,26 @@ class TestRenderXss:
     def test_data_link_stays_text(self) -> None:
         html = mdlite.render("[x](data:text/html;base64,PHNjcmlwdD4=)")
         assert "<a " not in html
+        assert_only_own_tags(html)
+
+    def test_scheme_relative_link_stays_text(self) -> None:
+        # "//host" reads like a path but resolves cross-origin — the reviewer's click would leave
+        # the dashboard for a target the agent chose.
+        html = mdlite.render("[docs](//attacker.example/x)")
+        assert "<a " not in html
+        assert "//attacker.example/x" in html  # visible, so the reviewer sees the attempt
+        assert_only_own_tags(html)
+
+    def test_allowed_links_carry_noreferrer(self) -> None:
+        assert 'rel="noopener noreferrer"' in mdlite.render("[docs](https://example.com)")
+
+    def test_nul_in_input_cannot_reach_the_stash_placeholders(self) -> None:
+        # The inline pass parks generated fragments in \x00<index>\x00 markers. A NUL surviving from
+        # the input would be read back as a marker and index into a stash that never held it,
+        # taking the whole gate's review pane down with an IndexError.
+        html = mdlite.render("a \x000\x00 b `code` \x0099\x00")
+        assert "\x00" not in html
+        assert "<code>code</code>" in html
         assert_only_own_tags(html)
 
     def test_no_attribute_escape_through_link_href(self) -> None:
