@@ -15,17 +15,21 @@ install:
 # Sync dependencies (including the dev group; generates/updates uv.lock) and install the
 # git hooks (idempotent) so the commit-stage layer — gitleaks and the AgentLoop gate guard —
 # actually fires on `git commit`, not only inside `make check`.
+# `uv sync` here is the one deliberate lock-update entry point: every other target runs
+# `--frozen` so it uses the committed uv.lock verbatim (the relative `exclude-newer` cooldown
+# otherwise re-resolves and churns the lock on each run). Change a dependency → `make setup`
+# (or `uv lock`) → commit the lock.
 setup:
 	uv sync
 	uv run pre-commit install
 
 # Commit-stage hooks (ruff lint / gitleaks / various checks)
 pre-commit:
-	uv run pre-commit run --all-files
+	uv run --frozen pre-commit run --all-files
 
 # Pre-push-stage hooks (ruff-format / mypy)
 pre-push:
-	uv run pre-commit run --all-files --hook-stage pre-push
+	uv run --frozen pre-commit run --all-files --hook-stage pre-push
 
 # The full quality gate: both hook stages plus the template drift canaries and the
 # materialized-artifact check. CI runs this same target.
@@ -33,7 +37,7 @@ check: pre-commit pre-push template-lint sync-check
 
 # The package's test suite (the same suite CI's matrix runs).
 test:
-	uv run pytest -vv tests/
+	uv run --frozen pytest -vv tests/
 
 # Kept as an alias — AGENTS.md and muscle memory say `make test-tools`.
 test-tools: test
@@ -41,16 +45,16 @@ test-tools: test
 # Drift canaries across the hand-maintained template files (wrapper parity, capability-mapping
 # set-equality, vocabulary echoes, README EN↔JA structure, pyproject↔CHANGELOG, data parity).
 template-lint:
-	uv run agentloop template-lint
+	uv run --frozen agentloop template-lint
 
 # The materialized .agentloop/prompts|schema|rules must match the packaged payload.
 sync-check:
-	uv run agentloop sync --check
+	uv run --frozen agentloop sync --check
 
 # Dependency vulnerability audit (supply-chain check). Mandatory in /verify.
 audit:
 	@req="$$(mktemp)"; \
-	uv export --format requirements-txt --no-emit-project -o "$$req" && uvx pip-audit -r "$$req"; \
+	uv export --frozen --format requirements-txt --no-emit-project -o "$$req" && uvx pip-audit -r "$$req"; \
 	status=$$?; rm -f "$$req"; exit $$status
 
 # Cleanup
