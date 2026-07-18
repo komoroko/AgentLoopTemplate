@@ -16,13 +16,16 @@ tool warns toward `uv tool upgrade agentloop`; a newer lock *format* is a hard e
 
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
 
 import agentloop
-from agentloop import agent_cli, init_cmd, install, status_api, ui
+from agentloop import agent_cli, common, init_cmd, install, status_api, ui
 from agentloop import lock as lock_mod
 from agentloop import repo as repo_mod
+
+logger = logging.getLogger(__name__)
 
 HELP = """usage: agentloop [--repo PATH] <verb> [args]
 
@@ -59,16 +62,15 @@ operations:
 def _start(rest: list[str]) -> int:
     """First run → the init wizard; an initialized repo → a one-line where-you-are + what's next."""
     if rest:
-        print(f"agentloop start takes no arguments (got: {' '.join(rest)})", file=sys.stderr)
+        logger.error(f"agentloop start takes no arguments (got: {' '.join(rest)})")
         return 2
     try:
         root = repo_mod.get().root
     except repo_mod.RepoNotFoundError:
         if not sys.stdin.isatty():
-            print(
+            logger.error(
                 "this directory is not initialized and stdin is not a TTY — run the"
-                " non-interactive `agentloop init --name <product>` instead.",
-                file=sys.stderr,
+                " non-interactive `agentloop init --name <product>` instead."
             )
             return 2
         return init_cmd.wizard()
@@ -77,10 +79,9 @@ def _start(rest: list[str]) -> int:
     assert isinstance(rec, dict)  # asdict(Recommendation)
     if rec.get("kind") == "setup":
         if not sys.stdin.isatty():
-            print(
+            logger.error(
                 "this repo is not initialized and stdin is not a TTY — run the"
-                " non-interactive `agentloop init --name <product>` instead.",
-                file=sys.stderr,
+                " non-interactive `agentloop init --name <product>` instead."
             )
             return 2
         return init_cmd.wizard(Path(root))
@@ -104,14 +105,15 @@ def _lock_check(repo_flag: str | None) -> int:
     try:
         warning = lock_mod.startup_warning(repo, agentloop.__version__)
     except lock_mod.LockError as exc:
-        print(f"agentloop: {exc}", file=sys.stderr)
+        logger.error(f"agentloop: {exc}")
         return 1
     if warning:
-        print(f"agentloop: {warning}", file=sys.stderr)
+        logger.warning(f"agentloop: {warning}")
     return 0
 
 
 def main(argv: list[str] | None = None) -> int:
+    common.configure_logging()
     args = sys.argv[1:] if argv is None else list(argv)
     # The global --repo (also accepted by every verb) may precede the verb.
     repo_flag: str | None = None
@@ -197,7 +199,7 @@ def main(argv: list[str] | None = None) -> int:
         from agentloop import template_lint
 
         return template_lint.main(rest)
-    print(f"agentloop: unknown verb '{verb}' — run `agentloop --help` for the verb list", file=sys.stderr)
+    logger.error(f"agentloop: unknown verb '{verb}' — run `agentloop --help` for the verb list")
     return 2
 
 

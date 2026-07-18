@@ -30,18 +30,21 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import re
 import shutil
-import sys
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import Any
 
 import agentloop
+from agentloop import common
 from agentloop import data as data_mod
 from agentloop import lock as lock_mod
 from agentloop import repo as repo_mod
+
+logger = logging.getLogger(__name__)
 
 CLAUDE_IMPORT_MARKER = "<!-- agentloop-rules -->"
 AGENTS_MARKER_END = "<!-- /agentloop-rules -->"
@@ -435,7 +438,7 @@ def _write_settings(repo: repo_mod.Repo, settings: dict[str, Any]) -> None:
 def install_integration(repo: repo_mod.Repo, name: str, *, force: bool = False, dry_run: bool = False) -> int:
     """Write one agent's surfaces and record them in the lock (see the module docstring)."""
     if name not in INTEGRATIONS:
-        print(f"unknown integration '{name}' (one of: {', '.join(sorted(INTEGRATIONS))})", file=sys.stderr)
+        logger.error(f"unknown integration '{name}' (one of: {', '.join(sorted(INTEGRATIONS))})")
         return 2
     desired = _dest_map(INTEGRATIONS[name])
     data = _lock_or_new(repo)
@@ -486,10 +489,9 @@ def install_integration(repo: repo_mod.Repo, name: str, *, force: bool = False, 
             claude_md.write_text(text + claude_import_block(), encoding="utf-8")
             print("  merge         CLAUDE.md (capability mapping + rules @import appended)")
         if shutil.which("agentloop") is None:
-            print(
+            logger.warning(
                 "  ! `agentloop` is not on PATH — the hooks in .claude/settings.json need it:"
-                " run `uv tool install git+<the agentloop repo>` (or add it to PATH).",
-                file=sys.stderr,
+                " run `uv tool install git+<the agentloop repo>` (or add it to PATH)."
             )
 
     integrations[name] = record
@@ -513,7 +515,7 @@ def _prune_empty_dirs(repo: repo_mod.Repo, rels: list[str]) -> None:
 def uninstall_integration(repo: repo_mod.Repo, name: str, *, force: bool = False, dry_run: bool = False) -> int:
     """Retract one agent's surfaces: pristine files only; the settings merge is reverted."""
     if name not in INTEGRATIONS:
-        print(f"unknown integration '{name}' (one of: {', '.join(sorted(INTEGRATIONS))})", file=sys.stderr)
+        logger.error(f"unknown integration '{name}' (one of: {', '.join(sorted(INTEGRATIONS))})")
         return 2
     data = lock_mod.read(repo.lock)
     record = (data or {}).get("integrations", {}).get(name) if data else None
@@ -637,7 +639,7 @@ def upgrade(repo: repo_mod.Repo, *, dry_run: bool = False, force: bool = False) 
     """Refresh the materialized artifacts and installed integrations to the running tool version."""
     data = lock_mod.read(repo.lock)
     if data is None:
-        print(f"no {lock_mod.LOCK_NAME} — run `agentloop init` (new repo) or `agentloop sync` first.", file=sys.stderr)
+        logger.error(f"no {lock_mod.LOCK_NAME} — run `agentloop init` (new repo) or `agentloop sync` first.")
         return 1
     installed = lock_mod.tool_version_of(data)
     running = agentloop.__version__
@@ -685,10 +687,11 @@ def cmd_sync(argv: list[str] | None = None) -> int:
     parser.add_argument("--force", action="store_true", help="overwrite locally modified files too")
     parser.add_argument("--repo", default=None, help="repository root (default: discovered from cwd)")
     args = parser.parse_args(argv)
+    common.configure_logging()
     try:
         return sync(_repo_from(args), check=args.check, force=args.force)
     except repo_mod.RepoNotFoundError as exc:
-        print(str(exc), file=sys.stderr)
+        logger.error(str(exc))
         return 1
 
 
@@ -705,10 +708,11 @@ def cmd_install(argv: list[str] | None = None) -> int:
     parser.add_argument("--dry-run", action="store_true", help="print the plan only")
     parser.add_argument("--repo", default=None, help="repository root (default: discovered from cwd)")
     args = parser.parse_args(argv)
+    common.configure_logging()
     try:
         repo = _repo_from(args)
     except repo_mod.RepoNotFoundError as exc:
-        print(str(exc), file=sys.stderr)
+        logger.error(str(exc))
         return 1
     for name in args.names:
         rc = install_integration(repo, name, force=args.force, dry_run=args.dry_run)
@@ -733,12 +737,13 @@ def cmd_uninstall(argv: list[str] | None = None) -> int:
     parser.add_argument("--dry-run", action="store_true", help="print the plan only")
     parser.add_argument("--repo", default=None, help="repository root (default: discovered from cwd)")
     args = parser.parse_args(argv)
+    common.configure_logging()
     if not args.names and not args.all_:
         parser.error("name an integration (claude | copilot) or pass --all")
     try:
         repo = _repo_from(args)
     except repo_mod.RepoNotFoundError as exc:
-        print(str(exc), file=sys.stderr)
+        logger.error(str(exc))
         return 1
     if args.all_:
         return uninstall_all(repo, force=args.force, dry_run=args.dry_run)
@@ -757,8 +762,9 @@ def cmd_upgrade(argv: list[str] | None = None) -> int:
     parser.add_argument("--dry-run", action="store_true", help="print the transition report only")
     parser.add_argument("--repo", default=None, help="repository root (default: discovered from cwd)")
     args = parser.parse_args(argv)
+    common.configure_logging()
     try:
         return upgrade(_repo_from(args), dry_run=args.dry_run, force=args.force)
     except repo_mod.RepoNotFoundError as exc:
-        print(str(exc), file=sys.stderr)
+        logger.error(str(exc))
         return 1

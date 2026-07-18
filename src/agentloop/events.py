@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
+import logging
 import threading
 from dataclasses import asdict, dataclass
 from datetime import datetime
@@ -34,6 +34,8 @@ from pathlib import Path
 
 from agentloop import common
 from agentloop import repo as repo_mod
+
+logger = logging.getLogger(__name__)
 
 EVENTS_PATH = ".agentloop/events.ndjson"
 STATE_PATH = common.STATE_PATH
@@ -283,11 +285,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--state", default="", help=f"state.md carrying the view (default: discovered {STATE_PATH})")
     parser.add_argument("--repo", default=None, help="repository root (default: discovered from cwd)")
     args = parser.parse_args(argv)
+    common.configure_logging()
     if not args.path or not args.state:
         try:
             repo = repo_mod.get(args.repo)
         except repo_mod.RepoNotFoundError as exc:
-            print(str(exc), file=sys.stderr)
+            logger.error(str(exc))
             return 1
         args.path = args.path or str(repo.events)
         args.state = args.state or str(repo.state)
@@ -298,7 +301,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.add, task=args.task, step=args.step, detail=args.detail, commit=args.commit, path=args.path
             )
         except ValueError as exc:
-            print(f"error: {exc} — valid events: {', '.join(EVENT_ORDER)}", file=sys.stderr)
+            logger.error(f"error: {exc} — valid events: {', '.join(EVENT_ORDER)}")
             return 2
         print(f"added #{entry.id} {entry.event}" + (f" ({entry.task})" if entry.task else ""))
         refresh_state_view(args.path, args.state)
@@ -308,14 +311,13 @@ def main(argv: list[str] | None = None) -> int:
         events = load_events(args.path)
         target = next((e for e in events if e.id == args.resolve), None)
         if target is None or target.event not in ESCALATION_EVENTS:
-            print(
+            logger.error(
                 f"error: no escalation event with id {args.resolve} — list the open ones with"
-                " `agentloop events --render`",
-                file=sys.stderr,
+                " `agentloop events --render`"
             )
             return 2
         if target.id not in {e.id for e in open_escalations(events)}:
-            print(f"error: escalation #{args.resolve} is already resolved", file=sys.stderr)
+            logger.error(f"error: escalation #{args.resolve} is already resolved")
             return 2
         append_event("resolve", task=target.task, detail=args.note, commit=args.commit, ref=target.id, path=args.path)
         print(f"resolved #{target.id} {target.event}" + (f" ({target.task})" if target.task else ""))

@@ -29,14 +29,16 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import logging
 import re
 import shutil
-import sys
 from datetime import date
 from pathlib import Path
 
 from agentloop import build_loop, common, events, revise
 from agentloop import repo as repo_mod
+
+logger = logging.getLogger(__name__)
 
 DOCS_DIR = "docs"
 SCAFFOLD_DIR = ".agentloop/scaffold/docs"
@@ -201,15 +203,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dry-run", action="store_true", help="print the plan only")
     parser.add_argument("--repo", default=None, help="repository root (default: discovered from cwd)")
     args = parser.parse_args(argv)
+    common.configure_logging()
 
     slug = args.name.strip()
     if not slug:
-        print("usage: agentloop cycle-close --name <slug>", file=sys.stderr)
+        logger.error("usage: agentloop cycle-close --name <slug>")
         return 2
     try:
         repo = repo_mod.get(args.repo)
     except repo_mod.RepoNotFoundError as exc:
-        print(str(exc), file=sys.stderr)
+        logger.error(str(exc))
         return 1
     today = date.today().isoformat()
     # rel_base names the archive in messages and the state.md log row (a repo-relative name
@@ -219,10 +222,9 @@ def main(argv: list[str] | None = None) -> int:
     rows = plan_close(slug, today, docs_dir=str(repo.docs), archive_base=archive_base)
 
     if not repo.path(SCAFFOLD_DIR).is_dir():
-        print(
+        logger.error(
             f"no scaffold snapshot at {SCAFFOLD_DIR} — run `agentloop init` first so fresh"
-            " scaffolds can be restored after archiving.",
-            file=sys.stderr,
+            " scaffolds can be restored after archiving."
         )
         return 1
 

@@ -31,10 +31,10 @@ file, event log, or lock file is written — running it never changes what a lat
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import re
 import shlex
-import sys
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timezone
@@ -45,6 +45,8 @@ import yaml
 
 from agentloop import common, dag, events, gate_guard
 from agentloop import repo as repo_mod
+
+logger = logging.getLogger(__name__)
 
 # Single definitions live in common.py; the old names stay importable from here.
 STATE_PATH = common.STATE_PATH
@@ -298,7 +300,7 @@ def log_escalation(
     refresh state.md's generated view, and echo it to stderr for the console."""
     events.append_event(event, task=task, detail=message, path=events_path)
     events.refresh_state_view(events_path, state_path)
-    print(f"[escalation] {message}", file=sys.stderr)
+    logger.warning(f"[escalation] {message}")
 
 
 # --- subprocess -------------------------------------------------------------
@@ -415,7 +417,7 @@ class Orchestrator:
 
     def _escalate(self, event: str, message: str, *, task: str = "") -> None:
         if self.dry_run:  # read-only: surface it on the console without touching the event log
-            print(f"[escalation] {message}", file=sys.stderr)
+            logger.warning(f"[escalation] {message}")
             return
         log_escalation(event, message, task=task, events_path=str(self.repo.events), state_path=str(self.repo.state))
 
@@ -886,31 +888,28 @@ class Orchestrator:
     def run(self) -> int:
         project = self.front.get("project")
         if isinstance(project, str) and project.startswith("<"):
-            print(
-                "state.md still carries the template placeholders. Run `agentloop init --name <product>` first.",
-                file=sys.stderr,
+            logger.error(
+                "state.md still carries the template placeholders. Run `agentloop init --name <product>` first."
             )
             return 2
         gates = self.front.get("gates") or {}
         if not (isinstance(gates, dict) and gates.get("tasks") == "approved"):
-            print("gates.tasks is not approved. Approve /tasks first.", file=sys.stderr)
+            logger.error("gates.tasks is not approved. Approve /tasks first.")
             return 2
         if not self.dry_run and self.branch in ("", "HEAD"):
             # work_branch falls back to "HEAD" when git is unavailable/detached; creating worktrees
             # or committing against that would land the work on an arbitrary base.
-            print(
+            logger.error(
                 "cannot determine the work branch (git unavailable or detached HEAD) — "
-                "fill `branch:` in state.md or check out the work branch first.",
-                file=sys.stderr,
+                "fill `branch:` in state.md or check out the work branch first."
             )
             return 2
         if self.dry_run:
             return self._run_loop()  # read-only: no lock file either (and no contention to guard against)
         if not acquire_lock(str(self.repo.path(LOCK_PATH))):
-            print(
+            logger.error(
                 f"another build-loop run appears to be active ({LOCK_PATH} holds a live PID). "
-                "Wait for it to finish, or remove the lock file if you are sure it is gone.",
-                file=sys.stderr,
+                "Wait for it to finish, or remove the lock file if you are sure it is gone."
             )
             return 2
         try:
@@ -924,10 +923,9 @@ class Orchestrator:
         # whole build was paid for. Refuse before consuming anything.
         unrunnable = [s.name for s in self.config.steps if s.kind == "cmd" and s.required and not s.run.strip()]
         if unrunnable:
-            print(
+            logger.error(
                 f"quality_gate step(s) marked `required: true` have no command: {', '.join(unrunnable)}. "
-                "Fill `run` in .agentloop/config.yaml (or drop `required`) before running the build loop.",
-                file=sys.stderr,
+                "Fill `run` in .agentloop/config.yaml (or drop `required`) before running the build loop."
             )
             return 2
         if not self.dry_run:
@@ -969,8 +967,8 @@ class Orchestrator:
                     except (OSError, dag.DagError, yaml.YAMLError) as view_exc:
                         # Cosmetic only (tasks.yaml stays the truth), but say so — a silently
                         # stale board would misdirect the human the escalation is aimed at.
-                        print(f"[warn] could not refresh the state.md board: {view_exc}", file=sys.stderr)
-                print(str(exc), file=sys.stderr)
+                        logger.warning(f"[warn] could not refresh the state.md board: {view_exc}")
+                logger.error(str(exc))
                 return exc.code
             # Recompute at the top of the loop after each batch (reassemble the chain).
 
@@ -1190,17 +1188,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--repo", default=None, help="repository root (default: discovered from cwd)")
     args = parser.parse_args(argv)
+    common.configure_logging()
     try:
         repo = repo_mod.get(args.repo)
     except repo_mod.RepoNotFoundError as exc:
-        print(str(exc), file=sys.stderr)
+        logger.error(str(exc))
         return 1
     try:
         config = Config.load(str(repo.config))
     except (OSError, yaml.YAMLError, ValueError) as exc:
-        print(
-            f"cannot load .agentloop/config.yaml: {exc} — fix it (`agentloop doctor` validates it against the schema)",
-            file=sys.stderr,
+        logger.error(
+            f"cannot load .agentloop/config.yaml: {exc} — fix it (`agentloop doctor` validates it against the schema)"
         )
         return 1
     return Orchestrator(config, dry_run=args.dry_run, repo=repo).run()
