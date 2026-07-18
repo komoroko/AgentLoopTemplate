@@ -12,6 +12,7 @@ name = "agentloop"
 version = "0.7.2"
 source = { editable = "." }
 dependencies = [
+    { name = "packaging" },
     { name = "pyyaml" },
 ]
 
@@ -33,6 +34,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "jsonschema", marker = "extra == 'doctor'", specifier = ">=4.0" },
+    { name = "packaging", specifier = ">=21.0" },
     { name = "pyyaml", specifier = ">=6.0" },
 ]
 provides-extras = ["doctor"]

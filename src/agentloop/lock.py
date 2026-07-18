@@ -32,6 +32,8 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+from packaging.version import InvalidVersion, Version
+
 from agentloop import repo as repo_mod
 
 FORMAT_VERSION = 1
@@ -134,7 +136,13 @@ def startup_warning(repo: repo_mod.Repo, running_version: str) -> str | None:
     recorded = tool_version_of(data)
     if not recorded or recorded == running_version:
         return None
-    if _version_tuple(recorded) > _version_tuple(running_version):
+    try:
+        recorded_v, running_v = Version(recorded), Version(running_version)
+    except InvalidVersion:
+        return None  # a non-PEP 440 version (a hand-corrupted lock) is left for `doctor` to surface
+    if recorded_v == running_v:
+        return None  # canonically equal despite differing spellings (0.7.02 vs 0.7.2)
+    if recorded_v > running_v:
         return (
             f"agentloop {running_version} is older than the {recorded} that wrote {LOCK_NAME} — "
             "upgrade the tool (`uv tool upgrade agentloop`)"
@@ -143,12 +151,3 @@ def startup_warning(repo: repo_mod.Repo, running_version: str) -> str | None:
         f"agentloop {running_version} is newer than the {recorded} recorded in {LOCK_NAME} — "
         "run `agentloop sync` to refresh the materialized artifacts (and the lock)"
     )
-
-
-def _version_tuple(version: str) -> tuple[int, ...]:
-    """Best-effort numeric ordering of an x.y.z string (non-numeric parts compare as 0)."""
-    parts: list[int] = []
-    for chunk in version.split("+")[0].split("."):
-        digits = "".join(c for c in chunk if c.isdigit())
-        parts.append(int(digits) if digits else 0)
-    return tuple(parts)
