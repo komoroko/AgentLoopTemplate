@@ -23,8 +23,11 @@ Safety layers: binds 127.0.0.1 by default, and a non-loopback bind with the writ
 requires an explicit `--allow-remote`; every POST requires the `X-AgentLoop-Token` header whose value
 is generated per server start and embedded only in the served page (a cross-origin page cannot set a
 custom header without a CORS preflight, and no CORS headers are ever sent); `--read-only` disables
-POST entirely — reviewing stays fully readable. Deliverable markdown is rendered by mdlite's
-escape-first constructor precisely because this page holds that token (see mdlite's threat model).
+POST entirely — reviewing stays fully readable. Because this page holds that token, *everything*
+agent-written that reaches it is constructed, never sanitized: deliverable markdown goes through
+mdlite's escape-first renderer (see its threat model), and agent-written identifiers — task ids
+above all, which tasks.yaml is free to spell any way it likes — reach the DOM only as escaped
+attribute values read back by a delegated listener, never interpolated into a handler.
 
 Usage:
   agentloop ui                 # serve on 127.0.0.1:8765 and open the browser

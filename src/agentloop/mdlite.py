@@ -12,8 +12,9 @@ top — both would put a sanitizer, not a constructor, between the agent and the
 
 The dialect is deliberately the scaffold subset (docs/*.md templates): ATX headings, unordered /
 ordered lists with task checkboxes, tables, fenced code, block quotes, horizontal rules, and the
-inline trio bold / `code` / [links](…). Links keep only http(s), anchor, and relative targets; any
-other scheme stays visible as plain text. HTML comments (scaffold guidance) are dropped. Anything
+inline trio bold / `code` / [links](…). Links keep only http(s), in-page anchors, and same-origin
+relative targets — another scheme, or a scheme-relative `//host` that merely reads like a path,
+stays visible as plain text instead. HTML comments (scaffold guidance) are dropped. Anything
 outside the dialect degrades to escaped paragraph text — never to markup.
 
 Pure functions, no I/O; review_api.py composes them per deliverable.

@@ -1,6 +1,6 @@
 [project]
 name = "agentloop"
-version = "0.7.3"
+version = "0.7.4"
 description = "Human-on-the-Loop development harness: phase gates, task DAG orchestration, and agent integrations as an installable CLI"
 readme = "README.md"
 license = { file = "LICENSE" }

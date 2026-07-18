@@ -5,7 +5,7 @@ upgrade` shows the sections between the installed version, recorded in
 `.agentloop/agentloop.lock`, and the new one). The version's single source is
 `pyproject.toml [project] version`.
 
-## [Unreleased]
+## [0.7.4] - 2026-07-19
 
 ### Added
 - **The dashboard is now a gate-review cockpit.** `agentloop ui` reorganizes into four tabs
@@ -37,6 +37,28 @@ upgrade` shows the sections between the installed version, recorded in
   `agentloop build` (mode A) run prints a one-line hint that `agentloop agent <cli>` switches it.
   The product name now defaults to the folder name. No capability is lost — every dropped choice
   stays reachable via a flag, auto-detection, or `agentloop agent`.
+
+### Fixed
+- **Task ids can no longer become script on the dashboard.** Ids were interpolated into inline
+  `onclick="…('<id>')"` handlers, and tasks.yaml ids are agent-written text that the loader never
+  pattern-checks — so a quote in an id ran arbitrary script on the page that holds the approval
+  token. Ids now travel as escaped `data-task` attributes read back by one delegated listener,
+  closing the same XSS→self-approval path `mdlite.py` closes for deliverable markdown.
+- **The review pane can no longer show one gate's deliverables under another gate's name.** A gate
+  selected while a fetch was in flight was dropped, leaving a stale payload that the approval
+  footer is computed from. Requests are sequence-tagged (newest wins), and both the paint and the
+  approve path refuse a payload whose gate is not the selected one.
+- **The confidence badge no longer reads better than the document.** It took the first level found
+  on any line mentioning "confidence", so prose such as "we have high confidence the runner exists"
+  badged a `low` self-assessment as `high`. Only the labelled `Confidence:` value is read now, and
+  a per-area line reports its **weakest** level (the unfilled scaffold placeholder still reads as
+  unset).
+- A NUL byte in a deliverable collided with mdlite's internal placeholders and replaced the whole
+  gate's review payload with an error; a scheme-relative `//host` link was treated as same-origin
+  and rendered live (allowed links now also carry `noreferrer`).
+- `GET /api/events` re-parsed the entire event log every 3 seconds to return 50 rows, and the
+  favicon badge was canvas-encoded on every status poll — both are now computed only when their
+  input actually changes.
 
 ## [0.7.3] - 2026-07-18
 
