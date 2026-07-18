@@ -5,7 +5,7 @@ upgrade` shows the sections between the installed version, recorded in
 `.agentloop/agentloop.lock`, and the new one). The version's single source is
 `pyproject.toml [project] version`.
 
-## [Unreleased]
+## [0.7.3] - 2026-07-18
 
 ### Added
 - **The dashboard can switch between projects.** A new user-global project registry
