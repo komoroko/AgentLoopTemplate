@@ -1203,6 +1203,10 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 1
+    if not args.dry_run and config.headless_cmd == ("claude", "-p"):
+        print(
+            '(hint) headless CLI = claude -p (the default). Switch it with `agentloop agent <codex|gemini|"custom">`.'
+        )
     return Orchestrator(config, dry_run=args.dry_run, repo=repo).run()
 
 

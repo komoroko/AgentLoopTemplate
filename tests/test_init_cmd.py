@@ -122,6 +122,36 @@ def test_detect_commands_recognizes_the_common_stacks() -> None:
     assert init_cmd.detect_commands({}) == {"test": [], "check": []}
 
 
+def test_source_from_direct_url_reconstructs_git_source() -> None:
+    vcs = '{"url": "https://example.com/agentloop", "vcs_info": {"vcs": "git", "commit_id": "abc123"}}'
+    assert init_cmd.source_from_direct_url(vcs) == "git+https://example.com/agentloop@abc123"
+    # requested_revision wins over commit_id; an already-prefixed url is kept as-is.
+    rev = (
+        '{"url": "git+ssh://git@host/agentloop",'
+        ' "vcs_info": {"vcs": "git", "commit_id": "abc", "requested_revision": "v1.0"}}'
+    )
+    assert init_cmd.source_from_direct_url(rev) == "git+ssh://git@host/agentloop@v1.0"
+    bare = '{"url": "https://example.com/agentloop", "vcs_info": {"vcs": "git"}}'
+    assert init_cmd.source_from_direct_url(bare) == "git+https://example.com/agentloop"
+
+
+def test_source_from_direct_url_returns_empty_without_vcs_coordinates() -> None:
+    # An editable / local install (dir_info) has no VCS coordinates → nothing to record.
+    assert init_cmd.source_from_direct_url('{"url": "file:///repo", "dir_info": {"editable": true}}') == ""
+    assert init_cmd.source_from_direct_url("not json") == ""
+    assert init_cmd.source_from_direct_url('{"vcs_info": {"vcs": "git"}}') == ""  # no url
+
+
+def test_detect_source_returns_empty_when_metadata_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    import importlib.metadata as md
+
+    def _raise(_name: str) -> object:
+        raise md.PackageNotFoundError("agentloop")
+
+    monkeypatch.setattr(md, "distribution", _raise)
+    assert init_cmd.detect_source() == ""
+
+
 def test_is_brownfield_detects_code_markers(tmp_path: Path) -> None:
     assert init_cmd.is_brownfield(tmp_path) is False
     (tmp_path / "docs").mkdir()  # the tool's own dirs never count
@@ -159,6 +189,27 @@ def test_run_init_seeds_a_bare_directory(tmp_path: Path, capsys: pytest.CaptureF
     assert data["agentloop"]["source"] == "git+https://example.com/agentloop"
     assert ".agentloop/state.md" in data["seeded"]
     assert "prompts/commands/req.md" in data["prompts"]["files"]
+
+
+def test_run_init_falls_back_to_detected_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(init_cmd, "detect_source", lambda: "git+https://example.com/agentloop@v9")
+    assert init_cmd.run_init(tmp_path, "demo", "build/demo", "") == 0  # no explicit source
+    assert "detected      source: git+https://example.com/agentloop@v9" in capsys.readouterr().out
+    data = lock_mod.read(tmp_path / ".agentloop" / "agentloop.lock")
+    assert data is not None
+    assert data["agentloop"]["source"] == "git+https://example.com/agentloop@v9"
+
+
+def test_run_init_explicit_source_is_not_overridden_by_detection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(init_cmd, "detect_source", lambda: "git+https://detected/agentloop")
+    assert init_cmd.run_init(tmp_path, "demo", "build/demo", "git+https://explicit/agentloop") == 0
+    data = lock_mod.read(tmp_path / ".agentloop" / "agentloop.lock")
+    assert data is not None
+    assert data["agentloop"]["source"] == "git+https://explicit/agentloop"
 
 
 def test_run_init_rerun_never_overwrites(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -208,3 +259,29 @@ def test_main_greenfield_flag_overrides_detection(tmp_path: Path, capsys: pytest
     assert "greenfield" in capsys.readouterr().out
     config = (tmp_path / ".agentloop" / "config.yaml").read_text(encoding="utf-8")
     assert "\n    src/: tasks" in config  # code paths stay guarded (greenfield semantics)
+
+
+def test_wizard_asks_only_name_and_brief(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    prompts: list[str] = []
+
+    def fake_input(prompt: str = "") -> str:
+        prompts.append(prompt)
+        return ""  # accept every default / skip the brief
+
+    monkeypatch.setattr("builtins.input", fake_input)
+    monkeypatch.setattr(init_cmd, "detect_source", lambda: "git+https://example.com/agentloop@vX")
+    proj = tmp_path / "myproduct"
+    proj.mkdir()
+    assert init_cmd.wizard(proj) == 0
+    # Only two questions are posed: the product name (defaulting to the folder) and the brief.
+    assert any("1/2 product name" in p for p in prompts)
+    assert not any("work branch" in p or "source URL" in p or "headless" in p for p in prompts)
+    out = capsys.readouterr().out
+    assert "2/2 What do you want to build?" in out
+    # Name defaults to the folder, branch to build/<name>, source is the detected one.
+    state = (proj / ".agentloop" / "state.md").read_text(encoding="utf-8")
+    assert 'project: "myproduct"' in state and 'branch: "build/myproduct"' in state
+    data = lock_mod.read(proj / ".agentloop" / "agentloop.lock")
+    assert data is not None and data["agentloop"]["source"] == "git+https://example.com/agentloop@vX"

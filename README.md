@@ -121,7 +121,9 @@ tooling):
 ```bash
 cd myrepo && git init            # any repo — new or existing
 
-# interactive wizard (recommended; asks name / branch / source / headless CLI / a brief line)
+# interactive wizard (recommended; asks only the product name — defaulting to the folder — and a
+# brief line. The branch defaults to build/<name>, the source URL is auto-detected from the
+# install, and the headless CLI keeps its default — all overridable later, see below.)
 agentloop start
 # or non-interactively (idempotent):
 #   agentloop init --name <product> [--branch build/<product>] [--source git+https://github.com/komoroko/AgentLoopTemplate]

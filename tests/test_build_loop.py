@@ -146,6 +146,25 @@ def test_dry_run_completes_all_tasks_without_writing(project: Path, capsys: pyte
     assert dag.load(".agentloop/tasks.yaml").counts()["done"] == 0
 
 
+def test_hint_names_agent_switch_only_for_the_default_cmd(project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    # Placeholders remain → run() bails at 2 before launching anything, but the hint prints first.
+    state = _STATE.format(tasks="approved").replace('project: "demo"', 'project: "<enter the product name>"')
+    (project / ".agentloop" / "state.md").write_text(state, encoding="utf-8")
+    (project / ".agentloop" / "tasks.yaml").write_text(_TASKS, encoding="utf-8")
+    hint = "agentloop agent"
+    assert build_loop.main([]) == 2  # non-dry-run, default headless cmd
+    assert hint in capsys.readouterr().out
+    # A dry run is a read-only simulation, not a first real build — no hint.
+    assert build_loop.main(["--dry-run"]) == 2
+    assert hint not in capsys.readouterr().out
+    # A switched-away headless cmd means the human already chose — no hint.
+    (project / ".agentloop" / "config.yaml").write_text(
+        _CONFIG.replace("gates:\n", "  headless: {cmd: ['codex', 'exec']}\ngates:\n"), encoding="utf-8"
+    )
+    assert build_loop.main([]) == 2
+    assert hint not in capsys.readouterr().out
+
+
 def test_recovers_stale_in_progress(project: Path, capsys: pytest.CaptureFixture[str]) -> None:
     # A task left in in_progress from a previous interruption is reset to todo at startup and re-consumed.
     # Without recovery it falls out of the frontier (todo-only) and is never started, deadlocking.
