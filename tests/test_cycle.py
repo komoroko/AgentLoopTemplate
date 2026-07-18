@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-import os
-import subprocess
-from collections.abc import Iterator
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
 from agentloop import cycle
+
+# The project fixture shells out to real `git init`, so the whole module is integration-marked.
+pytestmark = pytest.mark.integration
 
 _STATE = """---
 project: "demo"
@@ -90,26 +91,8 @@ updated_at: "2026-06-26"
 
 
 @pytest.fixture
-def project(tmp_path: Path) -> Iterator[Path]:
-    docs = tmp_path / "docs"
-    (docs / "decisions").mkdir(parents=True)
-    (docs / "tasks").mkdir()
-    (docs / "test").mkdir()
-    for name in ("00-product-brief.md", "10-requirements.md", "20-design.md", "retrospective.md"):
-        (docs / name).write_text(f"scaffold: {name}\n", encoding="utf-8")
-    (docs / "decisions" / "ADR-template.md").write_text("scaffold: adr\n", encoding="utf-8")
-    (docs / "tasks" / "T-template.md").write_text("scaffold: task\n", encoding="utf-8")
-    (docs / "test" / "test-plan.md").write_text("scaffold: test-plan\n", encoding="utf-8")
-    (tmp_path / ".agentloop").mkdir()
-    (tmp_path / ".agentloop" / "state.md").write_text(_STATE, encoding="utf-8")
-    (tmp_path / ".agentloop" / "tasks.yaml").write_text("tasks:\n  - {id: T-001}\n", encoding="utf-8")
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    prev = os.getcwd()
-    os.chdir(tmp_path)
-    try:
-        yield tmp_path
-    finally:
-        os.chdir(prev)
+def project(make_repo: Callable[..., Path]) -> Path:
+    return make_repo(state=_STATE, tasks="tasks:\n  - {id: T-001}\n", docs=True, git=True)
 
 
 def test_snapshot_scaffold_copies_docs_once(project: Path) -> None:

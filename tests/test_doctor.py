@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-import os
 import shutil
-from collections.abc import Iterator
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
 from agentloop import build_loop, doctor, events
+from tests._support import fake_git
 
 _STATE = """---
 project: "demo"
@@ -43,28 +43,13 @@ _SETTINGS = '{"hooks": {"PreToolUse": [{"hooks": [{"command": "uv run src/agentl
 
 
 @pytest.fixture
-def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
+def project(make_repo: Callable[..., Path], monkeypatch: pytest.MonkeyPatch) -> Path:
     """A healthy product repo: every check should PASS/INFO on this baseline."""
-    (tmp_path / ".agentloop").mkdir()
-    (tmp_path / ".claude").mkdir()
-    (tmp_path / ".agentloop" / "config.yaml").write_text(_CONFIG, encoding="utf-8")
-    (tmp_path / ".agentloop" / "state.md").write_text(_STATE, encoding="utf-8")
-    (tmp_path / ".agentloop" / "tasks.yaml").write_text(_TASKS, encoding="utf-8")
-    (tmp_path / ".claude" / "settings.json").write_text(_SETTINGS, encoding="utf-8")
+    root = make_repo(state=_STATE, config=_CONFIG, tasks=_TASKS, settings=_SETTINGS)
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
-
-    def fake_git(cmd: list[str], cwd: str, timeout: float | None = None) -> tuple[int, str]:
-        if cmd[:2] == ["git", "rev-parse"]:
-            return 0, "build/demo\n"
-        return 0, ""  # branch --list etc.: nothing left behind on the healthy baseline
-
-    monkeypatch.setattr(build_loop, "_run", fake_git)
-    prev = os.getcwd()
-    os.chdir(tmp_path)
-    try:
-        yield tmp_path
-    finally:
-        os.chdir(prev)
+    # rev-parse yields the work branch; branch --list etc. leave nothing behind on the baseline.
+    monkeypatch.setattr(build_loop, "_run", fake_git({("git", "rev-parse"): (0, "build/demo\n")}))
+    return root
 
 
 def _levels(findings: list[doctor.Finding], area: str) -> list[str]:

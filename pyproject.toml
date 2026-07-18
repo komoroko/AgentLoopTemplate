@@ -55,6 +55,10 @@ python_version = "3.10"  # type-check against the floor so 3.11+ stdlib use is c
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "--strict-markers --strict-config -ra"
+markers = [
+    "integration: exercises real git/subprocess, not just fakes (deselect with -m 'not integration')",
+]
 
 [dependency-groups]
 dev = [

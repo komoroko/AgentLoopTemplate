@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import os
-from collections.abc import Iterator
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -149,16 +148,8 @@ _TASKS = """tasks:
 
 
 @pytest.fixture
-def project(tmp_path: Path) -> Iterator[Path]:
-    (tmp_path / ".agentloop").mkdir()
-    (tmp_path / ".agentloop" / "config.yaml").write_text(_CONFIG, encoding="utf-8")
-    (tmp_path / ".agentloop" / "tasks.yaml").write_text(_TASKS, encoding="utf-8")
-    prev = os.getcwd()
-    os.chdir(tmp_path)
-    try:
-        yield tmp_path
-    finally:
-        os.chdir(prev)
+def project(make_repo: Callable[..., Path]) -> Path:
+    return make_repo(state=None, config=_CONFIG, tasks=_TASKS)
 
 
 def test_dry_run_is_offline_and_plans_creates(project: Path, capsys: pytest.CaptureFixture[str]) -> None:
