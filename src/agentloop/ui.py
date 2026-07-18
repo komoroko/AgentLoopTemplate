@@ -62,6 +62,7 @@ _ASSET_TYPES = {
     "view-review.js": _JS,
     "view-tasks.js": _JS,
     "view-activity.js": _JS,
+    "notify.js": _JS,
 }
 _LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
 

@@ -6,6 +6,7 @@ import { renderAttention, renderNext, renderStepper } from "/assets/view-overvie
 import { renderReview } from "/assets/view-review.js";
 import { renderTasks, renderTrace } from "/assets/view-tasks.js";
 import { renderLogs, renderOps } from "/assets/view-activity.js";
+import "/assets/notify.js";  // side-effect module: badges + opt-in notifications off agentloop:status
 
 // ---- tabs (location.hash is the router; unknown/empty hash lands on overview) ----
 const VIEWS = ["overview", "review", "tasks", "activity"];
@@ -93,6 +94,7 @@ async function refresh() {
     document.getElementById("meta").textContent =
       (d.project || "(no project)") + " · " + (d.branch || "-") + " · phase " + (d.current_phase || "-");
     updateReviewBadge(d);
+    document.dispatchEvent(new CustomEvent("agentloop:status", { detail: d }));
     renderStepper(d); renderNext(d); renderTasks(d); renderTrace(d); renderAttention(d);
     renderLogs(d); renderReview(d);
     const a = document.activeElement;  // don't clobber an ops input mid-typing
