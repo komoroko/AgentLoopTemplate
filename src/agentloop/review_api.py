@@ -42,7 +42,8 @@ _LEVEL_RE = re.compile(r"\b(high|medium|low)\b", re.IGNORECASE)
 # upstream document it is judged against. ("glob", dir, pattern) expands inside that fixed
 # directory only, excluding the scaffold templates; ("code", path) renders verbatim, not as
 # markdown (tasks.yaml is machine truth — reviewers must see it exactly).
-_GATE_SPEC: dict[str, dict[str, list[object]]] = {
+_SpecItem = str | tuple[str, str] | tuple[str, str, str]
+_GATE_SPEC: dict[str, dict[str, list[_SpecItem]]] = {
     "requirements": {"main": ["docs/10-requirements.md"], "context": ["docs/00-product-brief.md"]},
     "design": {
         "main": ["docs/20-design.md", ("glob", "docs/decisions", "ADR-*.md")],
@@ -119,20 +120,20 @@ def _deliverable(root: Path, rel: str | Path, *, kind: str = "markdown") -> dict
     return entry
 
 
-def _expand(root: Path, spec: list[object]) -> list[dict[str, object]]:
+def _expand(root: Path, spec: list[_SpecItem]) -> list[dict[str, object]]:
     out: list[dict[str, object]] = []
     for item in spec:
         if isinstance(item, str):
             out.append(_deliverable(root, item))
-        elif item[0] == "code":
-            out.append(_deliverable(root, str(item[1]), kind="code"))
+        elif len(item) == 2:  # ("code", path)
+            out.append(_deliverable(root, item[1], kind="code"))
         else:  # ("glob", dir, pattern) — fixed directory, template-free, name-validated, sorted
             _, rel_dir, pattern = item
-            base = root / str(rel_dir)
+            base = root / rel_dir
             names = sorted(
-                p.name for p in base.glob(str(pattern)) if p.name not in _TEMPLATE_NAMES and _GLOB_NAME_RE.match(p.name)
+                p.name for p in base.glob(pattern) if p.name not in _TEMPLATE_NAMES and _GLOB_NAME_RE.match(p.name)
             )
-            out.extend(_deliverable(root, Path(str(rel_dir)) / n) for n in names)
+            out.extend(_deliverable(root, Path(rel_dir) / n) for n in names)
     return out
 
 
@@ -238,8 +239,8 @@ def collect_review(root: str | Path, gate: str) -> dict[str, object]:
     if gate == "build":
         diff = _diff_block(root)
         result["diff"] = diff
-        head = diff.get("head") if isinstance(diff.get("head"), str) else None
-        result["review_meta"] = _review_meta(root, head)
+        head_value = diff.get("head")
+        result["review_meta"] = _review_meta(root, head_value if isinstance(head_value, str) else None)
     if gate == "release":
         opened = events_mod.open_escalations(events_mod.load_events(str(root / ".agentloop" / "events.ndjson")))
         result["open_escalations"] = len(opened)
