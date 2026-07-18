@@ -20,12 +20,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import re
 import shlex
-import sys
 
 from agentloop import common
 from agentloop import repo as repo_mod
+
+logger = logging.getLogger(__name__)
 
 CONFIG_PATH = common.CONFIG_PATH
 # The known headless CLIs — kept in lockstep with the comment table in .agentloop/config.yaml.
@@ -94,11 +96,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("cli", help="a preset name (claude | codex | gemini) or a custom command string")
     parser.add_argument("--repo", default=None, help="repository root (default: discovered from cwd)")
     args = parser.parse_args(argv)
+    common.configure_logging()
 
     try:
         config_path = repo_mod.get(args.repo).config
     except repo_mod.RepoNotFoundError as exc:
-        print(str(exc), file=sys.stderr)
+        logger.error(str(exc))
         return 1
     try:
         wanted = resolve_argv(args.cli)
@@ -112,7 +115,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         config_path.write_text(set_headless_cmd(text, wanted), encoding="utf-8")
     except AgentCliError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        logger.error(f"error: {exc}")
         return 1
     shown_before = json.dumps(before) if before is not None else "(unreadable)"
     print(f"headless.cmd: {shown_before} → {json.dumps(wanted)}")

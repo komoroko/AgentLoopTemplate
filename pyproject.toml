@@ -1,6 +1,6 @@
 [project]
 name = "agentloop"
-version = "0.7.2"
+version = "0.7.3"
 description = "Human-on-the-Loop development harness: phase gates, task DAG orchestration, and agent integrations as an installable CLI"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -8,6 +8,7 @@ license = { file = "LICENSE" }
 # running its test suite under 3.10).
 requires-python = ">=3.10"
 dependencies = [
+    "packaging>=21.0",
     "pyyaml>=6.0",
 ]
 

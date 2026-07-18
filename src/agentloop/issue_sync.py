@@ -20,9 +20,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import re
 import shutil
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -31,6 +31,8 @@ import yaml
 
 from agentloop import common, dag
 from agentloop import repo as repo_mod
+
+logger = logging.getLogger(__name__)
 
 CONFIG_PATH = ".agentloop/config.yaml"
 
@@ -317,10 +319,9 @@ def _apply_one(action: Action, cfg: GithubConfig) -> None:
             else:
                 # Not fatal: the next sync sees the issue OPEN with desired closed and plans a
                 # "close" op (plan_actions), so the mirror converges — just disclose the miss.
-                print(
+                logger.info(
                     f"note: {action.task_id}: could not extract the new issue's number from gh output;"
-                    " it stays open until the next sync closes it.",
-                    file=sys.stderr,
+                    " it stays open until the next sync closes it."
                 )
     elif action.op == "update":
         args = ["issue", "edit", str(action.number), "--title", action.desired.title, "--body", action.desired.body]
@@ -342,11 +343,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dry-run", action="store_true", help="output planned creations without calling gh (offline)")
     parser.add_argument("--repo", default=None, help="repository root (default: discovered from cwd)")
     args = parser.parse_args(argv)
+    common.configure_logging()
 
     try:
         repo = repo_mod.get(args.repo)
     except repo_mod.RepoNotFoundError as exc:
-        print(str(exc), file=sys.stderr)
+        logger.error(str(exc))
         return 1
     cfg = GithubConfig.load(str(repo.config))
 
@@ -372,7 +374,7 @@ def main(argv: list[str] | None = None) -> int:
         for action in actions:
             _apply_one(action, cfg)
     except (OSError, dag.DagError, yaml.YAMLError, IssueSyncError) as exc:
-        print(f"Issues mirror failed (does not affect the SSOT): {exc}", file=sys.stderr)
+        logger.error(f"Issues mirror failed (does not affect the SSOT): {exc}")
         return 1
     print(f"Issues mirror complete: {len(actions)} operation(s)." if actions else "Issues match tasks.yaml (no ops).")
     return 0

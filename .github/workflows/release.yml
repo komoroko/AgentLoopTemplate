@@ -63,8 +63,12 @@ jobs:
           uv tool install git+${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}@${TAG}
           \`\`\`
 
-          Upgrading an existing install: \`uv tool upgrade agentloop\`, then \`agentloop upgrade\`
-          in each adopted repo to refresh the materialized artifacts.
+          Upgrading to a newer release: re-run the install above with that release's tag and
+          \`--force\` (\`uv tool install --force git+${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}@vX.Y.Z\`),
+          since \`uv tool upgrade agentloop\` keeps a tag-pinned install on its pinned version. (If
+          you installed from the default branch instead, \`uv tool upgrade agentloop\` moves you
+          forward.) Then run \`agentloop upgrade\` in each adopted repo to refresh the materialized
+          artifacts.
           EOF
 
       - name: Create and push the tag

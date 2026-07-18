@@ -38,6 +38,36 @@ async function post(path, body) {
   } catch (e) { out.textContent = "request failed: " + e; toast("request failed", "err"); }
 }
 
+// ---- project switcher (populated from /api/projects; switching persists the active target) ----
+async function loadProjects() {
+  const sel = document.getElementById("projectSelect");
+  try {
+    const res = await fetch("/api/projects");
+    const d = await res.json();
+    if (!d.projects || !d.projects.length) { sel.style.display = "none"; return; }
+    sel.innerHTML = d.projects.map(p =>
+      '<option value="' + esc(p.name) + '"' + (p.active ? " selected" : "") +
+      (p.exists ? "" : " disabled") + ">" + esc(p.name) + (p.exists ? "" : " (missing)") + "</option>"
+    ).join("");
+    // Switching writes the active target to the user registry, so it needs the write path; a
+    // read-only dashboard shows the current target but cannot change it.
+    sel.disabled = READ_ONLY;
+    sel.title = READ_ONLY ? "Target project (read-only: cannot switch)" : "Switch target project";
+    sel.style.display = "";
+  } catch (e) { sel.style.display = "none"; }
+}
+async function selectProject(name) {
+  try {
+    const res = await fetch("/api/project/select", { method:"POST",
+      headers:{ "Content-Type":"application/json", "X-AgentLoop-Token":TOKEN },
+      body: JSON.stringify({ name }) });
+    const d = await res.json();
+    if (d.error) { toast(d.error, "err"); loadProjects(); return; }
+    toast("→ " + name, "ok");
+    lastPayload = ""; await refresh(); loadProjects();
+  } catch (e) { toast("switch failed", "err"); }
+}
+
 function approveGate(name, index) {
   if (confirm("Record HUMAN approval for gate " + index + " (" + name + ") in state.md?\n" +
               "Only do this after reviewing the phase deliverable."))
@@ -297,6 +327,8 @@ async function refresh() {
 }
 document.getElementById("themeBtn").onclick = toggleTheme;
 document.getElementById("refreshBtn").onclick = () => { lastPayload = ""; refresh(); };
+document.getElementById("projectSelect").onchange = (e) => selectProject(e.target.value);
 refresh();
+loadProjects();
 setInterval(refresh, 3000);
 setInterval(tickAgo, 1000);

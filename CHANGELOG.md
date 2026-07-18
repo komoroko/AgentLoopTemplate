@@ -17,6 +17,34 @@ upgrade` shows the sections between the installed version, recorded in
   The product name now defaults to the folder name. No capability is lost — every dropped choice
   stays reachable via a flag, auto-detection, or `agentloop agent`.
 
+## [0.7.3] - 2026-07-18
+
+### Added
+- **The dashboard can switch between projects.** A new user-global project registry
+  (`agentloop project add|list|remove|use`, stored at `$XDG_CONFIG_HOME/agentloop/projects.yaml`)
+  names the repos you work across, and `agentloop ui` grows a **project switcher** dropdown in its
+  header that retargets the whole board — status, gate approvals, and actions — without restarting
+  the server. `agentloop ui` auto-registers the repo it was launched from (most-recently-used), and
+  can now start from any directory once projects are registered. The browser only ever sends a
+  registered *name*; the server resolves it to a path through the registry, so switching never
+  widens what the dashboard can reach (arbitrary command execution stays structurally impossible).
+  The existing per-command `--repo PATH` / `AGENTLOOP_ROOT` targeting is unchanged and now
+  documented in the READMEs.
+
+### Changed
+- **Diagnostics now go through `logging`, not bare `print`.** Every error/warning/progress
+  message the CLI wrote to stderr is now emitted through a per-module `logging.getLogger`
+  (all children of the `agentloop` logger, configured once at each entry point), while genuine
+  command *results* stay on stdout via `print`. The stderr text is byte-identical to before, so
+  scripts and the existing output are unaffected; the split just makes the two channels — data
+  vs. diagnostics — explicit and independently controllable.
+- **Version-skew detection uses `packaging.version` instead of a hand-rolled parser.** The
+  per-invocation lock check (`lock.startup_warning`) compared versions by stripping non-digits
+  into an int tuple, which mis-ordered pre-releases and normalized spellings. It now parses both
+  sides with `packaging.version.Version` (a new, minimal runtime dependency) for correct PEP 440
+  ordering, and stays silent on a non-PEP 440 (hand-corrupted) string — `doctor` surfaces that in
+  its deeper pass.
+
 ## [0.7.2] - 2026-07-16
 
 ### Added

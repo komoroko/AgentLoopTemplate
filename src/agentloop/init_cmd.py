@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import logging
 import re
 import sys
 from pathlib import Path
@@ -37,6 +38,8 @@ from agentloop import data as data_mod
 from agentloop import install as install_mod
 from agentloop import lock as lock_mod
 from agentloop import repo as repo_mod
+
+logger = logging.getLogger(__name__)
 
 BRIEF_PATH = "docs/00-product-brief.md"
 
@@ -367,13 +370,14 @@ def _ask_brief() -> str:
 
 def wizard(root: Path | None = None) -> int:
     """Interactive first-run setup: ask everything first, then write (Ctrl+C mid-question loses nothing)."""
+    common.configure_logging()
     root = (root or Path.cwd()).resolve()
     print("AgentLoop setup — Enter accepts the [default]; Ctrl+C aborts without writing.")
     try:
         name = _ask("1/2 product name", root.name)
         summary = _ask_brief()
     except (KeyboardInterrupt, EOFError):
-        print("\naborted — nothing was written.", file=sys.stderr)
+        logger.error("\naborted — nothing was written.")
         return 130
     # branch defaults to build/<name>; source is auto-detected in run_init; the headless CLI keeps
     # its scaffold default (claude -p) — all three are overridable later (flags / `agentloop agent`).
@@ -386,7 +390,7 @@ def wizard(root: Path | None = None) -> int:
             brief.write_text(fill_brief(brief.read_text(encoding="utf-8"), summary), encoding="utf-8")
             print(f"  updated: {BRIEF_PATH} (your summary — flesh it out anytime)")
         except OSError as exc:
-            print(f"could not write {BRIEF_PATH}: {exc} — add your summary there by hand.", file=sys.stderr)
+            logger.error(f"could not write {BRIEF_PATH}: {exc} — add your summary there by hand.")
     return 0
 
 
@@ -404,15 +408,15 @@ def main(argv: list[str] | None = None) -> int:
     flavor.add_argument("--brownfield", action="store_true", help="force the brownfield adaptations")
     parser.add_argument("--repo", default=None, help="directory to initialize (default: cwd)")
     args = parser.parse_args(argv)
+    common.configure_logging()
 
     root = Path(args.repo).resolve() if args.repo else Path.cwd()
     name = args.name.strip()
     if not name:
         if sys.stdin.isatty():
             return wizard(root)
-        print(
-            "usage: agentloop init --name <product> [--branch build/<product>] (or run on a TTY for the wizard)",
-            file=sys.stderr,
+        logger.error(
+            "usage: agentloop init --name <product> [--branch build/<product>] (or run on a TTY for the wizard)"
         )
         return 2
     branch = args.branch.strip() or f"build/{name}"

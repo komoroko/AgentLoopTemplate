@@ -20,13 +20,15 @@ Usage:
 
 from __future__ import annotations
 
+import logging
 import re
-import sys
 from pathlib import Path
 
 import yaml
 
 from agentloop import common, dag, gate_guard, install
+
+logger = logging.getLogger(__name__)
 
 AGENTS_MD = "AGENTS.md"
 TASKS_CMD = ".agentloop/prompts/commands/tasks.md"
@@ -306,10 +308,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="agentloop template-lint", description="template drift canaries")
     parser.add_argument("--repo", default=None, help="repository root (default: discovered from cwd)")
     args = parser.parse_args(argv)
+    common.configure_logging()
     try:
         root = repo_mod.get(args.repo).root
     except repo_mod.RepoNotFoundError as exc:
-        print(str(exc), file=sys.stderr)
+        logger.error(str(exc))
         return 1
 
     config_text = (root / CONFIG_PATH).read_text(encoding="utf-8")
@@ -338,7 +341,7 @@ def main(argv: list[str] | None = None) -> int:
             install.read_version(root), (root / "CHANGELOG.md").read_text(encoding="utf-8")
         )
     except OSError as exc:
-        print(f"template-lint failed: {exc}", file=sys.stderr)
+        logger.error(f"template-lint failed: {exc}")
         return 1
 
     for failure in failures:

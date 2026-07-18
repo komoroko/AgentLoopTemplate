@@ -10,12 +10,14 @@ Derived values (fan-out, etc.) are not saved to the file. They are always comput
 from __future__ import annotations
 
 import argparse
+import logging
 import re
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
+
+logger = logging.getLogger(__name__)
 
 # The possible values of status. Only done is considered dependency-satisfied.
 STATUS_VALUES = frozenset({"todo", "in_progress", "blocked", "needs-revision", "done"})
@@ -605,34 +607,30 @@ def _run_trace(
     """
     req_text = _read_optional(requirements_path)
     if req_text is None:
-        print(f"error: cannot read the requirements document: {requirements_path}", file=sys.stderr)
+        logger.error(f"error: cannot read the requirements document: {requirements_path}")
         return 2
     requirement_ids = parse_requirement_ids(req_text)
     if not requirement_ids:
-        print(
+        logger.error(
             f"error: cannot extract requirement IDs (R-N / NFR-N) from the requirements document:"
-            f" {requirements_path} (write them in heading lines like `### R-1: ...`)",
-            file=sys.stderr,
+            f" {requirements_path} (write them in heading lines like `### R-1: ...`)"
         )
         return 2
     design_text = _read_optional(design_path)
     if design_text is None and require_design:
-        print(
-            f"error: cannot read the design document: {design_path} (required when --require-design is given)",
-            file=sys.stderr,
-        )
+        logger.error(f"error: cannot read the design document: {design_path} (required when --require-design is given)")
         return 2
     test_plan_text: str | None = None
     if test_plan_path is not None:
         test_plan_text = _read_optional(test_plan_path)
         if test_plan_text is None:
-            print(f"error: cannot read the test plan: {test_plan_path} (given via --test-plan)", file=sys.stderr)
+            logger.error(f"error: cannot read the test plan: {test_plan_path} (given via --test-plan)")
             return 2
     design_ids = parse_requirement_ids(design_text) if design_text is not None else None
     report = trace(graph, requirement_ids, design_ids, test_plan_text)
     print(render_trace(report))
     if design_ids is None:
-        print(f"note: design {design_path} is absent, so design coverage was not checked", file=sys.stderr)
+        logger.info(f"note: design {design_path} is absent, so design coverage was not checked")
     return 0 if report.ok else 1
 
 
@@ -678,13 +676,15 @@ def main(argv: list[str] | None = None) -> int:
         " typically docs/test/test-plan.md)",
     )
     args = parser.parse_args(argv)
+    from agentloop import common  # lazy: keep the pure-graph module importable alone
+
+    common.configure_logging()
 
     if not args.trace and (
         args.requirements is not None or args.design is not None or args.require_design or args.test_plan is not None
     ):
-        print(
-            "warning: --requirements/--design/--require-design/--test-plan are valid only with --trace (ignoring)",
-            file=sys.stderr,
+        logger.warning(
+            "warning: --requirements/--design/--require-design/--test-plan are valid only with --trace (ignoring)"
         )
 
     if not args.path or args.trace:
@@ -693,7 +693,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             repo = repo_mod.get(args.repo)
         except repo_mod.RepoNotFoundError as exc:
-            print(str(exc), file=sys.stderr)
+            logger.error(str(exc))
             return 2 if args.trace else 1
         args.path = args.path or str(repo.tasks)
         args.requirements = args.requirements or str(repo.path(_DEFAULT_REQUIREMENTS))
@@ -702,10 +702,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         graph = load(args.path)
     except (OSError, DagError, yaml.YAMLError) as exc:
-        print(
-            f"error: cannot load {args.path}: {exc} — fix it (or run `agentloop doctor` to diagnose)",
-            file=sys.stderr,
-        )
+        logger.error(f"error: cannot load {args.path}: {exc} — fix it (or run `agentloop doctor` to diagnose)")
         # With --trace, represent "cannot check" with 2 (tasks.yaml unreadable = trace not established).
         return 2 if args.trace else 1
 

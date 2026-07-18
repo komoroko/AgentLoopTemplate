@@ -18,7 +18,9 @@ need it) so the pyyaml-free paths — revise.py's gate rollback — keep working
 
 from __future__ import annotations
 
+import logging
 import re
+import sys
 from pathlib import Path
 
 # --- the SSOT trio (see AGENTS.md "Single Source of Truth") -----------------
@@ -33,6 +35,34 @@ TASKS_PATH = ".agentloop/tasks.yaml"
 GATE_ORDER = ("requirements", "design", "tasks", "build", "release")
 # current_phase values, in lifecycle order (brief precedes gate ①; done follows gate ⑤).
 PHASE_ORDER = ("brief", "requirements", "design", "tasks", "build", "verify", "done")
+
+
+# --- diagnostics logging ------------------------------------------------------
+#
+# Command *results* go to stdout via `print`; *diagnostics* (errors/warnings/notes) go through
+# per-module `logging.getLogger(__name__)` loggers — children of the "agentloop" logger set up here.
+
+
+class _StderrHandler(logging.StreamHandler):  # type: ignore[type-arg]
+    """Re-targets the current sys.stderr on each emit (as logging.lastResort does), so it follows
+    a later stderr swap — e.g. pytest's capsys — instead of a stream captured at configure time."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.stream = sys.stderr
+        super().emit(record)
+
+
+def configure_logging(*, level: int = logging.INFO) -> None:
+    """Send agentloop diagnostics to stderr, message-only (byte-identical to the old prints).
+
+    Idempotent, so every verb's `main` may call it (directly or via `agentloop <verb>`).
+    """
+    root = logging.getLogger("agentloop")
+    if not any(isinstance(h, _StderrHandler) for h in root.handlers):
+        handler = _StderrHandler()
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        root.addHandler(handler)
+    root.setLevel(level)
 
 
 # --- subprocess ---------------------------------------------------------------

@@ -45,6 +45,9 @@
   header h1 b { color:var(--accent); font-weight:700; }
   header h1::before { content:"◇ "; color:var(--gate); }
   header .meta { color:var(--muted); font-size:.85rem; font-family:var(--mono); }
+  header #projectSelect { font-family:var(--mono); font-size:.85rem; color:var(--ink);
+    background:var(--panel2); border:1px solid var(--border); border-radius:6px; padding:2px 6px; cursor:pointer; }
+  header #projectSelect:disabled { cursor:default; opacity:.6; }
   header .spacer { flex:1; }
   .dot { display:inline-block; width:.5rem; height:.5rem; border-radius:50%; background:var(--ok);
          margin-right:.3rem; vertical-align:middle; }

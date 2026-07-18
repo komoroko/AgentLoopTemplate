@@ -8,7 +8,7 @@
     hooks:
       - id: agentloop-gate-guard
         name: agentloop gate guard (commit stage)
-        entry: uv run agentloop guard --check-diff
+        entry: uv run --frozen agentloop guard --check-diff
         language: system
         pass_filenames: false
         always_run: true
