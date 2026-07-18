@@ -30,8 +30,10 @@
     - id: check-yaml
     - id: debug-statements
     - id: name-tests-test
-      # tests/ uses pytest's conventional test_*.py naming (the hook's default wants *_test.py)
+      # tests/ uses pytest's conventional test_*.py naming (the hook's default wants *_test.py);
+      # _support.py is deliberately not a test module (shared helpers imported by the suite)
       args: [--pytest-test-first]
+      exclude: ^tests/_support\.py$
     - id: requirements-txt-fixer
 
   # Ruff (lint + format + import sorting; black/isort are consolidated into ruff)
