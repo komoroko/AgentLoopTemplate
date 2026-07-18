@@ -137,20 +137,28 @@ def test_get_page_is_offline_self_contained(server: ui.DashboardServer) -> None:
     page = data.decode("utf-8")
     assert status == 200 and "AgentLoop" in page
     assert server.token in page  # the POST token is delivered only via the page
-    # Offline canary across the page AND its same-origin assets: no external reference anywhere.
-    css = _request(server, "GET", "/assets/app.css")[1].decode("utf-8")
-    js = _request(server, "GET", "/assets/app.js")[1].decode("utf-8")
-    for name, text in (("index.html", page), ("app.css", css), ("app.js", js)):
+    # Offline canary across the page AND every allowlisted asset: no external reference anywhere.
+    assets = {name: _request(server, "GET", f"/assets/{name}")[1].decode("utf-8") for name in ui._ASSET_TYPES}
+    for name, text in {"index.html": page, **assets}.items():
         assert "http://" not in text and "https://" not in text, name
         assert "//cdn" not in text and "@import" not in text, name
-    # the page pulls only the two shipped assets, nothing else
-    assert re.findall(r'(?:src|href)="([^"]+)"', page) == ["/assets/app.css", "/assets/app.js"]
-    # the sections live in the page; their renderers and the theme machinery in the assets
-    for marker in ('id="stepper"', 'id="trace"', 'id="logs"', 'id="toasts"'):
+    # every URL the page or a module references is same-origin: an /assets/ file or a #tab hash
+    for name, text in {"index.html": page, **assets}.items():
+        for url in re.findall(r'(?:src|href|from)\s*=?\s*"([^"]+)"', text):
+            assert url.startswith(("/assets/", "#")), f"{name} references {url}"
+    # the sections live in the page; their renderers and the theme machinery in the modules
+    for marker in ('id="stepper"', 'id="trace"', 'id="logs"', 'id="review"', 'id="tabs"', 'id="toasts"'):
         assert marker in page, marker
-    for marker in ("buildDag", "showTaskDetail", "data-theme"):
-        assert marker in js, marker
-    assert "data-theme" in css
+    bundle = "".join(assets.values())
+    for marker in ("buildDag", "showTaskDetail", "data-theme", "renderReview"):
+        assert marker in bundle, marker
+
+
+def test_shipped_assets_match_the_allowlist_exactly() -> None:
+    # _ASSET_TYPES is a hand-maintained allowlist (auditability over convenience); this catches a
+    # file added to ui_assets/ but forgotten in the dict — which would 404 at runtime — and vice versa.
+    on_disk = {p.name for p in ui.ASSETS_DIR.iterdir() if p.is_file()}
+    assert on_disk == set(ui._ASSET_TYPES) | {"index.html"}
 
 
 def test_assets_are_served_with_their_types_and_nothing_else(server: ui.DashboardServer) -> None:

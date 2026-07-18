@@ -47,9 +47,20 @@ ACTION_TIMEOUT_SEC = 900
 _OUTPUT_LIMIT = 8000  # tail shown per stream (failures are summarized, not dumped)
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 # The frontend, shipped beside this module. Served by exact name only (no traversal surface);
-# read per request so an edit shows up on reload during development.
+# read per request so an edit shows up on reload during development. The dict stays explicit —
+# no directory scan — so what the server can hand out is reviewable here; a test asserts it
+# matches the files actually shipped in ui_assets/.
 ASSETS_DIR = Path(__file__).resolve().parent / "ui_assets"
-_ASSET_TYPES = {"app.css": "text/css; charset=utf-8", "app.js": "text/javascript; charset=utf-8"}
+_JS = "text/javascript; charset=utf-8"
+_ASSET_TYPES = {
+    "app.css": "text/css; charset=utf-8",
+    "app.js": _JS,
+    "api.js": _JS,
+    "view-overview.js": _JS,
+    "view-review.js": _JS,
+    "view-tasks.js": _JS,
+    "view-activity.js": _JS,
+}
 _LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
 
 

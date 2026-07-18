@@ -16,19 +16,34 @@
   <button class="ghost" id="refreshBtn" title="Refresh now">⟳</button>
   <button class="ghost" id="themeBtn" title="Toggle theme">◐</button>
 </header>
+<nav id="tabs">
+  <a href="#overview" data-view="overview">Overview</a>
+  <a href="#review" data-view="review">Review<span class="badge" id="reviewBadge" style="display:none"></span></a>
+  <a href="#tasks" data-view="tasks">Tasks</a>
+  <a href="#activity" data-view="activity">Activity</a>
+</nav>
 <main>
-  <section class="col-full"><h2>Lifecycle</h2><div class="rail" id="stepper"></div></section>
-  <section class="next col-full"><h2>Next action</h2><div id="next"></div></section>
-  <section class="col-full"><h2>Tasks</h2><div id="tasks"></div></section>
-  <section id="traceSection" style="display:none"><h2>Traceability (requirements → tasks)</h2>
-    <div id="trace"></div></section>
-  <section><h2>Needs attention</h2><div id="attention"></div></section>
-  <section id="logsSection" style="display:none"><h2>Logs</h2><div id="logs"></div></section>
-  <section class="col-full"><h2>Operations</h2><div id="ops"></div>
-    <pre class="out" id="out" style="display:none"></pre></section>
+  <div class="view" id="view-overview">
+    <section class="col-full"><h2>Lifecycle</h2><div class="rail" id="stepper"></div></section>
+    <section class="next col-full"><h2>Next action</h2><div id="next"></div></section>
+    <section class="col-full"><h2>Needs attention</h2><div id="attention"></div></section>
+  </div>
+  <div class="view" id="view-review" style="display:none">
+    <section class="col-full"><h2>Gate review</h2><div id="review"></div></section>
+  </div>
+  <div class="view" id="view-tasks" style="display:none">
+    <section class="col-full"><h2>Tasks</h2><div id="tasks"></div></section>
+    <section class="col-full" id="traceSection" style="display:none"><h2>Traceability (requirements → tasks)</h2>
+      <div id="trace"></div></section>
+  </div>
+  <div class="view" id="view-activity" style="display:none">
+    <section class="col-full" id="logsSection" style="display:none"><h2>Logs</h2><div id="logs"></div></section>
+    <section class="col-full"><h2>Operations</h2><div id="ops"></div>
+      <pre class="out" id="out" style="display:none"></pre></section>
+  </div>
 </main>
 <div id="toasts"></div>
-<script>const TOKEN = "__TOKEN__"; const READ_ONLY = __READ_ONLY__;</script>
-<script src="/assets/app.js"></script>
+<script>window.TOKEN = "__TOKEN__"; window.READ_ONLY = __READ_ONLY__;</script>
+<script type="module" src="/assets/app.js"></script>
 </body>
 </html>
