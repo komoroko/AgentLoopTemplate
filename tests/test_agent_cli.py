@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import os
-from collections.abc import Iterator
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -69,15 +68,8 @@ def test_current_cmd_reads_the_line() -> None:
 
 
 @pytest.fixture
-def repo(tmp_path: Path) -> Iterator[Path]:
-    (tmp_path / ".agentloop").mkdir()
-    (tmp_path / ".agentloop" / "config.yaml").write_text(_CONFIG, encoding="utf-8")
-    prev = os.getcwd()
-    os.chdir(tmp_path)
-    try:
-        yield tmp_path
-    finally:
-        os.chdir(prev)
+def repo(make_repo: Callable[..., Path]) -> Path:
+    return make_repo(state=None, config=_CONFIG)
 
 
 def test_main_switches_and_reports_before_after(repo: Path, capsys: pytest.CaptureFixture[str]) -> None:

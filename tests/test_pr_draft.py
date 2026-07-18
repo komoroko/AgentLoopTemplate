@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import os
-from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
 from agentloop import build_loop, pr_draft
+from tests._support import seed_repo
 
 _STATE = """---
 project: "demo"
@@ -35,14 +34,13 @@ _REQUIREMENTS = "# req\n\n### R-1: parse input\n\n### NFR-1: performance\n"
 
 
 @pytest.fixture
-def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
-    (tmp_path / ".agentloop").mkdir()
+def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    seed_repo(tmp_path, state=_STATE, tasks=_TASKS)
     (tmp_path / "docs" / "test").mkdir(parents=True)
-    (tmp_path / ".agentloop" / "state.md").write_text(_STATE, encoding="utf-8")
-    (tmp_path / ".agentloop" / "tasks.yaml").write_text(_TASKS, encoding="utf-8")
     (tmp_path / "docs" / "10-requirements.md").write_text(_REQUIREMENTS, encoding="utf-8")
     (tmp_path / "docs" / "test" / "test-plan.md").write_text("# plan\n", encoding="utf-8")
 
+    # A bespoke fake: pr_draft must shell out to git only, so the assertion guards that contract.
     def fake_run(cmd: list[str], cwd: str, timeout: float | None = None) -> tuple[int, str]:
         assert cmd[0] == "git", f"pr_draft must only shell out to git, got: {cmd}"
         if cmd[1] == "rev-parse":
@@ -52,12 +50,8 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
         return 1, ""
 
     monkeypatch.setattr(build_loop, "_run", fake_run)
-    prev = os.getcwd()
-    os.chdir(tmp_path)
-    try:
-        yield tmp_path
-    finally:
-        os.chdir(prev)
+    monkeypatch.chdir(tmp_path)
+    return tmp_path
 
 
 def test_draft_carries_gates_tasks_requirements_and_commits(project: Path) -> None:

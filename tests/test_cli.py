@@ -3,50 +3,19 @@
 from __future__ import annotations
 
 import json
-import os
 import sys
-from collections.abc import Iterator
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
 from agentloop import cli, init_cmd, registry, ui
-
-_STATE = """---
-project: "demo"
-branch: "build/demo"
-current_phase: build
-gates:
-  requirements: approved      # 2026-07-01
-  design: approved            # 2026-07-02
-  tasks: approved             # 2026-07-03
-  build: pending
-  release: pending
-updated_at: "2026-07-03"
----
-# board
-"""
-
-_CONFIG = """build:
-  headless:
-    cmd: ["claude", "-p"]
-gates:
-  template_mode: false
-"""
+from tests._support import DEMO_CONFIG
 
 
 @pytest.fixture
-def repo(tmp_path: Path) -> Iterator[Path]:
-    loop = tmp_path / ".agentloop"
-    loop.mkdir()
-    (loop / "state.md").write_text(_STATE, encoding="utf-8")
-    (loop / "config.yaml").write_text(_CONFIG, encoding="utf-8")
-    prev = os.getcwd()
-    os.chdir(tmp_path)
-    try:
-        yield tmp_path
-    finally:
-        os.chdir(prev)
+def repo(make_repo: Callable[..., Path]) -> Path:
+    return make_repo(config=DEMO_CONFIG)
 
 
 def test_help_lists_the_verbs_and_the_operations(capsys: pytest.CaptureFixture[str]) -> None:

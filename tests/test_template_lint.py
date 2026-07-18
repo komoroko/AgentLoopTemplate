@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import os
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -292,13 +292,7 @@ def test_live_repo_has_no_drift() -> None:
     assert failures == []
 
 
-def test_main_skips_in_a_product_repo(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    (tmp_path / ".agentloop").mkdir()
-    (tmp_path / ".agentloop" / "config.yaml").write_text("gates:\n  template_mode: false\n", encoding="utf-8")
-    prev = os.getcwd()
-    os.chdir(tmp_path)
-    try:
-        assert template_lint.main([]) == 0
-    finally:
-        os.chdir(prev)
+def test_main_skips_in_a_product_repo(make_repo: Callable[..., Path], capsys: pytest.CaptureFixture[str]) -> None:
+    make_repo(state=None, config="gates:\n  template_mode: false\n")
+    assert template_lint.main([]) == 0
     assert "skipped" in capsys.readouterr().out

@@ -5,6 +5,18 @@ upgrade` shows the sections between the installed version, recorded in
 `.agentloop/agentloop.lock`, and the new one). The version's single source is
 `pyproject.toml [project] version`.
 
+## [Unreleased]
+
+### Changed
+- **The `init` wizard now asks only what needs a human: the product name and a brief line.**
+  Three low-value questions were dropped from the interactive flow. The work branch keeps its
+  `build/<name>` default (override with `--branch`); the source URL is auto-detected from the
+  install's PEP 610 `direct_url.json` (a VCS install yields `git+<url>@<rev>`; override with
+  `--source`); and the headless agent CLI keeps its scaffold default `claude -p` — the first
+  `agentloop build` (mode A) run prints a one-line hint that `agentloop agent <cli>` switches it.
+  The product name now defaults to the folder name. No capability is lost — every dropped choice
+  stays reachable via a flag, auto-detection, or `agentloop agent`.
+
 ## [0.7.3] - 2026-07-18
 
 ### Added

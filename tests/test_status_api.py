@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from agentloop import status_api
+from tests._support import seed_repo
 
 # --- next_action: one test per decision-table row (first match wins) -----------
 
@@ -134,12 +135,7 @@ _TASKS = """tasks:
 
 @pytest.fixture
 def repo(tmp_path: Path) -> Path:
-    loop = tmp_path / ".agentloop"
-    loop.mkdir()
-    (loop / "state.md").write_text(_STATE, encoding="utf-8")
-    (loop / "config.yaml").write_text(_CONFIG, encoding="utf-8")
-    (loop / "tasks.yaml").write_text(_TASKS, encoding="utf-8")
-    return tmp_path
+    return seed_repo(tmp_path, state=_STATE, config=_CONFIG, tasks=_TASKS)
 
 
 def test_collect_status_full_repo(repo: Path) -> None:

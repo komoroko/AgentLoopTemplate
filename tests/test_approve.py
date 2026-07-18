@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import os
 import re
-from collections.abc import Iterator
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -83,15 +82,8 @@ def test_release_approval_reaches_done() -> None:
 
 
 @pytest.fixture
-def repo(tmp_path: Path) -> Iterator[Path]:
-    (tmp_path / ".agentloop").mkdir()
-    (tmp_path / ".agentloop" / "state.md").write_text(_STATE, encoding="utf-8")
-    prev = os.getcwd()
-    os.chdir(tmp_path)
-    try:
-        yield tmp_path
-    finally:
-        os.chdir(prev)
+def repo(make_repo: Callable[..., Path]) -> Path:
+    return make_repo(state=_STATE)
 
 
 def test_record_approval_writes_state_and_event(repo: Path) -> None:

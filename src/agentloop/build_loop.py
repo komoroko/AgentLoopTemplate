@@ -1201,6 +1201,10 @@ def main(argv: list[str] | None = None) -> int:
             f"cannot load .agentloop/config.yaml: {exc} — fix it (`agentloop doctor` validates it against the schema)"
         )
         return 1
+    if not args.dry_run and config.headless_cmd == ("claude", "-p"):
+        print(
+            '(hint) headless CLI = claude -p (the default). Switch it with `agentloop agent <codex|gemini|"custom">`.'
+        )
     return Orchestrator(config, dry_run=args.dry_run, repo=repo).run()
 
 

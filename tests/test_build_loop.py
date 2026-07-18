@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import os
 import subprocess
-from collections.abc import Iterator
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
 from agentloop import build_loop, dag, events
+from tests._support import fake_git
 
 
 def _cwd() -> str:
@@ -91,15 +92,9 @@ _TASKS = """tasks:
 
 
 @pytest.fixture
-def project(tmp_path: Path) -> Iterator[Path]:
-    (tmp_path / ".agentloop").mkdir()
-    (tmp_path / ".agentloop" / "config.yaml").write_text(_CONFIG, encoding="utf-8")
-    prev = os.getcwd()
-    os.chdir(tmp_path)
-    try:
-        yield tmp_path
-    finally:
-        os.chdir(prev)
+def project(make_repo: Callable[..., Path]) -> Path:
+    # Only config is seeded up front; each test writes the state.md/tasks.yaml its scenario needs.
+    return make_repo(state=None, config=_CONFIG)
 
 
 def test_dry_run_blocks_when_placeholders_remain(project: Path) -> None:
@@ -146,6 +141,25 @@ def test_dry_run_completes_all_tasks_without_writing(project: Path, capsys: pyte
     assert dag.load(".agentloop/tasks.yaml").counts()["done"] == 0
 
 
+def test_hint_names_agent_switch_only_for_the_default_cmd(project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    # Placeholders remain → run() bails at 2 before launching anything, but the hint prints first.
+    state = _STATE.format(tasks="approved").replace('project: "demo"', 'project: "<enter the product name>"')
+    (project / ".agentloop" / "state.md").write_text(state, encoding="utf-8")
+    (project / ".agentloop" / "tasks.yaml").write_text(_TASKS, encoding="utf-8")
+    hint = "agentloop agent"
+    assert build_loop.main([]) == 2  # non-dry-run, default headless cmd
+    assert hint in capsys.readouterr().out
+    # A dry run is a read-only simulation, not a first real build — no hint.
+    assert build_loop.main(["--dry-run"]) == 2
+    assert hint not in capsys.readouterr().out
+    # A switched-away headless cmd means the human already chose — no hint.
+    (project / ".agentloop" / "config.yaml").write_text(
+        _CONFIG.replace("gates:\n", "  headless: {cmd: ['codex', 'exec']}\ngates:\n"), encoding="utf-8"
+    )
+    assert build_loop.main([]) == 2
+    assert hint not in capsys.readouterr().out
+
+
 def test_recovers_stale_in_progress(project: Path, capsys: pytest.CaptureFixture[str]) -> None:
     # A task left in in_progress from a previous interruption is reset to todo at startup and re-consumed.
     # Without recovery it falls out of the frontier (todo-only) and is never started, deadlocking.
@@ -179,14 +193,12 @@ def test_merge_leaf_conflict_aborts_and_returns_false(project: Path, monkeypatch
     # If the merge into work conflicts, run merge --abort and return False (do not mark done).
     _provision(project)
     calls: list[list[str]] = []
-
-    def fake_run(cmd: list[str], cwd: str) -> tuple[int, str]:
-        calls.append(cmd)
-        if cmd[:2] == ["git", "merge"] and "--abort" not in cmd:
-            return 1, "CONFLICT (content): Merge conflict in foo.py"
-        return 0, ""
-
-    monkeypatch.setattr(build_loop, "_run", fake_run)
+    # `git merge <branch>` conflicts; the more-specific `--abort` rule (listed first) still succeeds.
+    conflict = {
+        ("git", "merge", "--abort"): (0, ""),
+        ("git", "merge"): (1, "CONFLICT (content): Merge conflict in foo.py"),
+    }
+    monkeypatch.setattr(build_loop, "_run", fake_git(conflict, record=calls))
     orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
     assert orch.merge_leaf(_leaf("T-002", "leaf A"), "build/demo-T-002") is False
     assert ["git", "merge", "--abort"] in calls  # a conflict is rolled back with abort
@@ -196,12 +208,9 @@ def test_add_worktree_failure_raises_stoploop(project: Path, monkeypatch: pytest
     # If worktree add fails, raise StopLoop via _git, stopping the loop and raising it to the human.
     _provision(project)
 
-    def fake_run(cmd: list[str], cwd: str) -> tuple[int, str]:
-        if cmd[:3] == ["git", "worktree", "add"]:
-            return 128, "fatal: '.worktrees/T-002' already exists"
-        return 0, ""  # pre-cleanup (remove/branch -D/prune) is a no-op ignoring rc
-
-    monkeypatch.setattr(build_loop, "_run", fake_run)
+    # worktree add fails; pre-cleanup (remove/branch -D/prune) is a no-op ignoring rc (the default).
+    add_fails = fake_git({("git", "worktree", "add"): (128, "fatal: '.worktrees/T-002' already exists")})
+    monkeypatch.setattr(build_loop, "_run", add_fails)
     orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
     with pytest.raises(build_loop.StopLoop):
         orch._add_worktree(_leaf("T-002", "leaf A"))
@@ -211,7 +220,7 @@ def test_consume_parallel_partial_failure_blocks_only_failed(project: Path, monk
     # Even if one leaf in a parallel batch cannot pass the quality gate, the successful leaves are merged to done
     # and only the failed leaf becomes blocked (one leaf's failure does not leave other leaves stuck in in_progress).
     _provision(project)
-    monkeypatch.setattr(build_loop, "_run", lambda cmd, cwd: (0, ""))  # treat all git calls as success
+    monkeypatch.setattr(build_loop, "_run", fake_git())  # treat all git calls as success
 
     def fake_run_task(task: dag.Task, cwd: str) -> tuple[bool, str]:
         return (task.id != "T-003"), ("" if task.id != "T-003" else "$ make test (rc=1)")
@@ -456,11 +465,7 @@ def test_consume_parallel_cleans_up_blocked_worktree(project: Path, monkeypatch:
     _provision(project)
     calls: list[list[str]] = []
 
-    def fake_run(cmd: list[str], cwd: str, timeout: float | None = None) -> tuple[int, str]:
-        calls.append(cmd)
-        return 0, ""
-
-    monkeypatch.setattr(build_loop, "_run", fake_run)
+    monkeypatch.setattr(build_loop, "_run", fake_git(record=calls))
 
     def fake_run_task(task: dag.Task, cwd: str) -> tuple[bool, str]:
         return (task.id != "T-003"), ("" if task.id != "T-003" else "$ make test (rc=1)")
@@ -508,11 +513,7 @@ def test_cmd_step_shlex_splits_quoted_args(project: Path, monkeypatch: pytest.Mo
     _provision(project)
     seen: list[list[str]] = []
 
-    def fake_run(cmd: list[str], cwd: str, timeout: float | None = None) -> tuple[int, str]:
-        seen.append(cmd)
-        return 0, ""
-
-    monkeypatch.setattr(build_loop, "_run", fake_run)
+    monkeypatch.setattr(build_loop, "_run", fake_git(record=seen))
     orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
     orch._run_cmd_step(build_loop.GateStep("test", "cmd", "pytest -k 'a b'"), cwd=".")
     assert seen == [["pytest", "-k", "a b"]]
@@ -525,13 +526,9 @@ def test_consume_serial_commits_task_diff_excluding_agentloop(project: Path, mon
     _provision(project)
     calls: list[list[str]] = []
 
-    def fake_run(cmd: list[str], cwd: str, timeout: float | None = None) -> tuple[int, str]:
-        calls.append(cmd)
-        if cmd[:3] == ["git", "status", "--porcelain"]:
-            return 0, " M app.py"  # dirty tree: the implementer forgot to commit
-        return 0, ""
-
-    monkeypatch.setattr(build_loop, "_run", fake_run)
+    # dirty tree: the implementer forgot to commit, so status --porcelain reports a change.
+    dirty = fake_git({("git", "status", "--porcelain"): (0, " M app.py")}, record=calls)
+    monkeypatch.setattr(build_loop, "_run", dirty)
     orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
     monkeypatch.setattr(orch, "_run_task_to_done", lambda task, cwd: (True, ""))
     foundation = dag.Task(id="T-001", title="base", kind="foundation")
@@ -545,11 +542,7 @@ def test_merge_leaf_success_removes_worktree(project: Path, monkeypatch: pytest.
     _provision(project)
     calls: list[list[str]] = []
 
-    def fake_run(cmd: list[str], cwd: str, timeout: float | None = None) -> tuple[int, str]:
-        calls.append(cmd)
-        return 0, ""
-
-    monkeypatch.setattr(build_loop, "_run", fake_run)
+    monkeypatch.setattr(build_loop, "_run", fake_git(record=calls))
     orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
     assert orch.merge_leaf(_leaf("T-002", "leaf A"), "build/demo-T-002") is True
     assert ["git", "merge", "--no-ff", "--no-edit", "build/demo-T-002"] in calls
@@ -743,7 +736,7 @@ def test_config_parses_integration_gate_default_and_off(project: Path) -> None:
 
 def _parallel_orch(project: Path, monkeypatch: pytest.MonkeyPatch) -> build_loop.Orchestrator:
     _provision(project)
-    monkeypatch.setattr(build_loop, "_run", lambda cmd, cwd, timeout=None: (0, ""))
+    monkeypatch.setattr(build_loop, "_run", fake_git())
     orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
     monkeypatch.setattr(orch, "_run_task_to_done", lambda task, cwd: (True, ""))
     return orch
@@ -1049,7 +1042,7 @@ def test_blocked_leaf_emits_event_and_refreshes_state_view(project: Path, monkey
     )
     (project / ".agentloop" / "state.md").write_text(state, encoding="utf-8")
     (project / ".agentloop" / "tasks.yaml").write_text(_TASKS, encoding="utf-8")
-    monkeypatch.setattr(build_loop, "_run", lambda cmd, cwd, timeout=None: (0, ""))
+    monkeypatch.setattr(build_loop, "_run", fake_git())
     orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
     monkeypatch.setattr(orch, "_run_task_to_done", lambda task, cwd: (False, "$ make test (rc=1)"))
     with pytest.raises(build_loop.StopLoop):
@@ -1247,6 +1240,7 @@ def _seed_work_repo(project: Path) -> None:
     _git(project, "checkout", "-qb", "build/demo")
 
 
+@pytest.mark.integration
 def test_add_worktree_salvages_unmerged_branch_and_wip(project: Path) -> None:
     # A crashed run left a leaf branch with a commit plus uncommitted WIP in its worktree.
     # The restart used to `branch -D` all of it; now both survive on a salvage branch.
@@ -1276,6 +1270,7 @@ def test_add_worktree_salvages_unmerged_branch_and_wip(project: Path) -> None:
     assert recorded and recorded[0].task == "T-002" and salvage in recorded[0].detail
 
 
+@pytest.mark.integration
 def test_add_worktree_deletes_fully_merged_leftover_branch(project: Path) -> None:
     # A leftover branch whose commits are all in the work branch holds nothing unique — the
     # pre-salvage behavior (delete and recreate) is kept for it.
@@ -1288,6 +1283,7 @@ def test_add_worktree_deletes_fully_merged_leftover_branch(project: Path) -> Non
     assert [e for e in events.load_events() if e.event == "branch_salvaged"] == []
 
 
+@pytest.mark.integration
 def test_add_worktree_stops_when_wip_cannot_be_preserved(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # If the leftover worktree's dirty diff cannot be committed (unset identity, index lock, …),
     # the tree may be the only copy — the restart must stop and keep it, not force-remove it.

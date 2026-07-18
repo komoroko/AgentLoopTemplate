@@ -5,19 +5,24 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 from agentloop import gate_guard
 from agentloop import repo as repo_mod
+from tests._support import GATE_ORDER, make_state, seed_repo
 
 
 @pytest.fixture
 def repo_root(tmp_path: Path) -> Path:
-    (tmp_path / ".agentloop").mkdir()
+    seed_repo(tmp_path, state=None)
     (tmp_path / "docs" / "tasks").mkdir(parents=True)
     return tmp_path
+
+
+_ALL_PENDING = {name: "pending" for name in GATE_ORDER}
 
 
 def test_find_root_walks_up_from_a_subdirectory(repo_root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -72,16 +77,14 @@ def test_repo_rel_normalizes_and_rejects_outside_paths(repo_root: Path) -> None:
     assert repo.rel(repo_root.parent / "elsewhere.md") is None
 
 
+@pytest.mark.integration
 def test_gate_guard_resolves_repo_from_the_payload_cwd(repo_root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A hook fired with cwd anywhere inside the repo judges paths against the discovered root."""
     monkeypatch.delenv("AGENTLOOP_ROOT", raising=False)
-    (repo_root / ".agentloop" / "state.md").write_text(
-        "---\ngates:\n  requirements: pending\n  design: pending\n  tasks: pending\n"
-        "  build: pending\n  release: pending\n---\n",
-        encoding="utf-8",
-    )
-    (repo_root / ".agentloop" / "config.yaml").write_text(
-        "gates:\n  enforce_hook: true\n  template_mode: false\n", encoding="utf-8"
+    seed_repo(
+        repo_root,
+        state=make_state(gates=dict.fromkeys(GATE_ORDER, "pending")),
+        config="gates:\n  enforce_hook: true\n  template_mode: false\n",
     )
     payload = json.dumps(
         {
@@ -92,7 +95,7 @@ def test_gate_guard_resolves_repo_from_the_payload_cwd(repo_root: Path, monkeypa
     )
     env = {**os.environ, "PYTHONPATH": "src"}
     proc = subprocess.run(
-        ["python", "-m", "agentloop.gate_guard"],
+        [sys.executable, "-m", "agentloop.gate_guard"],
         input=payload,
         capture_output=True,
         text=True,
@@ -104,13 +107,10 @@ def test_gate_guard_resolves_repo_from_the_payload_cwd(repo_root: Path, monkeypa
 
 
 def test_evaluate_accepts_an_explicit_repo_without_chdir(repo_root: Path) -> None:
-    (repo_root / ".agentloop" / "state.md").write_text(
-        "---\ngates:\n  requirements: approved\n  design: pending\n  tasks: pending\n"
-        "  build: pending\n  release: pending\n---\n",
-        encoding="utf-8",
-    )
-    (repo_root / ".agentloop" / "config.yaml").write_text(
-        "gates:\n  enforce_hook: true\n  template_mode: false\n", encoding="utf-8"
+    seed_repo(
+        repo_root,
+        state=make_state(gates={"requirements": "approved", "design": "pending", "tasks": "pending"}),
+        config="gates:\n  enforce_hook: true\n  template_mode: false\n",
     )
     repo = repo_mod.Repo(repo_root)
     ok, _ = gate_guard.evaluate(str(repo_root / "docs" / "20-design.md"), repo)

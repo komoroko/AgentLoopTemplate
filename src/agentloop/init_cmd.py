@@ -16,7 +16,11 @@ detection. Existing files are never overwritten (idempotent re-runs).
 Usage:
   uvx --from git+<agentloop repo> agentloop init --name myproduct   # first contact
   agentloop init --name myproduct [--branch build/myproduct] [--source <url>]
-  agentloop init                  # interactive wizard on a TTY
+  agentloop init                  # interactive wizard on a TTY (asks only name + brief)
+
+The source URL (for `agentloop upgrade`) is auto-detected from this install's PEP 610 metadata
+when --source is omitted; the work branch defaults to build/<name>, and the headless agent CLI
+keeps its scaffold default (`claude -p`, switch later with `agentloop agent <cli>`).
 """
 
 from __future__ import annotations
@@ -29,7 +33,7 @@ import sys
 from pathlib import Path
 
 import agentloop
-from agentloop import agent_cli, common, cycle
+from agentloop import common, cycle
 from agentloop import data as data_mod
 from agentloop import install as install_mod
 from agentloop import lock as lock_mod
@@ -171,6 +175,43 @@ def is_brownfield(root: Path) -> bool:
     return any((root / marker).exists() for marker in _CODE_MARKERS)
 
 
+def source_from_direct_url(raw: str) -> str:
+    """Reconstruct a `git+<url>[@rev]` source from a PEP 610 direct_url.json body (pure).
+
+    A VCS install records `url` + `vcs_info`; a plain file/dir/editable install (`dir_info`) or
+    an archive has no VCS coordinates, so there is nothing to record and we return "". Anything
+    malformed also yields "" — a missing source is a benign gap, never a failure.
+    """
+    import json as json_mod
+
+    try:
+        data = json_mod.loads(raw)
+    except ValueError:
+        return ""
+    vcs = data.get("vcs_info") if isinstance(data, dict) else None
+    url = data.get("url") if isinstance(data, dict) else None
+    if not isinstance(vcs, dict) or not isinstance(url, str) or not url:
+        return ""
+    base = url if url.startswith(("git+", "hg+", "bzr+", "svn+")) else f"{vcs.get('vcs', 'git')}+{url}"
+    rev = vcs.get("requested_revision") or vcs.get("commit_id")
+    return f"{base}@{rev}" if isinstance(rev, str) and rev else base
+
+
+def detect_source() -> str:
+    """Best-effort recovery of the agentloop source URL from this install's PEP 610 metadata.
+
+    Returns "" when the metadata is absent (e.g. a source tree run) or the install is not from a
+    VCS — the same silent skip the wizard's old free-text source question produced on Enter.
+    """
+    import importlib.metadata as md
+
+    try:
+        raw = md.distribution("agentloop").read_text("direct_url.json")
+    except (md.PackageNotFoundError, OSError):
+        return ""
+    return source_from_direct_url(raw) if raw else ""
+
+
 # --- application ------------------------------------------------------------------
 
 
@@ -238,6 +279,14 @@ def run_init(
         for kind, cmd in (("test", test_cmd), ("check", check_cmd)):
             if cmd:
                 print(f'  detected      quality-gate {kind} command: "{cmd}"')
+
+    # An unset source is recovered from how this tool was installed (PEP 610), so the wizard
+    # need not ask the human to paste a URL they rarely know; a VCS install yields git+<url>,
+    # an editable/local install yields "" (the same as skipping the old question).
+    if not source:
+        source = detect_source()
+        if source:
+            print(f"  detected      source: {source}")
 
     # 1) the SSOT trio, placeholder-filled (never overwriting an existing file).
     state_text = fill_state(data_mod.read_text("scaffold/agentloop/state.md"), name, branch, today)
@@ -308,25 +357,8 @@ def _ask(prompt: str, default: str = "") -> str:
     return input(shown).strip() or default
 
 
-def _ask_agent_cli() -> str:
-    """The headless-CLI question: a preset number, or a custom command string."""
-    presets = list(agent_cli.PRESETS)
-    print("4/5 headless agent CLI for mode A (`agentloop build`):")
-    for i, preset in enumerate(presets, 1):
-        suffix = " (default)" if i == 1 else ""
-        print(f"  {i}) {preset}{suffix}")
-    print(f"  {len(presets) + 1}) custom command")
-    choice = _ask(f"choose 1-{len(presets) + 1}", "1")
-    if choice.isdigit() and 1 <= int(choice) <= len(presets):
-        return presets[int(choice) - 1]
-    answer = ""
-    while not answer:
-        answer = input('custom command (e.g. "mytool run"): ').strip()
-    return answer
-
-
 def _ask_brief() -> str:
-    print("5/5 What do you want to build? (1-3 lines for docs/00-product-brief.md;")
+    print("2/2 What do you want to build? (1-3 lines for docs/00-product-brief.md;")
     lines: list[str] = []
     while len(lines) < 3:
         line = input("  empty line to finish, Enter now to skip: " if not lines else "  ").strip()
@@ -342,21 +374,16 @@ def wizard(root: Path | None = None) -> int:
     root = (root or Path.cwd()).resolve()
     print("AgentLoop setup — Enter accepts the [default]; Ctrl+C aborts without writing.")
     try:
-        name = ""
-        while not name:
-            name = input("1/5 product name: ").strip()
-        branch = _ask("2/5 work branch", f"build/{name}")
-        source = _ask("3/5 agentloop source URL (recorded for `agentloop upgrade`; Enter to skip)")
-        cli = _ask_agent_cli()
+        name = _ask("1/2 product name", root.name)
         summary = _ask_brief()
     except (KeyboardInterrupt, EOFError):
         logger.error("\naborted — nothing was written.")
         return 130
-    rc = run_init(root, name, branch, source)
+    # branch defaults to build/<name>; source is auto-detected in run_init; the headless CLI keeps
+    # its scaffold default (claude -p) — all three are overridable later (flags / `agentloop agent`).
+    rc = run_init(root, name, f"build/{name}", "")
     if rc != 0:
         return rc
-    if agent_cli.main([cli, "--repo", str(root)]) != 0:
-        return 1
     if summary:
         brief = root / BRIEF_PATH
         try:
@@ -371,7 +398,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="agentloop init", description="seed this repository with AgentLoop state")
     parser.add_argument("--name", default="", help="the product name (state.md project)")
     parser.add_argument("--branch", default="", help="the work branch (default: build/<name>)")
-    parser.add_argument("--source", default="", help="the agentloop source URL (recorded in the lock for upgrade)")
+    parser.add_argument(
+        "--source", default="", help="the agentloop source URL for the lock (default: auto-detected from the install)"
+    )
     parser.add_argument("--test-cmd", default="", help="quality-gate test command (brownfield; else auto-detected)")
     parser.add_argument("--check-cmd", default="", help="quality-gate check command (brownfield; else auto-detected)")
     flavor = parser.add_mutually_exclusive_group()
