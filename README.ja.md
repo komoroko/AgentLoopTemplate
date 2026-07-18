@@ -89,7 +89,7 @@ flowchart TD
 ```bash
 agentloop start        # 初回: 対話ウィザードでセットアップ / 導入済みなら現在地と次の一手を表示
 agentloop next         # 次に打つべきコマンドだけを表示(連携用に --json あり)
-agentloop ui           # ローカルダッシュボード — ゲート承認や doctor・revise・cycle-close をページから実行
+agentloop ui           # ローカルダッシュボード — ゲートの成果物を読み、その場で承認まで行える
 agentloop agent codex  # ヘッドレスで使うエージェント CLI を切替(claude | codex | gemini | 任意コマンド)
 agentloop project add  # ダッシュボードのプロジェクト切替対象にリポジトリを登録
 ```
@@ -211,8 +211,13 @@ brownfield の場合は `/onboard` への案内も添えられる。
    (`agentloop revise --impacted T-00x` は、指定タスクとその下流をまとめて `needs-revision` に
    する)。承認の巻き戻しも人間の判断で行う。
 5. **進捗を確認する**: `agentloop next` は次に打つべきコマンドだけを表示する(連携用に `--json`)。
-   `/status` はチャットで全体像を示し、`agentloop ui` は同じ内容をブラウザで見られる(既定は
-   読み取り専用。安全な操作の固定ホワイトリストとゲート承認の記録はページからも実行できる)。
+   `/status` はチャットで全体像を示し、`agentloop ui` はダッシュボードを開く: Overview ボードに加え、
+   **Review タブ**では承認待ちゲートの成果物を読み、その場で承認まで完結できる(自己評価ブロックを
+   上部にピン留め、ゲート④は diff とセキュリティレビューの鮮度も表示)。Tasks タブ(DAG・レイヤー
+   進行)、Activity タブ(イベントのライブフィードと操作)もある。ゲートやエスカレーションが人間を
+   待ち始めるとページが知らせる(ベルでオプトインのブラウザ通知、タブタイトル/ファビコンは常時表示)。
+   実行できる操作は固定ホワイトリストのまま — 読み取り、固定の診断(doctor・tests)、意思決定の記録
+   (approve / resolve / revise / cycle-close)のみで、フェーズ実行や push/PR/merge は意図的に持たない。
    タスクの依存図は `agentloop dag --mermaid` で生成できる。
 6. **PR にする**: `agentloop pr-draft` が SSOT から PR 本文を組み立てて `.agentloop/pr-draft.md`
    に書き出す(読み取り専用)。PR の作成や push は従来どおり人間の操作。

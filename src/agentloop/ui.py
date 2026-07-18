@@ -1,20 +1,33 @@
-"""Local web dashboard for the AgentLoop SSOT — state, gates, tasks, and the next recommended command.
+"""Local web dashboard for the AgentLoop SSOT — the human's cockpit for a Human-on-the-Loop run.
 
-Serves the page in `ui_assets/` (index.html + app.css + app.js — real files so the frontend is
-lintable and diffable, not a string inside Python) over stdlib `http.server`. Everything is served
-same-origin with zero external references, so the dashboard stays offline-safe; the data comes from
-status_api.collect_status(). Guidance-first: the page shows where the lifecycle stands and which
-command to run next. A small **fixed whitelist** of safe operations can also be executed from the
-page (gate-approval recording — a human privilege exercised by a human clicking — plus doctor /
-events-resolve / revise / cycle-close). The client only ever sends an action id and typed
-parameters; command lines are built server-side (`action_argv`), so arbitrary command execution is
-structurally impossible. Outward-facing operations (push / PR / merge) are deliberately absent.
+Serves the ES-module page in `ui_assets/` (real files so the frontend is lintable and diffable, not
+strings inside Python) over stdlib `http.server`, same-origin with zero external references so the
+dashboard stays offline-safe. Four hash-routed tabs: **Overview** (lifecycle rail, next recommended
+command, needs-attention — from status_api.collect_status()), **Review** (the gate under decision:
+its deliverables rendered server-side by mdlite with the self-assessment pinned, gate ④'s diff and
+security-review freshness — from review_api.collect_review() — ending in the approval footer),
+**Tasks** (DAG, layer progress, frontier, traceability), and **Activity** (the events.ndjson feed
+plus the operations console). The page also notifies the approval-wait: browser notifications are
+opt-in behind the bell; the tab title and favicon always carry the waiting state.
+
+What the page may do is bounded by principle, not habit: (a) **read** inside the target repository
+— every GET resolves paths server-side from fixed specs, never from the client; (b) run **local,
+side-effect-free diagnostics** whose argv is fixed here (`action_argv`: doctor, tests); (c) record
+**human decisions that already have a single sanctioned CLI write path** (gate approval via
+approve.py — a human privilege exercised by a human clicking — plus events-resolve / revise /
+cycle-close). The client only ever sends an action id and typed parameters; command lines are built
+server-side, so arbitrary command execution is structurally impossible. Phase execution (/req …
+/build) and outward-facing operations (push / PR / merge) are deliberately absent.
 
 Safety layers: binds 127.0.0.1 by default, and a non-loopback bind with the write endpoints enabled
 requires an explicit `--allow-remote`; every POST requires the `X-AgentLoop-Token` header whose value
 is generated per server start and embedded only in the served page (a cross-origin page cannot set a
 custom header without a CORS preflight, and no CORS headers are ever sent); `--read-only` disables
-POST entirely.
+POST entirely — reviewing stays fully readable. Because this page holds that token, *everything*
+agent-written that reaches it is constructed, never sanitized: deliverable markdown goes through
+mdlite's escape-first renderer (see its threat model), and agent-written identifiers — task ids
+above all, which tasks.yaml is free to spell any way it likes — reach the DOM only as escaped
+attribute values read back by a delegated listener, never interpolated into a handler.
 
 Usage:
   agentloop ui                 # serve on 127.0.0.1:8765 and open the browser
@@ -32,12 +45,15 @@ import re
 import secrets
 import shlex
 import subprocess
+import threading
+import urllib.parse
 import webbrowser
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from agentloop import approve, common, revise, status_api
+from agentloop import approve, common, review_api, revise, status_api
+from agentloop import events as events_mod
 from agentloop import registry as registry_mod
 from agentloop import repo as repo_mod
 
@@ -47,10 +63,46 @@ ACTION_TIMEOUT_SEC = 900
 _OUTPUT_LIMIT = 8000  # tail shown per stream (failures are summarized, not dumped)
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 # The frontend, shipped beside this module. Served by exact name only (no traversal surface);
-# read per request so an edit shows up on reload during development.
+# read per request so an edit shows up on reload during development. The dict stays explicit —
+# no directory scan — so what the server can hand out is reviewable here; a test asserts it
+# matches the files actually shipped in ui_assets/.
 ASSETS_DIR = Path(__file__).resolve().parent / "ui_assets"
-_ASSET_TYPES = {"app.css": "text/css; charset=utf-8", "app.js": "text/javascript; charset=utf-8"}
+_JS = "text/javascript; charset=utf-8"
+_ASSET_TYPES = {
+    "app.css": "text/css; charset=utf-8",
+    "app.js": _JS,
+    "api.js": _JS,
+    "view-overview.js": _JS,
+    "view-review.js": _JS,
+    "view-tasks.js": _JS,
+    "view-activity.js": _JS,
+    "notify.js": _JS,
+}
 _LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
+
+# events.ndjson, parsed at most once per version of the file. The Activity feed polls every 3s
+# while it is open, and answering it means parsing the *whole* log (an escalation's open/closed
+# state depends on a `resolve` that may appear anywhere in it) to return the last 50 rows. Keyed
+# on the file's identity, so an append is picked up on the next poll and a stale entry cannot be
+# served. One slot: the dashboard reads one project at a time, and a project switch just re-reads.
+_events_cache: tuple[tuple[str, int, int], list[events_mod.Event]] | None = None
+_events_lock = threading.Lock()
+
+
+def _load_events_cached(path: Path) -> list[events_mod.Event]:
+    global _events_cache
+    try:
+        stat = path.stat()
+        key = (str(path), stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        return []  # same tolerance as load_events: an unreadable log is an empty log
+    with _events_lock:
+        if _events_cache is not None and _events_cache[0] == key:
+            return _events_cache[1]
+    loaded = events_mod.load_events(str(path))
+    with _events_lock:
+        _events_cache = (key, loaded)
+    return loaded
 
 
 class UiActionError(Exception):
@@ -70,6 +122,10 @@ def action_argv(action: str, params: dict[str, object]) -> list[str]:
     """
     if action == "doctor":
         return ["make", "doctor"]
+    if action == "tests":
+        # Lets the reviewer confirm green with their own eyes from the review pane (gate ④/⑤)
+        # instead of trusting a reported result. Parameterless — zero injection surface.
+        return ["make", "test"]
     if action == "events_resolve":
         try:
             event_id = int(str(params.get("id")))
@@ -187,8 +243,59 @@ class DashboardHandler(BaseHTTPRequestHandler):
         elif self.path == "/api/projects":
             reg = self.server.registry()
             self._send_json(HTTPStatus.OK, {"projects": reg.entries(), "active": reg.active})
+        elif self.path == "/api/events" or self.path.startswith("/api/events?"):
+            self._send_events()
+        elif self.path.startswith("/api/review/"):
+            # The path carries only a gate *name*; review_api maps it to a fixed set of repo files
+            # server-side, so a traversal-shaped suffix is just an unknown gate (404).
+            gate = self.path[len("/api/review/") :]
+            try:
+                payload = review_api.collect_review(self.server.active_root(), gate)
+            except review_api.ReviewError as exc:
+                self._send_json(HTTPStatus.NOT_FOUND, {"error": str(exc)})
+                return
+            except Exception as exc:  # same posture as /api/status: a broken repo must not 500 the pane
+                payload = {"error": f"{type(exc).__name__}: {exc}"}
+            self._send_json(HTTPStatus.OK, payload)
         else:
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
+
+    def _send_events(self) -> None:
+        """The tail of events.ndjson, newest first — the Activity feed watching a headless build.
+
+        `?limit=N` (default 50, capped at 200) bounds the payload; escalation-kind events carry
+        `open` so the feed can offer resolve on the ones still pending.
+        """
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        try:
+            limit = int(query.get("limit", ["50"])[0])
+        except ValueError:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "limit must be an integer"})
+            return
+        limit = max(1, min(limit, 200))
+        root = self.server.active_root()
+        events = _load_events_cached(root / ".agentloop" / "events.ndjson")
+        open_ids = {e.id for e in events_mod.open_escalations(events)}
+        self._send_json(
+            HTTPStatus.OK,
+            {
+                "events": [
+                    {
+                        "id": e.id,
+                        "date": e.date,
+                        "ts": e.ts,
+                        "event": e.event,
+                        "task": e.task,
+                        "step": e.step,
+                        "detail": e.detail,
+                        "ref": e.ref,
+                        "open": e.id in open_ids,
+                    }
+                    for e in reversed(events[-limit:])
+                ],
+                "total": len(events),
+            },
+        )
 
     def _post_body(self) -> dict[str, object]:
         try:

@@ -45,6 +45,7 @@ github:
 
 def test_action_argv_whitelist() -> None:
     assert ui.action_argv("doctor", {}) == ["make", "doctor"]
+    assert ui.action_argv("tests", {}) == ["make", "test"]  # parameterless: zero injection surface
     argv = ui.action_argv("events_resolve", {"id": 3, "note": "fixed; it's done"})
     assert argv[:2] == ["make", "events"] and "--resolve 3" in argv[2]
     assert "'fixed; it'\"'\"'s done'" in argv[2]  # note is shell-quoted server-side
@@ -137,20 +138,44 @@ def test_get_page_is_offline_self_contained(server: ui.DashboardServer) -> None:
     page = data.decode("utf-8")
     assert status == 200 and "AgentLoop" in page
     assert server.token in page  # the POST token is delivered only via the page
-    # Offline canary across the page AND its same-origin assets: no external reference anywhere.
-    css = _request(server, "GET", "/assets/app.css")[1].decode("utf-8")
-    js = _request(server, "GET", "/assets/app.js")[1].decode("utf-8")
-    for name, text in (("index.html", page), ("app.css", css), ("app.js", js)):
+    # Offline canary across the page AND every allowlisted asset: no external reference anywhere.
+    assets = {name: _request(server, "GET", f"/assets/{name}")[1].decode("utf-8") for name in ui._ASSET_TYPES}
+    for name, text in {"index.html": page, **assets}.items():
         assert "http://" not in text and "https://" not in text, name
         assert "//cdn" not in text and "@import" not in text, name
-    # the page pulls only the two shipped assets, nothing else
-    assert re.findall(r'(?:src|href)="([^"]+)"', page) == ["/assets/app.css", "/assets/app.js"]
-    # the sections live in the page; their renderers and the theme machinery in the assets
-    for marker in ('id="stepper"', 'id="trace"', 'id="logs"', 'id="toasts"'):
+    # every URL the page or a module references is same-origin: an /assets/ file or a #tab hash
+    for name, text in {"index.html": page, **assets}.items():
+        for url in re.findall(r'(?:src|href|from)\s*=?\s*"([^"]+)"', text):
+            assert url.startswith(("/assets/", "#")), f"{name} references {url}"
+    # the sections live in the page; their renderers and the theme machinery in the modules
+    for marker in ('id="stepper"', 'id="trace"', 'id="logs"', 'id="review"', 'id="tabs"', 'id="toasts"'):
         assert marker in page, marker
-    for marker in ("buildDag", "showTaskDetail", "data-theme"):
-        assert marker in js, marker
-    assert "data-theme" in css
+    bundle = "".join(assets.values())
+    for marker in ("buildDag", "showTaskDetail", "data-theme", "renderReview"):
+        assert marker in bundle, marker
+
+
+def test_no_asset_builds_a_click_handler_out_of_a_task_id() -> None:
+    """Task ids are agent-written and not pattern-validated on load (dag.py takes them as-is).
+
+    Interpolating one into an inline `onclick="f('<id>')"` lets a quote in the id close the JS
+    string and run script on the page that holds the approval token — the XSS→self-approval path
+    mdlite.py exists to close. Ids must travel as escaped attribute values read back by a delegated
+    listener, so no generated handler may name a task-detail call at all.
+    """
+    sources = {p.name: p.read_text(encoding="utf-8") for p in ui.ASSETS_DIR.iterdir() if p.suffix == ".js"}
+    for name, text in sources.items():
+        assert 'onclick="showTaskDetail' not in text, name
+        assert "showTaskDetail('" not in text.replace("onTaskClick(showTaskDetail)", ""), name
+    bundle = "".join(sources.values())
+    assert 'data-task="' in bundle and 'getAttribute("data-task")' in bundle
+
+
+def test_shipped_assets_match_the_allowlist_exactly() -> None:
+    # _ASSET_TYPES is a hand-maintained allowlist (auditability over convenience); this catches a
+    # file added to ui_assets/ but forgotten in the dict — which would 404 at runtime — and vice versa.
+    on_disk = {p.name for p in ui.ASSETS_DIR.iterdir() if p.is_file()}
+    assert on_disk == set(ui._ASSET_TYPES) | {"index.html"}
 
 
 def test_assets_are_served_with_their_types_and_nothing_else(server: ui.DashboardServer) -> None:
@@ -224,6 +249,87 @@ def test_open_mode_targets_vscode_over_external_browser() -> None:
     assert ui.open_mode(no_open=False, term_program=None) == "browser"
     assert ui.open_mode(no_open=False, term_program="Apple_Terminal") == "browser"
     assert ui.open_mode(no_open=True, term_program="vscode") == "none"  # --no-open overrides detection
+
+
+# --- events endpoint ------------------------------------------------------------
+
+
+def _seed_events(repo: Path, count: int) -> None:
+    lines = [
+        json.dumps({"id": i, "ts": f"2026-07-19T00:00:{i:02d}", "event": "task_done", "task": f"T-{i:03d}"})
+        for i in range(1, count)
+    ]
+    lines.append(json.dumps({"id": count, "ts": "2026-07-19T01:00:00", "event": "blocked", "task": "T-009"}))
+    (repo / ".agentloop" / "events.ndjson").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def test_get_events_returns_tail_newest_first_with_open_flag(server: ui.DashboardServer, repo: Path) -> None:
+    _seed_events(repo, count=5)
+    status, data = _request(server, "GET", "/api/events?limit=3")
+    assert status == 200
+    payload = json.loads(data)
+    assert payload["total"] == 5 and len(payload["events"]) == 3
+    newest = payload["events"][0]
+    assert newest["event"] == "blocked" and newest["open"] is True  # unresolved escalation
+    assert payload["events"][1]["open"] is False  # task_done is not an escalation kind
+
+
+def test_get_events_defaults_and_rejects_bad_limit(server: ui.DashboardServer, repo: Path) -> None:
+    assert json.loads(_request(server, "GET", "/api/events")[1]) == {"events": [], "total": 0}
+    assert _request(server, "GET", "/api/events?limit=abc")[0] == 400
+
+
+def test_events_are_parsed_once_per_version_of_the_log(server: ui.DashboardServer, repo: Path) -> None:
+    # The Activity feed polls every 3s and answering it means parsing the *whole* log (an
+    # escalation's open state depends on a resolve that may sit anywhere in it). Cache on the
+    # file's identity — but an append must still be visible on the very next request.
+    _seed_events(repo, count=5)
+    log = repo / ".agentloop" / "events.ndjson"
+    first = ui._load_events_cached(log)
+    assert ui._load_events_cached(log) is first  # unchanged file: the same parsed list, not a re-parse
+
+    with log.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"id": 6, "ts": "2026-07-19T02:00:00", "event": "task_done"}) + "\n")
+    payload = json.loads(_request(server, "GET", "/api/events")[1])
+    assert payload["total"] == 6 and payload["events"][0]["id"] == 6
+
+    missing = repo / ".agentloop" / "nope.ndjson"
+    assert ui._load_events_cached(missing) == []  # same tolerance as load_events
+
+
+# --- review endpoint ------------------------------------------------------------
+
+
+def test_get_review_serves_rendered_deliverable(server: ui.DashboardServer, repo: Path) -> None:
+    doc = repo / "docs" / "10-requirements.md"
+    doc.parent.mkdir(parents=True)
+    doc.write_text(
+        "# Requirements\n<script>steal(TOKEN)</script>\n\n## Self-assessment\n- **Confidence**: low\n",
+        encoding="utf-8",
+    )
+    status, data = _request(server, "GET", "/api/review/requirements")
+    assert status == 200
+    payload = json.loads(data)
+    assert payload["is_awaiting"] is True and payload["index"] == 1
+    (main,) = payload["deliverables"]
+    assert "<h1>Requirements</h1>" in main["html"]
+    assert "<script" not in main["html"]  # XSS regression: agent markup arrives inert
+    assert main["self_assessment"]["confidence"] == "low"
+
+
+@pytest.mark.parametrize("path", ["/api/review/nope", "/api/review/../state", "/api/review/", "/api/review/Build"])
+def test_get_review_unknown_gate_is_404(server: ui.DashboardServer, path: str) -> None:
+    assert _request(server, "GET", path)[0] == 404
+
+
+def test_review_is_readable_on_a_read_only_server(repo: Path) -> None:
+    srv = ui.DashboardServer(("127.0.0.1", 0), root=repo, read_only=True)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        assert _request(srv, "GET", "/api/review/requirements")[0] == 200  # reviewing is view-only
+    finally:
+        srv.shutdown()
+        srv.server_close()
 
 
 # --- project switcher -----------------------------------------------------------

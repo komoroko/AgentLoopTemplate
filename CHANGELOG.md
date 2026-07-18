@@ -5,7 +5,28 @@ upgrade` shows the sections between the installed version, recorded in
 `.agentloop/agentloop.lock`, and the new one). The version's single source is
 `pyproject.toml [project] version`.
 
-## [Unreleased]
+## [0.7.4] - 2026-07-19
+
+### Added
+- **The dashboard is now a gate-review cockpit.** `agentloop ui` reorganizes into four tabs
+  (Overview / Review / Tasks / Activity). The new **Review tab** renders the gate under
+  decision's deliverables in the page — self-assessment block pinned on top with its confidence
+  badged, gate ④ showing the work-branch diff plus the security-review report's freshness —
+  and ends in the approval footer, so "read, then approve" completes in one pane (approval still
+  routes through `approve.py`, the single sanctioned write path). Deliverable markdown is
+  rendered server-side by a new escape-first converter (`mdlite.py`): every input character is
+  HTML-escaped before any markup is constructed, making deliverable-borne XSS structurally
+  impossible on the page that holds the approval token.
+- **The page signals when the loop is waiting on you.** Opt-in browser notifications (the bell)
+  plus an always-on tab-title and favicon badge fire when the gate under decision changes, an
+  escalation or needs-revision appears, or a build finishes its tasks.
+- **Build supervision.** The Activity tab tails `.agentloop/events.ndjson` live
+  (`GET /api/events`), the Tasks tab adds per-layer progress rows, and in-progress DAG nodes
+  pulse — a headless `agentloop build` can be watched, not polled by hand.
+- The action whitelist grows exactly one entry: `tests` (`make test`), so a reviewer can confirm
+  green with their own eyes before approving. The whitelist's principle is now documented in
+  `ui.py`: reads, fixed local diagnostics, and recording of human decisions that already have a
+  sanctioned CLI write path — phase execution and push/PR/merge stay deliberately absent.
 
 ### Changed
 - **The `init` wizard now asks only what needs a human: the product name and a brief line.**
@@ -16,6 +37,28 @@ upgrade` shows the sections between the installed version, recorded in
   `agentloop build` (mode A) run prints a one-line hint that `agentloop agent <cli>` switches it.
   The product name now defaults to the folder name. No capability is lost — every dropped choice
   stays reachable via a flag, auto-detection, or `agentloop agent`.
+
+### Fixed
+- **Task ids can no longer become script on the dashboard.** Ids were interpolated into inline
+  `onclick="…('<id>')"` handlers, and tasks.yaml ids are agent-written text that the loader never
+  pattern-checks — so a quote in an id ran arbitrary script on the page that holds the approval
+  token. Ids now travel as escaped `data-task` attributes read back by one delegated listener,
+  closing the same XSS→self-approval path `mdlite.py` closes for deliverable markdown.
+- **The review pane can no longer show one gate's deliverables under another gate's name.** A gate
+  selected while a fetch was in flight was dropped, leaving a stale payload that the approval
+  footer is computed from. Requests are sequence-tagged (newest wins), and both the paint and the
+  approve path refuse a payload whose gate is not the selected one.
+- **The confidence badge no longer reads better than the document.** It took the first level found
+  on any line mentioning "confidence", so prose such as "we have high confidence the runner exists"
+  badged a `low` self-assessment as `high`. Only the labelled `Confidence:` value is read now, and
+  a per-area line reports its **weakest** level (the unfilled scaffold placeholder still reads as
+  unset).
+- A NUL byte in a deliverable collided with mdlite's internal placeholders and replaced the whole
+  gate's review payload with an error; a scheme-relative `//host` link was treated as same-origin
+  and rendered live (allowed links now also carry `noreferrer`).
+- `GET /api/events` re-parsed the entire event log every 3 seconds to return 50 rows, and the
+  favicon badge was canvas-encoded on every status poll — both are now computed only when their
+  input actually changes.
 
 ## [0.7.3] - 2026-07-18
 
