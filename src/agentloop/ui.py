@@ -32,12 +32,14 @@ import re
 import secrets
 import shlex
 import subprocess
+import urllib.parse
 import webbrowser
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from agentloop import approve, common, review_api, revise, status_api
+from agentloop import events as events_mod
 from agentloop import registry as registry_mod
 from agentloop import repo as repo_mod
 
@@ -81,6 +83,10 @@ def action_argv(action: str, params: dict[str, object]) -> list[str]:
     """
     if action == "doctor":
         return ["make", "doctor"]
+    if action == "tests":
+        # Lets the reviewer confirm green with their own eyes from the review pane (gate ④/⑤)
+        # instead of trusting a reported result. Parameterless — zero injection surface.
+        return ["make", "test"]
     if action == "events_resolve":
         try:
             event_id = int(str(params.get("id")))
@@ -198,6 +204,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         elif self.path == "/api/projects":
             reg = self.server.registry()
             self._send_json(HTTPStatus.OK, {"projects": reg.entries(), "active": reg.active})
+        elif self.path == "/api/events" or self.path.startswith("/api/events?"):
+            self._send_events()
         elif self.path.startswith("/api/review/"):
             # The path carries only a gate *name*; review_api maps it to a fixed set of repo files
             # server-side, so a traversal-shaped suffix is just an unknown gate (404).
@@ -212,6 +220,43 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.OK, payload)
         else:
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
+
+    def _send_events(self) -> None:
+        """The tail of events.ndjson, newest first — the Activity feed watching a headless build.
+
+        `?limit=N` (default 50, capped at 200) bounds the payload; escalation-kind events carry
+        `open` so the feed can offer resolve on the ones still pending.
+        """
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        try:
+            limit = int(query.get("limit", ["50"])[0])
+        except ValueError:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "limit must be an integer"})
+            return
+        limit = max(1, min(limit, 200))
+        root = self.server.active_root()
+        events = events_mod.load_events(str(root / ".agentloop" / "events.ndjson"))
+        open_ids = {e.id for e in events_mod.open_escalations(events)}
+        self._send_json(
+            HTTPStatus.OK,
+            {
+                "events": [
+                    {
+                        "id": e.id,
+                        "date": e.date,
+                        "ts": e.ts,
+                        "event": e.event,
+                        "task": e.task,
+                        "step": e.step,
+                        "detail": e.detail,
+                        "ref": e.ref,
+                        "open": e.id in open_ids,
+                    }
+                    for e in reversed(events[-limit:])
+                ],
+                "total": len(events),
+            },
+        )
 
     def _post_body(self) -> dict[str, object]:
         try:

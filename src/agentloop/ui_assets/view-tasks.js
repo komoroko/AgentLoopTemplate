@@ -43,6 +43,23 @@ export function showTaskDetail(id) {
     '</div><dt>test</dt><div class="mono">' + (t.test ? esc(t.test) : "—") + "</div></div>";
 }
 
+// Per-layer progress: one row per execution layer so a running build reads at a glance
+// (derived entirely from layers + statuses already in the status payload — no extra API).
+function layersBar(t, byId) {
+  if (!t.layers.length) return "";
+  return '<div class="layers">' + t.layers.map((ids, i) => {
+    const st = id => (byId[id] || { status: "todo" }).status;
+    const done = ids.filter(id => st(id) === "done").length;
+    const running = ids.filter(id => st(id) === "in_progress").length;
+    const segs = ids.map(id =>
+      '<span class="seg ' + esc(st(id)) + ' clk" title="' + esc(id) + " (" + esc(st(id)) +
+      ')" onclick="showTaskDetail(\'' + id + '\')"></span>').join("");
+    return '<div class="lrow"><span class="lname">L' + i + '</span><span class="lbar">' + segs +
+      '</span><span class="lcount">' + done + "/" + ids.length +
+      (running ? " · " + running + " running" : "") + "</span></div>";
+  }).join("") + "</div>";
+}
+
 export function renderTasks(d) {
   const el = document.getElementById("tasks");
   const t = d.tasks;
@@ -51,7 +68,7 @@ export function renderTasks(d) {
   const order = ["todo", "in_progress", "blocked", "needs-revision", "done"];
   const pills = '<div class="pills">' + order.map(s => '<span class="chip ' + s + '">' + esc(s) + " " +
     (t.counts[s] || 0) + "</span>").join("") + '<span class="pill">total ' + t.total + "</span></div>";
-  const graph = t.tasks.length ? buildDag(t, byId) : '<div class="empty">(no tasks)</div>';
+  const graph = t.tasks.length ? layersBar(t, byId) + buildDag(t, byId) : '<div class="empty">(no tasks)</div>';
   const frontier = t.frontier.length
     ? '<div class="scroll"><table><tr><th>ID</th><th>Title</th><th>Kind</th><th>fan-out</th></tr>' +
       t.frontier.map(f => '<tr class="clk" onclick="showTaskDetail(\'' + f.id + '\')"><td class="mono">' +

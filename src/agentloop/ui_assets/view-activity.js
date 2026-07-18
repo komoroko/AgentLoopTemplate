@@ -1,7 +1,50 @@
-// Activity: the state.md log tables and the operations console (kept away from the review flow —
-// destructive actions live on this tab, approval lives on the Review tab).
+// Activity: the live event feed (watching a headless build), the state.md log tables, and the
+// operations console (kept away from the review flow — destructive actions live on this tab,
+// approval lives on the Review tab).
 
-import { READ_ONLY, post, tableFrom } from "/assets/api.js";
+import { READ_ONLY, esc, post, tableFrom } from "/assets/api.js";
+
+// ---- event feed: polled only while this tab is visible ----
+const ESCALATION_KINDS = new Set(["blocked", "merge_conflict", "integration_red", "no_runnable", "gate_violation"]);
+const OK_KINDS = new Set(["gate_approved", "task_done", "resolve", "security_review"]);
+let tabVisible = false;
+let lastEvents = "";
+
+function eventClass(e) {
+  if (ESCALATION_KINDS.has(e.event)) return e.open ? "ev-bad" : "ev-closed";
+  if (OK_KINDS.has(e.event)) return "ev-ok";
+  return "";
+}
+
+async function fetchEvents() {
+  const el = document.getElementById("events");
+  try {
+    const res = await fetch("/api/events?limit=50");
+    const text = await res.text();
+    if (text === lastEvents) return;  // unchanged tail: keep the DOM (and any hover) alive
+    lastEvents = text;
+    const d = JSON.parse(text);
+    if (d.error) { el.innerHTML = '<div class="warn">' + esc(d.error) + "</div>"; return; }
+    if (!d.events.length) { el.innerHTML = '<div class="empty">No events yet (created on first event).</div>'; return; }
+    el.innerHTML = '<div class="scroll"><table class="events">' +
+      "<tr><th>ID</th><th>Date</th><th>Event</th><th>Task</th><th>Step</th><th>Detail</th>" +
+      (READ_ONLY ? "" : "<th></th>") + "</tr>" +
+      d.events.map(e => '<tr class="' + eventClass(e) + '"><td>' + e.id + "</td><td>" + esc(e.date) +
+        '</td><td class="mono">' + esc(e.event) + (e.open ? " ◆" : "") + '</td><td class="mono">' +
+        esc(e.task || "-") + "</td><td>" + esc(e.step || "-") + "</td><td>" + esc(e.detail || "-") + "</td>" +
+        (READ_ONLY ? "" : "<td>" +
+          (e.open ? '<button onclick="resolveEsc(' + e.id + ')">resolve</button>' : "") + "</td>") +
+        "</tr>").join("") + "</table></div>" +
+      '<div class="empty" style="margin-top:.3rem">showing latest ' + d.events.length + " of " + d.total + "</div>";
+  } catch (err) { el.innerHTML = '<div class="empty">event feed unavailable</div>'; }
+}
+
+document.addEventListener("agentloop:view", e => {
+  tabVisible = e.detail === "activity";
+  if (tabVisible) fetchEvents();
+});
+document.addEventListener("agentloop:refresh", () => { lastEvents = ""; if (tabVisible) fetchEvents(); });
+setInterval(() => { if (tabVisible) fetchEvents(); }, 3000);
 
 export function resolveEsc(id) {
   const note = prompt("Resolution note for escalation #" + id + ":");

@@ -45,6 +45,7 @@ github:
 
 def test_action_argv_whitelist() -> None:
     assert ui.action_argv("doctor", {}) == ["make", "doctor"]
+    assert ui.action_argv("tests", {}) == ["make", "test"]  # parameterless: zero injection surface
     argv = ui.action_argv("events_resolve", {"id": 3, "note": "fixed; it's done"})
     assert argv[:2] == ["make", "events"] and "--resolve 3" in argv[2]
     assert "'fixed; it'\"'\"'s done'" in argv[2]  # note is shell-quoted server-side
@@ -232,6 +233,34 @@ def test_open_mode_targets_vscode_over_external_browser() -> None:
     assert ui.open_mode(no_open=False, term_program=None) == "browser"
     assert ui.open_mode(no_open=False, term_program="Apple_Terminal") == "browser"
     assert ui.open_mode(no_open=True, term_program="vscode") == "none"  # --no-open overrides detection
+
+
+# --- events endpoint ------------------------------------------------------------
+
+
+def _seed_events(repo: Path, count: int) -> None:
+    lines = [
+        json.dumps({"id": i, "ts": f"2026-07-19T00:00:{i:02d}", "event": "task_done", "task": f"T-{i:03d}"})
+        for i in range(1, count)
+    ]
+    lines.append(json.dumps({"id": count, "ts": "2026-07-19T01:00:00", "event": "blocked", "task": "T-009"}))
+    (repo / ".agentloop" / "events.ndjson").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def test_get_events_returns_tail_newest_first_with_open_flag(server: ui.DashboardServer, repo: Path) -> None:
+    _seed_events(repo, count=5)
+    status, data = _request(server, "GET", "/api/events?limit=3")
+    assert status == 200
+    payload = json.loads(data)
+    assert payload["total"] == 5 and len(payload["events"]) == 3
+    newest = payload["events"][0]
+    assert newest["event"] == "blocked" and newest["open"] is True  # unresolved escalation
+    assert payload["events"][1]["open"] is False  # task_done is not an escalation kind
+
+
+def test_get_events_defaults_and_rejects_bad_limit(server: ui.DashboardServer, repo: Path) -> None:
+    assert json.loads(_request(server, "GET", "/api/events")[1]) == {"events": [], "total": 0}
+    assert _request(server, "GET", "/api/events?limit=abc")[0] == 400
 
 
 # --- review endpoint ------------------------------------------------------------

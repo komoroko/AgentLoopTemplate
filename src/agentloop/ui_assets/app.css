@@ -156,6 +156,33 @@
   svg.dag .nd.todo { fill:var(--todo-bg); } svg.dag .nd.in_progress { fill:var(--prog-bg); }
   svg.dag .nd.blocked { fill:var(--blk-bg); } svg.dag .nd.needs-revision { fill:var(--rev-bg); }
   svg.dag .nd.done { fill:var(--done-bg); }
+  svg.dag .nd.in_progress { stroke:var(--prog-bd); }
+  @media (prefers-reduced-motion: no-preference) {
+    svg.dag .nd.in_progress { animation:ndpulse 1.6s ease-in-out infinite; }
+    @keyframes ndpulse { 50% { stroke-width:3.5; opacity:.72; } }
+  }
+  /* per-layer build progress (one row per execution layer, one segment per task) */
+  .layers { display:flex; flex-direction:column; gap:.28rem; margin-bottom:.7rem; }
+  .lrow { display:flex; align-items:center; gap:.55rem; }
+  .lname { font-family:var(--mono); font-size:.68rem; color:var(--muted); width:1.6rem; text-align:right; }
+  .lbar { display:flex; gap:2px; flex:0 1 auto; }
+  .seg { display:inline-block; width:1.15rem; height:.5rem; border-radius:2px; background:var(--todo-bg);
+         border:1px solid var(--todo-bd); }
+  .seg.in_progress { background:var(--prog-bg); border-color:var(--prog-bd); }
+  .seg.blocked { background:var(--blk-bg); border-color:var(--blk-bd); }
+  .seg.needs-revision { background:var(--rev-bg); border-color:var(--rev-bd); }
+  .seg.done { background:var(--done-bd); border-color:var(--done-bd); }
+  @media (prefers-reduced-motion: no-preference) {
+    .seg.in_progress { animation:segpulse 1.6s ease-in-out infinite; }
+    @keyframes segpulse { 50% { opacity:.55; } }
+  }
+  .lcount { font-family:var(--mono); font-size:.7rem; color:var(--muted); white-space:nowrap; }
+  /* event feed rows */
+  table.events td { font-size:.8rem; }
+  tr.ev-ok td { color:var(--ink); }
+  tr.ev-ok td:nth-child(3) { color:var(--ok); }
+  tr.ev-bad td { background:var(--blk-bg); color:var(--blk-ink); }
+  tr.ev-closed td:nth-child(-n+6) { color:var(--muted); }
   /* gate review pane: selector bar → list + reading body → sticky approval footer */
   .gatebar { display:flex; gap:.35rem; flex-wrap:wrap; margin-bottom:.8rem; }
   .gatebtn { font-size:.78rem; }
