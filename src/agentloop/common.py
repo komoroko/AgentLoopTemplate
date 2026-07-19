@@ -200,6 +200,18 @@ def set_updated_at(text: str, today: str) -> str:
     return pattern.sub(rf'\g<1>"{today}"', text)
 
 
+class StopLoop(Exception):
+    """A cause to stop the build loop and escalate to the human. `code` is the exit code.
+
+    Raised by the orchestration layers (build_loop and the git/worktree layer it drives);
+    defined here so neither has to import the other for it.
+    """
+
+    def __init__(self, message: str, code: int = 1) -> None:
+        super().__init__(message)
+        self.code = code
+
+
 def read_yaml(path: str) -> dict[str, object] | None:
     """Load a YAML mapping from `path`; None for any unreadable/non-mapping case (tolerant reads)."""
     import yaml  # lazy: keep `import common` stdlib-only (module docstring)
