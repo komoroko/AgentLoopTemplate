@@ -617,8 +617,7 @@ class Orchestrator:
         """
         if self.dry_run:
             return
-        _, head = _run(["git", "rev-parse", "HEAD"], cwd=self.root)
-        events.append_event("task_done", task=task.id, commit=head.strip(), path=str(self.repo.events))
+        events.append_event("task_done", task=task.id, commit=self.ws.head(), path=str(self.repo.events))
 
     # -- main loop --
 
@@ -729,7 +728,7 @@ class Orchestrator:
         for task in tasks:
             self._set_status(task.id, "in_progress")
             print(f"  [serial] {task.id} {task.title}")
-            pre_head = "" if self.dry_run else _run(["git", "rev-parse", "HEAD"], cwd=self.root)[1].strip()
+            pre_head = "" if self.dry_run else self.ws.head()
             ok, log = self._run_task_to_done(task, cwd=self.root)
             if not ok:
                 self._set_status(task.id, "blocked")
@@ -877,8 +876,7 @@ class Orchestrator:
                 "post-build security review is OFF (build.post_build.security_review: false) — "
                 "run /security-review by hand before approving gate ④."
             )
-        _, out = _run(["git", "rev-parse", "HEAD"], cwd=self.root)
-        head = out.strip()
+        head = self.ws.head()
         if head and self._reviewed_head() == head:
             return f"already reviewed at current HEAD — report: {SECURITY_REVIEW_PATH} (Reviewed-HEAD {head[:12]})"
         rc, out = _run(
