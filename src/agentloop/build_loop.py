@@ -43,7 +43,7 @@ from typing import Any
 
 import yaml
 
-from agentloop import build_prompts, common, dag, events, gate_guard
+from agentloop import build_git, build_prompts, common, dag, events, gate_guard
 from agentloop import repo as repo_mod
 
 logger = logging.getLogger(__name__)
@@ -302,6 +302,13 @@ _FAILURE_MAX_LINES = common._FAILURE_MAX_LINES
 _run = common.run
 
 
+def _late_run(cmd: list[str], cwd: str | None = None, timeout: float | None = None) -> tuple[int, str]:
+    """Late-binding indirection to `_run`: resolved from this module's globals at call time, so a
+    test patching build_loop._run reaches the injected GitWorkspace runner too — regardless of
+    whether the patch lands before or after the Orchestrator is constructed."""
+    return _run(cmd, cwd, timeout)
+
+
 # --- scheduling (pure, under test) ------------------------------------------
 
 
@@ -335,6 +342,15 @@ class Orchestrator:
         self.root = str(self.repo.root)
         self.front = read_frontmatter(str(self.repo.state))
         self.branch = work_branch(self.front, self.root)
+        # The git/worktree layer (build_git.py); the runner is late-bound through _run above.
+        self.ws = build_git.GitWorkspace(
+            self.repo,
+            self.branch,
+            dry_run=dry_run,
+            worktree_dir=config.worktree_dir,
+            branch_pattern=config.branch_pattern,
+            run=_late_run,
+        )
         # Dry-run status overlay: the simulated statuses live here instead of tasks.yaml, so the
         # loop can progress to completion while the run stays strictly read-only.
         self._sim_status: dict[str, str] = {}
@@ -406,9 +422,7 @@ class Orchestrator:
         return build_prompts.review_prompt(task, gate_cmds=self.config.gate_cmds)
 
     def _tree_state(self, cwd: str) -> tuple[str, str]:
-        _, head = _run(["git", "rev-parse", "HEAD"], cwd=cwd)
-        _, dirty = _run(["git", "status", "--porcelain"], cwd=cwd)
-        return head.strip(), dirty.strip()
+        return self.ws.tree_state(cwd)
 
     def _run_agent_step(self, task: dag.Task, cwd: str) -> bool:
         """Run the review+simplify agent step headless. Returns True if it changed the tree."""
@@ -536,19 +550,13 @@ class Orchestrator:
     # -- worktree / merge --
 
     def _git(self, args: list[str], cwd: str | None = None) -> None:
-        cwd = cwd or self.root
-        if self.dry_run:
-            print(f"    [dry-run] git {' '.join(args)} (cwd={cwd})")
-            return
-        rc, out = _run(["git", *args], cwd=cwd)
-        if rc != 0:
-            raise StopLoop(f"git {' '.join(args)} failed (rc={rc})\n{out[-1000:]}")
+        self.ws.git(args, cwd)
 
     def _branch_for(self, task: dag.Task) -> str:
-        return self.config.branch_pattern.format(branch=self.branch, task_id=task.id)
+        return self.ws.branch_for(task.id)
 
     def _worktree_path(self, task: dag.Task) -> str:
-        return str(self.repo.path(self.config.worktree_dir) / task.id)
+        return self.ws.worktree_path(task.id)
 
     def _add_worktree(self, task: dag.Task) -> str:
         """Create a worktree for a leaf task and return the branch name. Clean up any existing one first.
@@ -616,45 +624,7 @@ class Orchestrator:
             return False, str(exc)
 
     def _finalize_commit(self, cwd: str, message: str) -> bool:
-        """Commit any outstanding diff in `cwd` (excluding .agentloop/) — a no-op on a clean tree.
-
-        The implementer is instructed to commit, but an uncommitted tree must never be the only
-        copy: a leaf's worktree is removed with --force after the merge (or when blocked), and only
-        what is on the branch survives. Finalizing here makes the branch the complete record.
-
-        Returns False (after escalating) when a dirty tree could not be committed — a real failure
-        (unset git identity, index lock, disk full) is the precursor of data loss, so the caller
-        must keep the tree/worktree intact instead of removing it. The clean-tree no-op is decided
-        by `git status --porcelain` up front, which is what makes a non-zero commit rc a genuine
-        failure rather than "nothing to commit". The commit runs --no-verify: this is a
-        preservation commit, not a quality decision (the quality gate already ran), and a hook
-        rejection that silently drops the WIP would defeat its purpose. That also bypasses the
-        commit-stage gate guard — covered instead by the loop's own merge/finalize-stage check
-        (_gate_violations): everything a task changed is re-evaluated against the gate rules
-        before it merges into the work branch (leaf) or is marked done (serial), so a stray
-        out-of-scope edit escalates instead of landing silently in HEAD.
-        """
-        if self.dry_run:
-            return True
-        pathspec = [".", ":(exclude).agentloop"]
-        rc, out = _run(["git", "status", "--porcelain", "--", *pathspec], cwd=cwd)
-        if rc == 0 and not out.strip():
-            return True  # clean tree — nothing to preserve
-        if rc == 0:
-            rc, out = _run(["git", "add", "-A", "--", *pathspec], cwd=cwd)
-        if rc == 0:
-            rc, out = _run(["git", "commit", "--no-verify", "-m", message], cwd=cwd)
-        if rc != 0:
-            task_id = message.split(":", 1)[0]
-            log_escalation(
-                "blocked",
-                f"{task_id}: finalize commit failed in {cwd} (rc={rc}) — the uncommitted diff is "
-                f"preserved only in that tree, which is kept for manual recovery.\n"
-                f"{summarize_failure('git finalize commit', rc, out)}",
-                task=task_id,
-            )
-            return False
-        return True
+        return self.ws.finalize_commit(cwd, message)
 
     def _gate_violations(self, paths: list[str]) -> list[tuple[str, str]]:
         """Gate-guard verdict for each path; [(path, deny reason)] for the denied ones.
