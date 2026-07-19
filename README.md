@@ -142,6 +142,10 @@ agentloop install claude         # writes .claude/ wrappers + merges settings.js
 agentloop install copilot        # writes .github/ prompt/agent/hook wrappers
 ```
 
+Editor/agent integrations typically discover these command/prompt files only at session or
+editor start, so open a **new** session (or restart the editor) after running `agentloop
+install claude|copilot` — one already running won't pick up files added mid-session.
+
 `agentloop init` writes **only state**:
 
 - the SSOT trio (`state.md` / `config.yaml` / `tasks.yaml`, placeholder-filled) and the docs
@@ -302,6 +306,12 @@ SSOT). Writing issues is outward-facing, so the opt-in is the consent.
 - **"template placeholders"** — run `agentloop start` (or `agentloop init --name <product>`) first.
 - **`agentloop: command not found` in a hook** — install the CLI on PATH (`uv tool install
   git+<the agentloop repo>`); `agentloop doctor` FAILs when the hook binary is unresolvable.
+- **`/req` (or other phase commands) don't show up in your agent** — the agent surface is
+  opt-in and not run automatically by `agentloop start`/`init`: run `agentloop install
+  claude` (writes `.claude/commands/` + merges `.claude/settings.json`) or `agentloop install
+  copilot` (writes the `.github/` wrappers), matching whichever agent you use. These are
+  typically discovered only at session/editor start, so also open a **new** session (or
+  restart the editor) afterward — one already running won't pick up files added mid-session.
 
 ## Repository layout
 

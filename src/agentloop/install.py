@@ -498,6 +498,8 @@ def install_integration(repo: repo_mod.Repo, name: str, *, force: bool = False, 
     data.setdefault("agentloop", {}).setdefault("version", agentloop.__version__)
     lock_mod.write(repo.lock, data)
     print(f"installed integration: {name} (recorded in {lock_mod.LOCK_NAME})")
+    print("  note          open a new session (or restart the editor) to pick up the new commands —")
+    print("                an already-running session won't see files added mid-session.")
     return 0
 
 
