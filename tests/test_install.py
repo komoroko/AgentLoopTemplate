@@ -173,6 +173,24 @@ def test_install_claude_writes_surfaces_and_merges_settings(repo: repo_mod.Repo)
     assert "settings" in data["integrations"]["claude"]
 
 
+def test_install_claude_skips_claude_md_when_rules_already_referenced(repo: repo_mod.Repo) -> None:
+    hand_written = "# Mine\nRead the rules in `.agentloop/AGENTS.agentloop.md`.\n"
+    repo.path("CLAUDE.md").write_text(hand_written, encoding="utf-8")
+    assert install.install_integration(repo, "claude") == 0
+    assert repo.path("CLAUDE.md").read_text(encoding="utf-8") == hand_written
+
+
+def test_install_claude_skips_claude_md_in_template_mode(
+    repo: repo_mod.Repo, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo.path(".agentloop/config.yaml").write_text("gates:\n  template_mode: true\n", encoding="utf-8")
+    mapping = "# Capability mapping\n@AGENTS.md\n"
+    repo.path("CLAUDE.md").write_text(mapping, encoding="utf-8")
+    assert install.install_integration(repo, "claude") == 0
+    assert repo.path("CLAUDE.md").read_text(encoding="utf-8") == mapping
+    assert "skip          CLAUDE.md" in capsys.readouterr().out
+
+
 def test_install_copilot_writes_the_github_surfaces(repo: repo_mod.Repo) -> None:
     assert install.install_integration(repo, "copilot") == 0
     assert repo.path(".github/prompts/req.prompt.md").is_file()
