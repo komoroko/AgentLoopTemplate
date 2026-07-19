@@ -5,6 +5,20 @@ upgrade` shows the sections between the installed version, recorded in
 `.agentloop/agentloop.lock`, and the new one). The version's single source is
 `pyproject.toml [project] version`.
 
+## [0.8.1] - 2026-07-19
+
+### Changed
+- **Agent docs carry only agent-facing text.** The maintainer-facing provenance notes (why
+  the `@AGENTS.md` import pattern, what `agentloop install` writes, who fixes renamed VS Code
+  tool identifiers) moved out of `CLAUDE.md` and the Copilot capability mapping
+  (`agentloop.instructions.md`) into the READMEs — files loaded into agent context every
+  session now spend their tokens on operating guidance only.
+- **READMEs deduplicated and restructured.** Explanations repeated across sections
+  (brownfield auto-detection, CLI install, `cycle-close`, `project add`) now live in one
+  place each with references; dense paragraphs (init's writes, the dashboard tour, the
+  security layers, the agent-support notes) became scannable lists; sections "Concept" and
+  "Layout" renamed to "How it works" and "Repository layout".
+
 ## [0.8.0] - 2026-07-19
 
 ### Added

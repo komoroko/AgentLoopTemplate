@@ -22,7 +22,6 @@ maps AGENTS.md's capability vocabulary onto VS Code Copilot mechanisms.
 | `command-preauthorization` | VS Code's tool-approval settings (allow the `agentloop <verb>` commands) |
 
 Notes:
-- `agentloop install copilot` writes this instruction file and the `.github/` prompt/agent/hook wrappers into a product repo; the `agentloop` CLI must be on PATH (`uv tool install git+<the agentloop repo>`).
 - **Headless mode A (`agentloop build`) requires a headless agent CLI** (installed and authenticated) — the orchestrator launches the command in `build.headless.cmd` (default `claude -p`; `codex exec` / `gemini -p` also work), so Copilot may invoke it too when such a CLI is present. Without one, run the interactive mode B in `/build`.
 - The gates' **mechanism layer** also runs under Copilot: `.github/hooks/agentloop.json` registers `agentloop guard` as a PreToolUse hook (VS Code agent hooks, preview), which denies edits to next-phase deliverables while the prerequisite gate is `pending`. VS Code may additionally parse `.claude/settings.json` and run the same guard twice — harmless (read-only, idempotent deny).
 - The security review before gate ④ / at `/verify`: Copilot has no `/security-review` command — perform an equivalent security-focused review pass and record it the same way (`.agentloop/security-review.md` with the reviewed HEAD hash, and the test plan's security column).
@@ -36,7 +35,3 @@ Notes:
 | WebSearch | (no built-in equivalent — omitted; role degrades to fetch-only research) |
 | Edit, Write | `edit` |
 | Bash | `runCommands` |
-
-VS Code tool identifiers are not versioned by this template — if an identifier is renamed
-upstream, fix it here and in `.github/agents/*.agent.md` only (the shared role bodies never
-name tools).

@@ -8,11 +8,12 @@ approve/decide at the "gate" on each phase boundary**.
 
 The harness is an **installed CLI** (`agentloop`); a product repository carries only its *state* —
 `.agentloop/` (the SSOT + lock + materialized prompts/schema) and `docs/` (deliverables).
+
 Works with **Claude Code** and **VS Code GitHub Copilot** (full support, incl. hook-enforced
 gates), and with **Codex** and any other agent that reads `AGENTS.md` (rules + procedures; gates
 by convention). See "Agent support".
 
-## Concept
+## How it works
 
 ```mermaid
 flowchart TD
@@ -61,15 +62,19 @@ flowchart TD
     linkStyle 18,19,20 stroke:#ee5544,color:#ee5544,stroke-width:1.5px;
 ```
 
-🟦 phases the agent runs / 🟧 gates ①–⑤ **only the human** opens / 🟩 points of human
-involvement / 🟪 tasks (a DAG: foundation → parallel leaves → integration). The flow moves top to
-bottom and **cannot advance while the prerequisite gate is unapproved**; `/build` consumes the
-task set in parallel (max 3). Red dotted lines = roll back upstream via `/revise` (resets the
-gates from the target onward to `pending` in a chain) — also at the human's discretion.
+- 🟦 phases the agent runs
+- 🟧 gates ①–⑤ — **only the human** opens them
+- 🟩 points of human involvement
+- 🟪 tasks — a DAG: foundation → parallel leaves → integration
+
+The flow moves top to bottom and **cannot advance while the prerequisite gate is unapproved**;
+`/build` consumes the task set in parallel (max 3). Red dotted lines = roll back upstream via
+`/revise` (resets the gates from the target onward to `pending` in a chain) — also at the
+human's discretion.
 
 ## Where to start
 
-Install the CLI once (`uv tool install git+<the agentloop repo>` puts `agentloop` on PATH), then:
+Install the CLI once (see "Setup"), then:
 
 | Your situation | Entry point |
 |---|---|
@@ -91,11 +96,10 @@ agentloop agent codex  # switch the headless agent CLI (claude | codex | gemini 
 agentloop project add  # register a repo the dashboard's project switcher can target
 ```
 
-Working across several repos? `agentloop project add <name> <path>` registers each one; the
-dashboard grows a **project switcher** (a dropdown in its header) that retargets the whole board
-without restarting the server, and `agentloop ui` always adds the repo you launched it from. Ad-hoc
-targeting stays available too — `agentloop --repo <path> <verb>` (or `AGENTLOOP_ROOT=<path>`) points
-any single command at another repo without changing directory.
+With several repos registered via `project add`, the dashboard grows a **project switcher** (a
+dropdown in its header) that retargets the whole board without restarting the server; `agentloop ui`
+always adds the repo you launched it from. For a single command, `agentloop --repo <path> <verb>`
+(or `AGENTLOOP_ROOT=<path>`) targets another repo without changing directory.
 
 ## Design principles
 
@@ -121,9 +125,7 @@ switch with `agentloop agent codex` (rewrites `build.headless.cmd` in `.agentloo
 `gemini` and custom commands work too). Without one, use interactive mode B (see "Agent support").
 
 Seed a repository — the same command for a **greenfield** and a **brownfield** repo (brownfield is
-auto-detected: existing code layouts scope `gates.guard_paths` to the docs deliverables only, so
-pending gates never freeze your existing code, and the test/check commands are detected from your
-tooling):
+auto-detected; see "Adopting into an existing repository"):
 
 ```bash
 cd myrepo && git init            # any repo — new or existing
@@ -140,18 +142,28 @@ agentloop install claude         # writes .claude/ wrappers + merges settings.js
 agentloop install copilot        # writes .github/ prompt/agent/hook wrappers
 ```
 
-`agentloop init` writes **only state**: the SSOT trio (`state.md` / `config.yaml` / `tasks.yaml`,
-placeholder-filled), the docs scaffolds, the materialized `.agentloop/prompts` + `.agentloop/schema`
-+ `.agentloop/AGENTS.agentloop.md`, a pristine scaffold snapshot, and `.agentloop/agentloop.lock`
-(the tool version/source + a content hash per installed file). It appends a marker-guarded pointer
-block to `AGENTS.md`, creates and switches to the work branch (implement there, not on main), and
-flips the gate guard live. Nothing else is touched: no build files, no makefile, no agent surfaces
-unless you `agentloop install` them. A brownfield repo also gets the `/onboard` hint.
+`agentloop init` writes **only state**:
 
-`agentloop sync` re-materializes the prompts/schema from the installed package (pristine files are
-refreshed; locally modified ones are kept and listed; `--force` overrides; `--check` reports drift
-without writing). `agentloop upgrade` shows the changelog transition and refreshes everything the
-tool materialized. Upgrading the *code* is `uv tool upgrade agentloop`.
+- the SSOT trio (`state.md` / `config.yaml` / `tasks.yaml`, placeholder-filled) and the docs
+  scaffolds;
+- the materialized `.agentloop/prompts` + `.agentloop/schema` + `.agentloop/AGENTS.agentloop.md`,
+  a pristine scaffold snapshot, and `.agentloop/agentloop.lock` (the tool version/source + a
+  content hash per installed file);
+- a marker-guarded pointer block appended to `AGENTS.md`;
+- the work branch, created and switched to (implement there, not on main), with the gate guard
+  flipped live.
+
+Nothing else is touched: no build files, no makefile, no agent surfaces unless you
+`agentloop install` them. A brownfield repo also gets the `/onboard` hint.
+
+Keeping the materialized files current:
+
+- `agentloop sync` — re-materializes the prompts/schema from the installed package (pristine files
+  are refreshed; locally modified ones are kept and listed; `--force` overrides; `--check` reports
+  drift without writing)
+- `agentloop upgrade` — shows the changelog transition, then refreshes everything the tool
+  materialized
+- `uv tool upgrade agentloop` — upgrades the CLI *code* itself
 
 ## Adopting into an existing repository (brownfield)
 
@@ -170,9 +182,9 @@ Existing files are **never overwritten** (idempotent re-runs). Then, inside the 
    persistent baseline). Existing behavior is **not** reverse-generated into requirements or done
    tasks; traceability (R-N) covers each cycle's delta only. Half-done work is anchored by an
    **absorb task** that pins the existing partial code green before new work stacks on it.
-2. **Delta cycles** — each `brief → /req → … → /verify` pass describes **one change** (same steps as
-   "Usage"). After the release decision, `agentloop cycle-close --name <slug>` archives the cycle's
-   docs and resets gates/phase. `docs/00-product-brief.md` and `docs/05-current-state.md` persist.
+2. **Delta cycles** — each `brief → /req → … → /verify` pass describes **one change**, closed with
+   `agentloop cycle-close` (same steps as "Usage"). `docs/00-product-brief.md` and
+   `docs/05-current-state.md` persist across cycles.
 3. **Retract any time** — `agentloop uninstall claude|copilot` retracts an agent surface (pristine
    files only; the settings merge is reverted entry-by-entry), and `agentloop uninstall --all`
    removes every materialized artifact and the lock. Your repo state (SSOT, `docs/`) is never
@@ -199,16 +211,17 @@ Existing files are **never overwritten** (idempotent re-runs). Then, inside the 
 4. **Roll back** on an upstream defect: `/revise <phase>` resets gates from the target onward and
    marks task impact (`agentloop revise --impacted T-00x` sets seeds and their transitive
    dependents to `needs-revision`).
-5. **Check progress** anytime: `agentloop next` prints just the next recommended command (`--json`
-   for integrations), `/status` gives the full picture in chat, and `agentloop ui` opens the
-   dashboard: an Overview board, a **Review tab** where the gate under decision is read and
-   approved in one pane (deliverables with their self-assessment pinned, gate ④'s diff and
-   security-review freshness), a Tasks tab (DAG, layer progress), and an Activity tab (live event
-   feed, operations). The page can notify you when a gate or escalation starts waiting (opt-in
-   bell; the tab title/favicon always show it). Actions stay a fixed whitelist — reads, fixed
-   diagnostics (doctor, tests), and decision recording (approve / resolve / revise / cycle-close);
-   phase execution and push/PR/merge are deliberately absent. Render the task dependency diagram
-   with `agentloop dag --mermaid`.
+5. **Check progress** anytime:
+   - `agentloop next` — just the next recommended command (`--json` for integrations)
+   - `/status` — the full picture in chat
+   - `agentloop ui` — the dashboard: an Overview board; a **Review tab** where the gate under
+     decision is read and approved in one pane (deliverables with their self-assessment pinned,
+     gate ④'s diff and security-review freshness); a Tasks tab (DAG, layer progress); an Activity
+     tab (live event feed, operations). The page can notify you when a gate or escalation starts
+     waiting (opt-in bell; the tab title/favicon always show it). Actions stay a fixed whitelist —
+     reads, fixed diagnostics (doctor, tests), and decision recording (approve / resolve / revise /
+     cycle-close); phase execution and push/PR/merge are deliberately absent.
+   - `agentloop dag --mermaid` — render the task dependency diagram
 6. **Ship as a PR**: `agentloop pr-draft` assembles the PR body from the SSOT into
    `.agentloop/pr-draft.md` (read-only); creating/pushing the PR stays yours.
 7. **Close the cycle** after gate ⑤: `agentloop cycle-close --name <slug>` archives to
@@ -254,10 +267,14 @@ Both share:
 
 ### Security review
 
-Three layers: **gitleaks** at pre-commit (false positives → `.gitleaksignore`) / a **security
-review** mandatory at implementation completion — mode A auto-runs it headless and binds the report
-to the reviewed HEAD in `.agentloop/security-review.md` / a **security review + a dependency audit**
-in `/verify`. An agent without `/security-review` does an equivalent pass, recorded the same way.
+Three layers:
+
+- **gitleaks** at pre-commit (false positives → `.gitleaksignore`)
+- a **security review**, mandatory at implementation completion — mode A auto-runs it headless and
+  binds the report to the reviewed HEAD in `.agentloop/security-review.md`
+- a **security review + a dependency audit** in `/verify`
+
+An agent without `/security-review` does an equivalent pass, recorded the same way.
 
 ### GitHub Issues integration (optional)
 
@@ -286,7 +303,7 @@ SSOT). Writing issues is outward-facing, so the opt-in is the consent.
 - **`agentloop: command not found` in a hook** — install the CLI on PATH (`uv tool install
   git+<the agentloop repo>`); `agentloop doctor` FAILs when the hook binary is unresolvable.
 
-## Layout
+## Repository layout
 
 | Path | Role |
 |------|------|
@@ -298,7 +315,7 @@ SSOT). Writing issues is outward-facing, so the opt-in is the consent.
 | `.agentloop/schema/` | JSON Schemas for `config.yaml` / `tasks.yaml` (editor validation; `agentloop doctor`) — materialized |
 | `.agentloop/prompts/` | the shared phase procedures and role definitions every agent reads — materialized |
 | `.agentloop/AGENTS.agentloop.md` | the operating-rules body, imported by the agent surfaces — materialized |
-| `AGENTS.md` / `CLAUDE.md` | the agent-neutral operating rules / the Claude Code capability mapping |
+| `AGENTS.md` / `CLAUDE.md` | the agent-neutral operating rules / the Claude Code capability mapping (Claude Code reads CLAUDE.md, not AGENTS.md; its `@AGENTS.md` import loads the rules exactly once. `agentloop install claude` writes the mapping block and the `.claude/` wrappers into a product repo) |
 | `.claude/`, `.github/` | per-agent entry points, role wrappers, and gate-guard hook registration (opt-in via `agentloop install`) |
 | `docs/` | phase deliverables (requirements, design, ADR, task tickets, test plan) |
 
@@ -319,8 +336,12 @@ The rules (`AGENTS.md`) and procedures (`.agentloop/prompts/`) name human-intera
 | autonomous build | `/loop /build` (B) · `agentloop build` (A) | re-invoke `/build` (B) · `agentloop build` (A) | re-run `/build` (B) · `agentloop build` (A) |
 | pending-gate notification | PushNotification | end of turn | end of turn |
 
-Agent surfaces are opt-in — `agentloop install claude|copilot` writes them, and they invoke the
-installed `agentloop` CLI (so `uv tool install` is a prerequisite of the hooks). Agent hooks in VS
-Code Copilot are a **preview** feature — if off, the gates still hold by convention. Parallel leaf
-tasks degrade to serial where delegation isn't available. `agentloop doctor` reports which hook
-hosts are registered.
+- Agent surfaces are opt-in — `agentloop install claude|copilot` writes them, and they invoke the
+  installed `agentloop` CLI (so `uv tool install` is a prerequisite of the hooks).
+- Agent hooks in VS Code Copilot are a **preview** feature — if off, the gates still hold by
+  convention.
+- Parallel leaf tasks degrade to serial where delegation isn't available. `agentloop doctor`
+  reports which hook hosts are registered.
+- For maintainers: VS Code tool identifiers are not versioned by the template — if one is renamed
+  upstream, fix the Copilot mapping's tool table and `.github/agents/*.agent.md` only (the shared
+  role bodies never name tools).
