@@ -5,7 +5,7 @@ upgrade` shows the sections between the installed version, recorded in
 `.agentloop/agentloop.lock`, and the new one). The version's single source is
 `pyproject.toml [project] version`.
 
-## [Unreleased]
+## [0.8.2] - 2026-07-20
 
 ### Added
 - **Stale integration surfaces are surfaced.** `sync` only refreshes the shared artifacts, so
