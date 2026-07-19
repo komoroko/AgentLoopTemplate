@@ -10,8 +10,8 @@ The harness is an **installed CLI** (`agentloop`); a product repository carries 
 `.agentloop/` (the SSOT + lock + materialized prompts/schema) and `docs/` (deliverables).
 
 Works with **Claude Code** and **VS Code GitHub Copilot** (full support, incl. hook-enforced
-gates), and with **Codex** and any other agent that reads `AGENTS.md` (rules + procedures; gates
-by convention). See "Agent support".
+gates — Copilot's hook mechanism is a VS Code preview feature), and with **Codex** and any other
+agent that reads `AGENTS.md` (rules + procedures; gates by convention). See "Agent support".
 
 ## How it works
 
@@ -144,7 +144,9 @@ agentloop install copilot        # writes .github/ prompt/agent/hook wrappers
 
 Editor/agent integrations typically discover these command/prompt files only at session or
 editor start, so open a **new** session (or restart the editor) after running `agentloop
-install claude|copilot` — one already running won't pick up files added mid-session.
+install claude|copilot` — one already running won't pick up files added mid-session. In that
+new session, start with **`/req`** (`agentloop next` always shows where you are and what to
+run — see "Usage").
 
 `agentloop init` writes **only state**:
 
@@ -348,8 +350,9 @@ The rules (`AGENTS.md`) and procedures (`.agentloop/prompts/`) name human-intera
 
 - Agent surfaces are opt-in — `agentloop install claude|copilot` writes them, and they invoke the
   installed `agentloop` CLI (so `uv tool install` is a prerequisite of the hooks).
-- Agent hooks in VS Code Copilot are a **preview** feature — if off, the gates still hold by
-  convention.
+- Agent hooks in VS Code Copilot are a **preview** feature (re-verified 2026-07 against VS Code
+  v1.110: still preview; the events and file format this repo uses are current) — if off, the
+  gates still hold by convention.
 - Parallel leaf tasks degrade to serial where delegation isn't available. `agentloop doctor`
   reports which hook hosts are registered.
 - For maintainers: VS Code tool identifiers are not versioned by the template — if one is renamed
