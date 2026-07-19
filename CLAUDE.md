@@ -17,7 +17,7 @@ this file's capability-mapping block and the `.claude/` wrappers into a product 
 | `notify-and-wait` | `PushNotification`, then end the turn |
 | `approval-presentation` | plan mode + `ExitPlanMode`; outside plan mode, present the summary and ask for an explicit "approve" |
 | `session-compaction` | `/compact` (human-run; the agent only suggests it) |
-| `role-delegation` | subagents in `.claude/agents/` (`requirements-analyst`, `architect`, `implementer`); parallel leaves use `isolation: "worktree"` |
+| `role-delegation` | subagents in `.claude/agents/` (`requirements-analyst`, `architect`, `implementer`, `adversarial-reviewer`); parallel leaves use `isolation: "worktree"` |
 | `autonomous-build-iteration` | `/loop /build` (mode B) — and headless mode A, `agentloop build`, which drives the CLI in `build.headless.cmd` (default `claude -p`) |
 | `command-preauthorization` | `permissions.allow` in `.claude/settings.json` |
 

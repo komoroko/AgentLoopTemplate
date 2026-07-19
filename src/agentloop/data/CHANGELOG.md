@@ -5,6 +5,22 @@ upgrade` shows the sections between the installed version, recorded in
 `.agentloop/agentloop.lock`, and the new one). The version's single source is
 `pyproject.toml [project] version`.
 
+## [0.8.0] - 2026-07-19
+
+### Added
+- **Adversarial review before gates ① and ②.** A new independent red-team role,
+  `adversarial-reviewer`, attacks the requirements/design deliverable in a fresh context
+  before the human sees it — fixed attack lenses (testability, ambiguity, missing failure
+  modes, hidden assumptions, contradictions, scope for requirements; coverage, failure-mode
+  walk, infeasibility, YAGNI, NFR holes, ADR balance for design), every finding backed by a
+  concrete counterexample. The producer's self-assessment has proven gameable (a `low`
+  confidence was once badged `high`); this adds a verifier that did not write the text.
+  Bounded by procedure: one round plus one re-check of blocker fixes, findings triaged
+  blocker/major/minor and recorded with dispositions (fixed / disputed / accepted-risk) in
+  the deliverable's new "Adversarial review" section, so the gate presentation shows the
+  human the critique and the responses together. No config knob; a hotfix minimal cycle may
+  be waived by the human, logged in `state.md`.
+
 ## [0.7.4] - 2026-07-19
 
 ### Added

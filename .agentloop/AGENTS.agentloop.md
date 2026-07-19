@@ -28,7 +28,7 @@ mechanism.
 | `notify-and-wait` | alert the human an approval/decision is pending, then stop | state what is pending and end the turn |
 | `approval-presentation` | present a deliverable for explicit human approval | show the summary and ask for an explicit "approve" |
 | `session-compaction` | human-run session compaction/reset at a checkpoint | the human starts a fresh session; the SSOT rehydrates |
-| `role-delegation` | delegate work to a role agent (`requirements-analyst` / `architect` / `implementer`) | adopt the role inline from `.agentloop/prompts/agents/<role>.md`, then return to the lead role; parallel leaves degrade to serial |
+| `role-delegation` | delegate work to a role agent (`requirements-analyst` / `architect` / `implementer` / `adversarial-reviewer`) | adopt the role inline from `.agentloop/prompts/agents/<role>.md`, then return to the lead role; parallel leaves degrade to serial |
 | `autonomous-build-iteration` | drive the /build loop without per-iteration human prompts | re-invoke the /build procedure each iteration |
 | `command-preauthorization` | pre-authorize known-safe commands so they don't re-prompt | approve each command interactively |
 
@@ -139,6 +139,12 @@ trade-offs**; and, when relevant, a **context-bloat signal** (propose trimming a
 deliverable or log). Do not pretend to high confidence to let the human skip verification.
 For requirements/design/task tickets, put it in the deliverable itself (each scaffold's
 "Self-assessment" section), not just spoken.
+
+Self-assessment alone is not independent verification: gates ① and ② additionally require one
+**adversarial-review round** by the `adversarial-reviewer` role (procedure: the req.md and
+design.md procedure files) — blockers resolved, findings and dispositions recorded in the
+deliverable's "Adversarial review" section. The human may waive it only for a hotfix minimal
+cycle, logged in `state.md`.
 
 ## Minimizing the approval-wait bottleneck
 
