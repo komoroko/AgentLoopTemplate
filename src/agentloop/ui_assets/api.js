@@ -4,8 +4,19 @@
 export const TOKEN = window.TOKEN;
 export const READ_ONLY = window.READ_ONLY;
 
-// The single mutable snapshot the views render from (app.js writes it on every poll).
-export const state = { data: null, lastPayload: "", lastGen: null };
+// The single mutable snapshot the views render from (app.js writes it when the poll brings a change).
+// `etag` is the server's identity for `data` — sent back as If-None-Match so an unchanged SSOT costs
+// a 304 and nothing else; clearing it forces the next poll to fetch a full payload.
+export const state = { data: null, etag: null, lastGen: null };
+
+// A supervised build is mostly waiting, and a backgrounded tab is nobody watching — poll it lazily.
+export const POLL_MS = 3000;
+export const POLL_HIDDEN_MS = 15000;
+export function pollDelay() { return document.hidden ? POLL_HIDDEN_MS : POLL_MS; }
+
+// Re-poll on the next tick regardless of what the server's ETag says (after a write, or when the
+// human asks for it explicitly) — the caller still has to trigger the poll itself.
+export function invalidate() { state.etag = null; }
 
 export const esc = s => String(s ?? "").replace(/[&<>"']/g,
   c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -39,7 +50,7 @@ export async function post(path, body) {
       out.textContent = JSON.stringify(data, null, 2);
       toast("✓ " + (data.gate ? ("gate " + data.gate + " approved") : "done"), "ok");
     }
-    state.lastPayload = "";  // force a re-render with the fresh state
+    invalidate();  // the action just moved the SSOT — take the next payload whatever the ETag says
     document.dispatchEvent(new CustomEvent("agentloop:refresh"));
   } catch (e) { out.textContent = "request failed: " + e; toast("request failed", "err"); }
 }

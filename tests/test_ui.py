@@ -126,6 +126,17 @@ def _request(
     return res.status, data
 
 
+def _get_conditional(srv: ui.DashboardServer, path: str, etag: str | None = None) -> tuple[int, str | None, bytes]:
+    """GET `path`, optionally with If-None-Match, returning (status, ETag, body)."""
+    conn = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=10)
+    headers = {"If-None-Match": etag} if etag is not None else {}
+    conn.request("GET", path, None, headers)
+    res = conn.getresponse()
+    data = res.read()
+    conn.close()
+    return res.status, res.getheader("ETag"), data
+
+
 def test_get_status_returns_next_command(server: ui.DashboardServer) -> None:
     status, data = _request(server, "GET", "/api/status")
     assert status == 200
@@ -148,7 +159,7 @@ def test_get_page_is_offline_self_contained(server: ui.DashboardServer) -> None:
         for url in re.findall(r'(?:src|href|from)\s*=?\s*"([^"]+)"', text):
             assert url.startswith(("/assets/", "#")), f"{name} references {url}"
     # the sections live in the page; their renderers and the theme machinery in the modules
-    for marker in ('id="stepper"', 'id="trace"', 'id="logs"', 'id="review"', 'id="tabs"', 'id="toasts"'):
+    for marker in ('id="stepper"', 'id="trace"', 'id="logs"', 'id="rvMain"', 'id="tabs"', 'id="toasts"'):
         assert marker in page, marker
     bundle = "".join(assets.values())
     for marker in ("buildDag", "showTaskDetail", "data-theme", "renderReview"):
@@ -295,6 +306,53 @@ def test_events_are_parsed_once_per_version_of_the_log(server: ui.DashboardServe
 
     missing = repo / ".agentloop" / "nope.ndjson"
     assert ui._load_events_cached(missing) == []  # same tolerance as load_events
+
+
+# --- /api/status conditional requests --------------------------------------------
+
+
+def test_status_etag_ignores_when_the_payload_was_generated(server: ui.DashboardServer) -> None:
+    # generated_at is a fresh wall-clock stamp on every call. If it counted towards the ETag, an
+    # idle repo would look like it changed on every poll — which is exactly the bug this closes.
+    status_a, etag_a, body_a = _get_conditional(server, "/api/status")
+    status_b, etag_b, body_b = _get_conditional(server, "/api/status")
+    assert status_a == status_b == 200
+    assert etag_a is not None and etag_a == etag_b
+    assert json.loads(body_a)["generated_at"] is not None  # still in the body: the page shows it
+    assert {k: v for k, v in json.loads(body_a).items() if k != "generated_at"} == {
+        k: v for k, v in json.loads(body_b).items() if k != "generated_at"
+    }
+
+
+def test_status_answers_304_for_a_matching_etag(server: ui.DashboardServer) -> None:
+    _, etag, _ = _get_conditional(server, "/api/status")
+    status, echoed, body = _get_conditional(server, "/api/status", etag)
+    assert status == 304
+    assert body == b""  # a 304 carries no body — that is the whole point of the round trip
+    assert echoed == etag
+
+
+def test_status_without_if_none_match_is_always_200(server: ui.DashboardServer) -> None:
+    assert _get_conditional(server, "/api/status")[0] == 200
+    assert _get_conditional(server, "/api/status", '"not-the-current-one"')[0] == 200
+
+
+def test_status_etag_changes_when_the_ssot_moves(server: ui.DashboardServer, repo: Path) -> None:
+    _, etag, _ = _get_conditional(server, "/api/status")
+    (repo / ".agentloop" / "state.md").write_text(_STATE.replace("requirements: pending", "requirements: approved"))
+    status, new_etag, body = _get_conditional(server, "/api/status", etag)
+    assert status == 200 and new_etag != etag
+    assert json.loads(body)["gates"][0]["status"] == "approved"
+
+
+def test_status_reads_the_event_log_through_the_cache(server: ui.DashboardServer, repo: Path) -> None:
+    # /api/status is the always-on poll; it used to re-parse the whole events.ndjson every few
+    # seconds while the cache served only the Activity feed. Same file version → same parsed list.
+    _seed_events(repo, count=5)
+    log = repo / ".agentloop" / "events.ndjson"
+    ui._events_cache = None  # empty the one slot, so what fills it can only be the request below
+    assert json.loads(_get_conditional(server, "/api/status")[2])["escalations"]["total_open"] == 1
+    assert ui._events_cache is not None and ui._events_cache[0][0] == str(log)
 
 
 # --- review endpoint ------------------------------------------------------------

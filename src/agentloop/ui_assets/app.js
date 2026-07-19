@@ -1,7 +1,7 @@
-// Entry module: hash-routed tabs, the 3-second status poll, theme, and the project switcher.
+// Entry module: hash-routed tabs, the status poll, theme, and the project switcher.
 // Rendering lives in the view-* modules; shared plumbing in api.js.
 
-import { READ_ONLY, TOKEN, awaitingGate, esc, state, toast } from "/assets/api.js";
+import { READ_ONLY, TOKEN, awaitingGate, esc, invalidate, pollDelay, state, toast } from "/assets/api.js";
 import { renderAttention, renderNext, renderStepper } from "/assets/view-overview.js";
 import { renderReview } from "/assets/view-review.js";
 import { renderTasks, renderTrace } from "/assets/view-tasks.js";
@@ -14,6 +14,18 @@ export function currentView() {
   const h = location.hash.replace("#", "");
   return VIEWS.includes(h) ? h : "overview";
 }
+// Only the visible tab is rendered. A poll used to rebuild all four (the DAG's SVG included) whether
+// or not anyone could see them; a hidden tab is caught up when it is opened, from the same snapshot.
+const RENDER = {
+  overview: d => { renderStepper(d); renderNext(d); renderAttention(d); },
+  review: () => renderReview(),  // reads the shared snapshot itself; nothing to pass
+  tasks: d => { renderTasks(d); renderTrace(d); },
+  activity: d => renderLogs(d),
+};
+function renderCurrent() {
+  if (state.data && !state.data.error) RENDER[currentView()](state.data);
+}
+
 function showView() {
   const v = currentView();
   VIEWS.forEach(name => {
@@ -21,6 +33,7 @@ function showView() {
     document.querySelector('#tabs a[data-view="' + name + '"]').classList.toggle("active", name === v);
   });
   document.dispatchEvent(new CustomEvent("agentloop:view", { detail: v }));
+  if (v !== "review") renderCurrent();  // the review pane fetches its own deliverables on entry
 }
 
 function updateReviewBadge(d) {
@@ -56,7 +69,7 @@ async function selectProject(name) {
     const d = await res.json();
     if (d.error) { toast(d.error, "err"); loadProjects(); return; }
     toast("→ " + name, "ok");
-    state.lastPayload = ""; await refresh(); loadProjects();
+    invalidate(); await refresh(); loadProjects();
   } catch (e) { toast("switch failed", "err"); }
 }
 
@@ -82,24 +95,29 @@ function tickAgo() {
   el.textContent = secs < 60 ? ("updated " + secs + "s ago") : ("updated " + Math.round(secs / 60) + "m ago");
 }
 
+// The server's ETag identifies the *state*, not the moment it was read, so an idle repo answers
+// 304 with an empty body: no transfer, no parse, and — crucially — no re-render. Every DOM node the
+// human is using (a selected task's detail, a half-typed ops field, the scroll inside a long patch)
+// survives for as long as the SSOT does not actually move.
 async function refresh() {
   const dot = document.getElementById("dot");
   try {
-    const res = await fetch("/api/status");
-    const text = await res.text();
+    const res = await fetch("/api/status", state.etag ? { headers: { "If-None-Match": state.etag } } : undefined);
     dot.classList.remove("off");
-    if (text === state.lastPayload) return;  // unchanged: skip the re-render (keeps inputs alive)
-    state.lastPayload = text;
-    const d = JSON.parse(text); state.data = d; state.lastGen = d.generated_at;
+    if (res.status === 304) {
+      state.lastGen = new Date().toISOString();  // the server just confirmed this snapshot is current
+      tickAgo();
+      return;
+    }
+    const d = await res.json();
+    state.etag = res.headers.get("ETag");
+    state.data = d; state.lastGen = d.generated_at;
     if (d.error) { document.getElementById("meta").textContent = "status error: " + d.error; return; }
     document.getElementById("meta").textContent =
       (d.project || "(no project)") + " · " + (d.branch || "-") + " · phase " + (d.current_phase || "-");
     updateReviewBadge(d);
     document.dispatchEvent(new CustomEvent("agentloop:status", { detail: d }));
-    renderStepper(d); renderNext(d); renderTasks(d); renderTrace(d); renderAttention(d);
-    renderLogs(d); renderReview(d);
-    const a = document.activeElement;  // don't clobber an ops input mid-typing
-    if (!(a && a.closest && a.closest("#ops") && a.tagName === "INPUT")) renderOps(d);
+    renderCurrent();
     tickAgo();
   } catch (e) {
     dot.classList.add("off");
@@ -107,13 +125,23 @@ async function refresh() {
   }
 }
 
+// Self-rescheduling rather than setInterval, so the delay can follow tab visibility.
+let pollTimer = null;
+function schedulePoll() {
+  clearTimeout(pollTimer);
+  pollTimer = setTimeout(async () => { await refresh(); schedulePoll(); }, pollDelay());
+}
+
 document.getElementById("themeBtn").onclick = toggleTheme;
-document.getElementById("refreshBtn").onclick = () => { state.lastPayload = ""; refresh(); };
+document.getElementById("refreshBtn").onclick = () => { invalidate(); refresh(); };
 document.getElementById("projectSelect").onchange = (e) => selectProject(e.target.value);
 document.addEventListener("agentloop:refresh", () => refresh());
 window.addEventListener("hashchange", showView);
+// Coming back to the tab should show current state at once, not after the lazy delay it was on.
+document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); schedulePoll(); });
+renderOps();  // static markup, no data of its own — drawn once, never rebuilt under the human
 showView();
 refresh();
 loadProjects();
-setInterval(refresh, 3000);
+schedulePoll();
 setInterval(tickAgo, 1000);
