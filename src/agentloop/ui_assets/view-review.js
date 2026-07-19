@@ -168,23 +168,34 @@ function barHtml() {
   }).join("") + "</div>";
 }
 
-function paint() {
-  const el = document.getElementById("review");
-  if (!state.data) { el.innerHTML = '<div class="empty">waiting for status…</div>'; return; }
-  if (!current) current = defaultGate();
-  let inner = barHtml();
-  if (review && review.error) inner += '<div class="warn">' + esc(review.error) + "</div>";
-  else if (!review || review.gate !== current) inner += '<div class="empty">loading…</div>';
-  else inner +=
-    '<div class="rv-grid"><aside class="rv-list">' + listHtml() + '</aside>' +
-    '<div class="rv-body">' + bodyHtml() + "</div></div>" +
-    '<div class="approvebar">' + footerHtml() + "</div>";
-  el.innerHTML = inner;
+// The pane is repainted in two grains. `paintChrome` (gate bar + approval footer) is cheap and
+// tracks the status poll, since the awaiting/approved marks move underneath the human. `paint`
+// additionally rebuilds the body, which holds the rendered deliverable or a patch up to 200KB —
+// doing that on every poll threw away the reader's scroll position every three seconds, so it now
+// happens only when the content itself can have changed: a fetch landing, a gate switch, or a
+// deliverable selection.
+function paintChrome() {
+  document.getElementById("rvBar").innerHTML = state.data ? barHtml() : "";
+  const foot = document.getElementById("rvFoot");
+  foot.innerHTML = (review && !review.error && review.gate === current)
+    ? '<div class="approvebar">' + footerHtml() + "</div>" : "";
 }
 
-// Status polls repaint cheaply (awaiting/approved may have moved); deliverables refetch only on
-// tab entry, gate switch, or after a POST — never on the 3-second poll. The one exception: when
-// the tab opened before the first status arrived, the first poll completes the deferred fetch.
+function paint() {
+  if (!current) current = defaultGate();
+  paintChrome();
+  const main = document.getElementById("rvMain");
+  if (!state.data) { main.innerHTML = '<div class="empty">waiting for status…</div>'; return; }
+  if (review && review.error) main.innerHTML = '<div class="warn">' + esc(review.error) + "</div>";
+  else if (!review || review.gate !== current) main.innerHTML = '<div class="empty">loading…</div>';
+  else main.innerHTML =
+    '<div class="rv-grid"><aside class="rv-list">' + listHtml() + '</aside>' +
+    '<div class="rv-body">' + bodyHtml() + "</div></div>";
+}
+
+// Status polls repaint only the chrome (awaiting/approved may have moved); deliverables refetch only
+// on tab entry, gate switch, or after a POST — never on the poll. The one exception: when the tab
+// opened before the first status arrived, the first poll completes the deferred fetch.
 export function renderReview() {
   if (!tabVisible) return;
   if (!review || reviewProject !== ((state.data || {}).project || null)) {
@@ -192,7 +203,7 @@ export function renderReview() {
     if (current) fetchReview();
     return;
   }
-  paint();
+  paintChrome();
 }
 
 document.addEventListener("agentloop:view", e => {

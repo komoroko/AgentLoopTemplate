@@ -19,6 +19,13 @@ cycle-close). The client only ever sends an action id and typed parameters; comm
 server-side, so arbitrary command execution is structurally impossible. Phase execution (/req …
 /build) and outward-facing operations (push / PR / merge) are deliberately absent.
 
+The page polls `/api/status` for the whole life of a supervised run, and a run is mostly waiting —
+so the endpoint answers `304 Not Modified` against an `ETag` taken over the payload *minus* its
+`generated_at` stamp. An unchanged SSOT therefore costs one empty round trip: nothing is
+transferred, nothing re-parsed, and the client re-renders nothing, so whatever the human has open
+(a task's detail, a half-typed field, the scroll inside a long patch) survives until the state
+actually moves. A backgrounded tab polls lazily.
+
 Safety layers: binds 127.0.0.1 by default, and a non-loopback bind with the write endpoints enabled
 requires an explicit `--allow-remote`; every POST requires the `X-AgentLoop-Token` header whose value
 is generated per server start and embedded only in the served page (a cross-origin page cannot set a
@@ -38,6 +45,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import os
@@ -80,17 +88,18 @@ _ASSET_TYPES = {
 }
 _LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
 
-# events.ndjson, parsed at most once per version of the file. The Activity feed polls every 3s
-# while it is open, and answering it means parsing the *whole* log (an escalation's open/closed
-# state depends on a `resolve` that may appear anywhere in it) to return the last 50 rows. Keyed
-# on the file's identity, so an append is picked up on the next poll and a stale entry cannot be
-# served. One slot: the dashboard reads one project at a time, and a project switch just re-reads.
+# events.ndjson, parsed at most once per version of the file. Both polled endpoints need the whole
+# log — an escalation's open/closed state depends on a `resolve` that may appear anywhere in it — so
+# /api/status (every poll, always) and the Activity feed (every poll while open) share this one
+# parse. Keyed on the file's identity, so an append is picked up on the next poll and a stale entry
+# cannot be served. One slot: the dashboard reads one project at a time, and a switch just re-reads.
 _events_cache: tuple[tuple[str, int, int], list[events_mod.Event]] | None = None
 _events_lock = threading.Lock()
 
 
-def _load_events_cached(path: Path) -> list[events_mod.Event]:
+def _load_events_cached(path: str | Path) -> list[events_mod.Event]:
     global _events_cache
+    path = Path(path)
     try:
         stat = path.stat()
         key = (str(path), stat.st_mtime_ns, stat.st_size)
@@ -103,6 +112,13 @@ def _load_events_cached(path: Path) -> list[events_mod.Event]:
     with _events_lock:
         _events_cache = (key, loaded)
     return loaded
+
+
+def _status_etag(status: dict[str, object]) -> str:
+    """A quoted ETag identifying the *state* a status payload describes, ignoring when it was read."""
+    identity = {k: v for k, v in status.items() if k != "generated_at"}
+    digest = hashlib.sha256(json.dumps(identity, ensure_ascii=False, sort_keys=True).encode("utf-8"))
+    return '"' + digest.hexdigest()[:16] + '"'
 
 
 class UiActionError(Exception):
@@ -198,11 +214,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: object) -> None:  # noqa: A002 - stdlib signature
         pass  # keep the terminal quiet; the page itself is the monitor
 
-    def _send(self, code: HTTPStatus, body: bytes, ctype: str) -> None:
+    def _send(self, code: HTTPStatus, body: bytes, ctype: str, *, etag: str | None = None) -> None:
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        if etag is not None:
+            self.send_header("ETag", etag)
         self.end_headers()
         self.wfile.write(body)
 
@@ -234,12 +252,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return
             self._send(HTTPStatus.OK, body, ctype)
         elif self.path == "/api/status":
-            status: dict[str, object]
-            try:
-                status = status_api.collect_status(self.server.active_root())
-            except Exception as exc:  # the dashboard must stay up even over a broken SSOT
-                status = {"error": f"{type(exc).__name__}: {exc}"}
-            self._send_json(HTTPStatus.OK, status)
+            self._send_status()
         elif self.path == "/api/projects":
             reg = self.server.registry()
             self._send_json(HTTPStatus.OK, {"projects": reg.entries(), "active": reg.active})
@@ -259,6 +272,33 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.OK, payload)
         else:
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
+
+    def _send_status(self) -> None:
+        """The status payload, with an ETag over everything *except* `generated_at`.
+
+        The dashboard polls this endpoint for the whole life of a supervised build, and a run is
+        mostly waiting: the SSOT is unchanged on the overwhelming majority of polls. `generated_at`
+        is a fresh wall-clock stamp every time, so it must stay out of the identity of the payload —
+        otherwise every poll looks like a change and the client re-renders the whole page over
+        state that did not move. It stays *in* the body (the page shows "updated Ns ago").
+
+        No browser cache is involved (`Cache-Control: no-store` stands): the client keeps the ETag
+        itself and sends it back as `If-None-Match`, which is why this works at all.
+        """
+        status: dict[str, object]
+        try:
+            status = status_api.collect_status(self.server.active_root(), events_loader=_load_events_cached)
+        except Exception as exc:  # the dashboard must stay up even over a broken SSOT
+            status = {"error": f"{type(exc).__name__}: {exc}"}
+        etag = _status_etag(status)
+        if self.headers.get("If-None-Match") == etag:
+            self.send_response(HTTPStatus.NOT_MODIFIED)
+            self.send_header("ETag", etag)
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()  # a 304 carries no body, and therefore no Content-Length
+            return
+        body = json.dumps(status, ensure_ascii=False).encode("utf-8")
+        self._send(HTTPStatus.OK, body, "application/json; charset=utf-8", etag=etag)
 
     def _send_events(self) -> None:
         """The tail of events.ndjson, newest first — the Activity feed watching a headless build.

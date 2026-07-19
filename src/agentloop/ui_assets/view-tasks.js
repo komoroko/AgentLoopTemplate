@@ -77,7 +77,7 @@ export function renderTasks(d) {
     : '<div class="empty">(no startable todo)</div>';
   el.innerHTML = pills + graph +
     '<div style="margin-top:.6rem;font-size:.72rem;color:var(--muted);font-weight:700">' +
-    "FRONTIER (optimal order)</div>" + frontier + '<div id="taskDetail"></div>';
+    "FRONTIER (optimal order)</div>" + frontier;  // #taskDetail lives outside #tasks (see index.html)
 }
 
 export function renderTrace(d) {
