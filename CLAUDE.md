@@ -1,10 +1,7 @@
 # AgentLoop — Claude Code capability mapping
 
-The operating rules live in `AGENTS.md` (the canonical, agent-neutral rules file) — imported below.
-This file only maps AGENTS.md's capability vocabulary onto Claude Code's mechanisms.
-(Claude Code reads CLAUDE.md, not AGENTS.md; the `@` import below loads the rules exactly once —
-the pattern the Claude Code docs recommend for AGENTS.md repos. `agentloop install claude` writes
-this file's capability-mapping block and the `.claude/` wrappers into a product repo.)
+The operating rules live in `AGENTS.md` — imported below. This file only maps their
+capability vocabulary onto Claude Code's mechanisms.
 
 @AGENTS.md
 
