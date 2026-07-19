@@ -55,6 +55,17 @@
 ## Open questions
 -
 
+## Adversarial review
+> Findings from the independent `adversarial-reviewer` round before gate ② (procedure: design.md step 6),
+> with the lead's disposition per finding. Blockers must be `fixed` or `disputed` (with the reason)
+> before the gate; the human sees this table — and settles any unresolved dispute — at gate ②.
+
+| ID | Severity (blocker/major/minor) | Finding (with counterexample) | Disposition (fixed / disputed: why / accepted-risk) |
+|----|--------------------------------|-------------------------------|-----------------------------------------------------|
+| AR-1 | | | |
+
+- Waived (hotfix minimal cycle only): <who / date / reason — also logged in state.md>
+
 ## Self-assessment (assumptions, confidence)
 > Communicated to the human at gate ② as AGENTS.md "Gate self-assessment". Do not hide low-confidence design spots.
 - **Assumptions made**: <assumptions taken as given about requirements, existing assets, technical choices>

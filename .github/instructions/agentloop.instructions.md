@@ -17,7 +17,7 @@ maps AGENTS.md's capability vocabulary onto VS Code Copilot mechanisms.
 | `notify-and-wait` | end the turn with an explicit "waiting on gate N approval" summary (there is no push channel) |
 | `approval-presentation` | present the summary in Plan mode or plain chat and ask for an explicit "approve" |
 | `session-compaction` | the human starts a new chat; the next command rehydrates from the SSOT (`.agentloop/state.md`, `tasks.yaml`, `docs/**`) |
-| `role-delegation` | custom agents `@requirements-analyst` / `@architect` / `@implementer` (`.github/agents/*.agent.md`); if delegation is unavailable, adopt the role inline per its file in `.agentloop/prompts/agents/` — parallel leaves degrade to serial |
+| `role-delegation` | custom agents `@requirements-analyst` / `@architect` / `@implementer` / `@adversarial-reviewer` (`.github/agents/*.agent.md`); if delegation is unavailable, adopt the role inline per its file in `.agentloop/prompts/agents/` — parallel leaves degrade to serial |
 | `autonomous-build-iteration` | re-invoke the `/build` prompt each iteration (no /loop equivalent); the lead re-enacts mode B by hand |
 | `command-preauthorization` | VS Code's tool-approval settings (allow the `agentloop <verb>` commands) |
 

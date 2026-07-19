@@ -3,31 +3,32 @@
 # upgrades never overwrite local edits. Do not edit by hand.
 version: 1
 agentloop:
-  version: 0.7.4
+  version: 0.8.0
   source: ''
 schema:
   config: 1
   tasks: 1
 prompts:
-  version: 0.7.4
+  version: 0.8.0
   files:
-    AGENTS.agentloop.md: sha256:446693db9d15f2c264208b33f3c9ac154910e23ca06a584e1175bae8ef8b7dbd
+    AGENTS.agentloop.md: sha256:d62cb664fc19ce0015eadf041715daa67a939fc71656a4fcc2dcd97300c5d8ec
     prompts/agents/architect.md: sha256:d36360652d81f2dcfae8861557cd49a679f2f29241551b13e4aa5364ffbf6479
     prompts/agents/implementer.md: sha256:8946f34cee40752191febba05f91d65dbbf71bfd00b664090344c70823baff1d
     prompts/agents/requirements-analyst.md: sha256:f856541626e80f3439a3681c70a9ab09f557b0e3dc5c4ddd229f214b5f8efab3
     prompts/commands/build.md: sha256:6820ac17594779f997435b2100fdb26e4fb3711d8887241da9a2f7aae1f6ba2c
-    prompts/commands/design.md: sha256:48b9e4be6782e2cdf7dbd65fbbcfb7d2b3581e1925fd906e5181d8d9cfde5777
+    prompts/commands/design.md: sha256:1a48c105402775f7920d0fa1551240f18690ec73461f3066db3f5cf1e7f9d81b
     prompts/commands/onboard.md: sha256:486c65a37d4740f53e638bea2b31a67a37f70b6f9a19a0176d519a8b769ce577
-    prompts/commands/req.md: sha256:5d4cfe09ffe4c4789efc3e6db7508a460720c780629ca0df39cc87b3974dc2d8
+    prompts/commands/req.md: sha256:be172c3de63963cc108bdeafb0c436688dc67abe0c8e56c17757af40e611d623
     prompts/commands/revise.md: sha256:739d875341ab5def2b790b46ab3f6f907c3d4b6f36d5d6f14fd0a45575db920a
     prompts/commands/status.md: sha256:559917b9892dbf8efe74dbc2bd7e575b8f4fe7360a7553b9fb6265e7653b2b95
     prompts/commands/tasks.md: sha256:37efd1c970aae25d552a51f40f4d552a91c6960be7a1034b12291ca7124388e8
     prompts/commands/verify.md: sha256:9fdca48ac3dd2bec0abe029a9edf60fe9485e5ee358fe652ffa3fe34cd345d3e
     schema/config.schema.json: sha256:7ab4d34fac29e12beec8dfd81e50f50df882701da7d4540e94c7c9ab63692e70
     schema/tasks.schema.json: sha256:9e45b44bfab0a319b6a263b0df58e475a4f838c6f37041039bb06ac8d268fb7b
+    prompts/agents/adversarial-reviewer.md: sha256:83ede40a7805c2e26b0fb40f22a7bb46b6df2ec59623d0b702cf53890ffc6f36
 integrations:
   claude:
-    version: 0.7.0
+    version: 0.8.0
     installed_at: '2026-07-14'
     files:
       .claude/agents/architect.md: sha256:85a1c85dfe17e29bb7ebf1cb88465c1b29663976d0441b74c6c8a196f9d5e389
@@ -41,6 +42,7 @@ integrations:
       .claude/commands/status.md: sha256:1e534f35381ecb24b64fc8e0a4a76cbf71b9559ee4f28f194170d6bd70aa9595
       .claude/commands/tasks.md: sha256:2d49586813f07aa949315ba737e492ba9f72ad97ea8632b2e5ed8742d0b39e1e
       .claude/commands/verify.md: sha256:7ef58fd59e7b6e741fe396985cf88b590c7ebcb62419156e4335cd01b24f58b2
+      .claude/agents/adversarial-reviewer.md: sha256:54ce2a34f66731f65023d08a2155bf3023d19ad6e6753e2d7f5c94ac3d9cd376
     settings:
       created: true
       permissions_allow:
@@ -87,14 +89,14 @@ integrations:
           - type: command
             command: agentloop guard
   copilot:
-    version: 0.7.0
+    version: 0.8.0
     installed_at: '2026-07-14'
     files:
       .github/agents/architect.agent.md: sha256:369c4ed04d39c7520e6bdd99677cd459dcb9b557dcd685090168f1adccf3f6de
       .github/agents/implementer.agent.md: sha256:72b023a6bc76d716f17f4d03bc8039bf676958494241bcbb88f35b3d899a7fac
       .github/agents/requirements-analyst.agent.md: sha256:df2935215e0abb20b74e8db9d03e17b67d8bd1bfe3278f0c7ae988e0e8838e40
       .github/hooks/agentloop.json: sha256:644d68ef30d12ed1a6995119a5f39234c6348012e9bf464f86ea79857109d4a3
-      .github/instructions/agentloop.instructions.md: sha256:b3ad87bc66237882a891350265d1611aa9425ba88e5880d0d183e748e28227fc
+      .github/instructions/agentloop.instructions.md: sha256:4da781f25d962558ab1a0ff5e7342f0fe69d0b431237144100dfe864c5947165
       .github/prompts/build.prompt.md: sha256:d04891c3c79c7623c585b0eb0d334517b657b8945d6eace2753eeb4ec780fb86
       .github/prompts/design.prompt.md: sha256:94779c23a76e2f1d2afab3e7d288b419b96e11116c75a03515644b45ae5f9c06
       .github/prompts/onboard.prompt.md: sha256:2b219934c99b09a95be9209114a8c563bc48e1e89b0b0a1a9f3adfca71c13b46
@@ -103,6 +105,7 @@ integrations:
       .github/prompts/status.prompt.md: sha256:bc5c496ae2026f8676c673ace44a6c364c2d2933a1a708aed5a1e4382ca8690b
       .github/prompts/tasks.prompt.md: sha256:9304f4d39e078203d09d217b0eddf464516c74eba93361dd545d8c8c579b5292
       .github/prompts/verify.prompt.md: sha256:3c2a69cbe70eeb9cceba3b62bb71b5382375b27acb880b61671b321664bc9739
+      .github/agents/adversarial-reviewer.agent.md: sha256:7df86df120533875f07af3fe855042788e056cf2c3d9d80a29f192054f2baee4
 seeded: {}
 created_at: '2026-07-14'
 updated_at: '2026-07-19'

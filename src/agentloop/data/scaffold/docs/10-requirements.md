@@ -58,6 +58,17 @@ dedicated design section or task is fine (the trace only WARNs) — but every NF
 <!-- Points to confirm with the human. Resolve before gate ①. -->
 -
 
+## Adversarial review
+> Findings from the independent `adversarial-reviewer` round before gate ① (procedure: req.md step 6),
+> with the lead's disposition per finding. Blockers must be `fixed` or `disputed` (with the reason)
+> before the gate; the human sees this table — and settles any unresolved dispute — at gate ①.
+
+| ID | Severity (blocker/major/minor) | Finding (with counterexample) | Disposition (fixed / disputed: why / accepted-risk) |
+|----|--------------------------------|-------------------------------|-----------------------------------------------------|
+| AR-1 | | | |
+
+- Waived (hotfix minimal cycle only): <who / date / reason — also logged in state.md>
+
 ## Self-assessment (assumptions, confidence)
 > Communicated to the human at gate ① as AGENTS.md "Gate self-assessment". Leave it here, not just spoken.
 - **Assumptions made**: <assumptions taken as given without confirming; points where, if wrong, the requirements break>
