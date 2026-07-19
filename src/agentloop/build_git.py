@@ -9,6 +9,8 @@ doctor/pr_draft already rely on (see build_loop's `_late_run`).
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Protocol
 
 from agentloop import common, events
@@ -71,6 +73,116 @@ class GitWorkspace:
         """The current HEAD hash ("" when unavailable)."""
         _, out = self._run(["git", "rev-parse", "HEAD"], cwd=cwd or self.root)
         return out.strip()
+
+    def add_worktree(self, task_id: str) -> str:
+        """Create a worktree for a leaf task and return the branch name. Clean up any existing one first.
+
+        To avoid .git index.lock contention, worktree creation must be called **serially on the main thread**.
+        """
+        branch = self.branch_for(task_id)
+        path = self.worktree_path(task_id)
+        if not self.dry_run:
+            self._salvage_leftovers(task_id, branch, path)
+        self.git(["worktree", "add", "-b", branch, path, self.branch])
+        return branch
+
+    def _salvage_name(self, branch: str) -> str:
+        """A free salvage-branch name: `<branch>-salvage-<UTC stamp>`, suffixed on collision."""
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        candidate = f"{branch}-salvage-{stamp}"
+        n = 1
+        while self._run(["git", "rev-parse", "--verify", "--quiet", candidate], cwd=self.root)[0] == 0:
+            n += 1
+            candidate = f"{branch}-salvage-{stamp}-{n}"
+        return candidate
+
+    def _salvage_leftovers(self, task_id: str, branch: str, path: str) -> None:
+        """Preserve, then clear, a previous run's leftover worktree/branch so `worktree add -b` can re-run.
+
+        The clean-up used to be unconditional (`worktree remove --force` + `branch -D`), which
+        destroyed a crashed run's committed work — and the branch cleanup_worktree deliberately
+        keeps for human inspection — the moment the loop was re-invoked. Nothing unmerged may be
+        the only copy: an uncommitted diff is finalized onto the leaf branch first (same principle
+        as finalize_commit's), and a branch holding commits the work branch does not have is
+        renamed to a salvage name instead of deleted (recorded as a branch_salvaged event). A
+        fully-merged branch is deleted as before — its content is already in the work branch.
+        """
+        if Path(path).is_dir() and not self.finalize_commit(path, f"{task_id}: WIP (salvaged at restart)"):
+            # The tree may hold the only copy of the previous run's diff — stop rather than destroy it
+            # (the finalize failure is already escalated with the repair pointer).
+            raise StopLoop(f"{task_id}: could not preserve the leftover worktree {path}; kept for manual recovery")
+        self._run(["git", "worktree", "remove", "--force", path], cwd=self.root)
+        if self._run(["git", "rev-parse", "--verify", "--quiet", branch], cwd=self.root)[0] == 0:
+            rc, out = self._run(["git", "rev-list", "-n", "1", branch, "--not", self.branch], cwd=self.root)
+            if rc != 0 or out.strip():  # unmerged commits — or unable to prove there are none
+                salvage = self._salvage_name(branch)
+                self.git(["branch", "-m", branch, salvage])
+                events.append_event(
+                    "branch_salvaged",
+                    task=task_id,
+                    detail=f"{branch} → {salvage} (unmerged work preserved at restart)",
+                    path=str(self.repo.events),
+                )
+                print(f"  [salvage] {task_id}: {branch} held unmerged work — renamed to {salvage}")
+            else:
+                self._run(["git", "branch", "-D", branch], cwd=self.root)
+        self._run(["git", "worktree", "prune"], cwd=self.root)
+
+    def cleanup_worktree(self, task_id: str) -> None:
+        """Remove a leaf's worktree without merging (blocked / merge conflict).
+
+        Blocked tasks leave the frontier, so the startup cleanup in add_worktree never reaches
+        their worktrees — without this they orphan under .worktrees/. The branch is kept: it holds
+        the diff a human needs to inspect or resolve, so any uncommitted leftovers are finalized
+        onto it first (otherwise the forced removal would silently drop them).
+        """
+        if self.dry_run:
+            return
+        if not self.finalize_commit(self.worktree_path(task_id), f"{task_id}: WIP (blocked)"):
+            return  # the worktree may hold the only copy of the diff — keep it rather than destroy it
+        self._run(["git", "worktree", "remove", "--force", self.worktree_path(task_id)], cwd=self.root)
+        self._run(["git", "worktree", "prune"], cwd=self.root)
+
+    def merge_leaf(self, task_id: str, branch: str) -> bool:
+        """Merge a leaf branch into work and remove the worktree. On a conflict, abort and return False."""
+        if self.dry_run:
+            print(f"    [dry-run] git merge --no-ff {branch} → {self.branch}, remove worktree")
+            return True
+        rc, out = self._run(["git", "merge", "--no-ff", "--no-edit", branch], cwd=self.root)
+        if rc != 0:
+            self._run(["git", "merge", "--abort"], cwd=self.root)
+            events.log_escalation(
+                "merge_conflict",
+                f"{task_id}: conflict merging into work. Manual resolution needed.\n{out[-500:]}",
+                task=task_id,
+                events_path=str(self.repo.events),
+                state_path=str(self.repo.state),
+            )
+            return False
+        self.git(["worktree", "remove", "--force", self.worktree_path(task_id)])
+        return True
+
+    def branch_changed_paths(self, branch: str) -> list[str]:
+        """Paths a leaf branch changed since it forked off the work branch (merge-base diff)."""
+        rc, out = self._run(["git", "diff", "--name-only", f"{self.branch}...{branch}"], cwd=self.root)
+        return [p for p in out.splitlines() if p.strip()] if rc == 0 else []
+
+    def changed_since(self, base: str) -> list[str]:
+        """Paths a serial task changed on the work branch: commits since `base` plus the dirty tree."""
+        paths: set[str] = set()
+        rc, out = self._run(["git", "diff", "--name-only", f"{base}..HEAD"], cwd=self.root)
+        if rc == 0:
+            paths.update(p for p in out.splitlines() if p.strip())
+        rc, out = self._run(["git", "status", "--porcelain", "-uall", "--", ".", ":(exclude).agentloop"], cwd=self.root)
+        if rc == 0:
+            for line in out.splitlines():
+                if len(line) < 4:
+                    continue
+                path = line[3:]
+                if " -> " in path:
+                    path = path.split(" -> ", 1)[1]
+                paths.add(path.strip('"'))
+        return sorted(paths)
 
     def finalize_commit(self, cwd: str, message: str) -> bool:
         """Commit any outstanding diff in `cwd` (excluding .agentloop/) — a no-op on a clean tree.
