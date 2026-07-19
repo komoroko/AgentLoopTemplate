@@ -387,6 +387,22 @@ def test_open_escalation_warns(project: Path) -> None:
     assert any("open escalation" in m and "#1 blocked(T-001)" in m for m in warns)
 
 
+def test_stale_integration_surfaces_warn(project: Path) -> None:
+    import agentloop
+    from agentloop import lock as lock_mod
+
+    lock_path = project / ".agentloop" / "agentloop.lock"
+    data = lock_mod.new(agentloop.__version__, "")
+    data["integrations"] = {"claude": {"version": "0.1.0", "files": {}}}
+    lock_mod.write(lock_path, data)
+    warns = _messages(doctor.run_checks(), "WARN")
+    assert any("agentloop install claude" in m for m in warns)
+    data["integrations"]["claude"]["version"] = agentloop.__version__
+    lock_mod.write(lock_path, data)
+    findings = doctor.run_checks()
+    assert _levels(findings, "integrations") == ["PASS"]
+
+
 def test_version_prefers_manifest_over_version_file(project: Path) -> None:
     (project / "VERSION").write_text("0.2.0\n", encoding="utf-8")
     assert any("template repo, VERSION 0.2.0" in m for m in _messages(doctor.run_checks(), "INFO"))
