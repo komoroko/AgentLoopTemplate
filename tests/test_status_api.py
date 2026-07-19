@@ -158,6 +158,22 @@ def test_collect_status_full_repo(repo: Path) -> None:
     json.dumps(status)  # the whole object must be JSON-serializable
 
 
+def test_next_hints_install_when_no_agent_surface(repo: Path) -> None:
+    import agentloop
+    from agentloop import lock as lock_mod
+
+    lock_path = repo / lock_mod.LOCK_NAME
+    data = lock_mod.new(agentloop.__version__, "")
+    lock_mod.write(lock_path, data)  # lock present, integrations empty → the /-command needs a surface
+    next_rec = status_api.collect_status(repo)["next"]
+    assert isinstance(next_rec, dict) and next_rec["command"] == "/build"
+    assert "agentloop install claude|copilot" in str(next_rec["reason"])
+    data["integrations"] = {"claude": {"version": agentloop.__version__, "files": {}}}
+    lock_mod.write(lock_path, data)
+    next_rec = status_api.collect_status(repo)["next"]
+    assert isinstance(next_rec, dict) and "agentloop install" not in str(next_rec["reason"])
+
+
 def test_collect_status_without_tasks_yaml(repo: Path) -> None:
     (repo / ".agentloop" / "tasks.yaml").unlink()
     status = status_api.collect_status(repo)

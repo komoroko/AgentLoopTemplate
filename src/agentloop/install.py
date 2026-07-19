@@ -458,6 +458,13 @@ def sync(repo: repo_mod.Repo, *, check: bool = False, force: bool = False) -> in
 # --- install / uninstall ----------------------------------------------------------
 
 
+def _template_mode(repo: repo_mod.Repo) -> bool:
+    """gates.template_mode from config.yaml (False when unreadable — products default off)."""
+    raw = common.read_yaml(str(repo.config))
+    gates = raw.get("gates") if isinstance(raw, dict) else None
+    return bool(gates.get("template_mode")) if isinstance(gates, dict) else False
+
+
 def _settings_template() -> dict[str, Any]:
     raw = data_mod.read_text("integrations/claude/settings.json")
     loaded = json.loads(raw)
@@ -527,10 +534,19 @@ def install_integration(repo: repo_mod.Repo, name: str, *, force: bool = False, 
         record["settings"] = {"created": created, **added}
         for note in notes:
             print(f"  settings      {note}")
-        # The rules import block (CLAUDE.md) — appended at most once (marker-guarded).
+        # The rules import block (CLAUDE.md) — appended at most once (marker-guarded), and only
+        # where it adds anything: a CLAUDE.md that already references the rules body carries its
+        # own wiring, and in template_mode the repo IS the template — its CLAUDE.md imports the
+        # rules via @AGENTS.md, so appending the block would double-load the same rules text.
         claude_md = repo.path("CLAUDE.md")
         text = claude_md.read_text(encoding="utf-8") if claude_md.is_file() else ""
-        if CLAUDE_IMPORT_MARKER not in text:
+        if CLAUDE_IMPORT_MARKER in text:
+            pass  # already installed (marker present)
+        elif AGENTLOOP_RULES_PATH in text:
+            print(f"  skip          CLAUDE.md (already references {AGENTLOOP_RULES_PATH})")
+        elif _template_mode(repo):
+            print("  skip          CLAUDE.md (gates.template_mode: the repo's own CLAUDE.md imports the rules)")
+        else:
             claude_md.write_text(text + claude_import_block(), encoding="utf-8")
             print("  merge         CLAUDE.md (capability mapping + rules @import appended)")
         if shutil.which("agentloop") is None:
@@ -545,6 +561,8 @@ def install_integration(repo: repo_mod.Repo, name: str, *, force: bool = False, 
     print(f"installed integration: {name} (recorded in {lock_mod.LOCK_NAME})")
     print("  note          open a new session (or restart the editor) to pick up the new commands —")
     print("                an already-running session won't see files added mid-session.")
+    print("  next          in that new session the phase commands (/req …) work; `agentloop next`")
+    print("                shows where you are and what to run.")
     return 0
 
 

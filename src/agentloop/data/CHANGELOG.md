@@ -5,6 +5,35 @@ upgrade` shows the sections between the installed version, recorded in
 `.agentloop/agentloop.lock`, and the new one). The version's single source is
 `pyproject.toml [project] version`.
 
+## [0.8.3] - 2026-07-20
+
+### Added
+- **The what-next chain from init to /req is closed.** `agentloop next`/`start` used to
+  recommend a /-command even in a repo with no agent surface installed (the exact
+  Troubleshooting miss): the recommendation now carries an install-first pointer when the lock
+  records no integration, `agentloop install` points onward to the new session, `/req`, and
+  `agentloop next`, and the READMEs' Setup path now reaches `/req` inline.
+
+### Fixed
+- **`agentloop install claude` no longer appends a duplicate rules block to CLAUDE.md.** A
+  CLAUDE.md that already references `.agentloop/AGENTS.agentloop.md` carries its own wiring,
+  and in `template_mode` the repo's CLAUDE.md imports the rules via `@AGENTS.md` — appending
+  the marker block there double-loaded the same rules text.
+
+### Changed
+- **The build-loop's git/worktree layer moved to `build_git.GitWorkspace`.** Isolation,
+  preservation, salvage, and merge mechanics now live in one module the Orchestrator drives
+  through thin delegates; the subprocess runner stays patchable at `build_loop._run` (now
+  late-bound, so patch order no longer matters). `StopLoop` and `summarize_failure` moved to
+  `common.py`, `log_escalation` to `events.py` (old names still importable from build_loop).
+- **dag.py split into model, render, and trace modules.** The graph model/validation/CLI stay
+  in `dag.py`; the /status text view and Mermaid output live in `dag_render.py`, the
+  requirements traceability check in `dag_trace.py`. Consumers keep addressing everything
+  through `dag.*` (lazy PEP 562 re-exports).
+- **The Copilot agent-hooks preview status is date-stamped.** Re-verified 2026-07 against
+  VS Code v1.110: still preview; the events and file format this repo uses are current. The
+  README front-page "full support" claim now carries the preview caveat.
+
 ## [0.8.2] - 2026-07-20
 
 ### Added

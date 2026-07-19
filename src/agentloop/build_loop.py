@@ -37,13 +37,13 @@ import re
 import shlex
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
-from datetime import date, datetime, timezone
+from datetime import date
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-from agentloop import build_prompts, common, dag, events, gate_guard
+from agentloop import build_git, build_prompts, common, dag, events, gate_guard
 from agentloop import repo as repo_mod
 
 logger = logging.getLogger(__name__)
@@ -58,12 +58,7 @@ LOCK_PATH = ".agentloop/build-loop.lock"
 SECURITY_REVIEW_PATH = ".agentloop/security-review.md"
 
 
-class StopLoop(Exception):
-    """A cause to stop the loop and escalate to the human. `code` is the exit code."""
-
-    def __init__(self, message: str, code: int = 1) -> None:
-        super().__init__(message)
-        self.code = code
+StopLoop = common.StopLoop
 
 
 @dataclass(frozen=True)
@@ -293,14 +288,10 @@ def update_state_view(graph: dag.Graph, path: str = STATE_PATH) -> bool:
     return True
 
 
-def log_escalation(
-    event: str, message: str, *, task: str = "", events_path: str = events.EVENTS_PATH, state_path: str = STATE_PATH
-) -> None:
-    """Record an escalation as a structured event (the machine-readable truth, see events.py),
-    refresh state.md's generated view, and echo it to stderr for the console."""
-    events.append_event(event, task=task, detail=message, path=events_path)
-    events.refresh_state_view(events_path, state_path)
-    logger.warning(f"[escalation] {message}")
+# Single definitions live in events.py / common.py; the old names stay importable from here.
+log_escalation = events.log_escalation
+summarize_failure = common.summarize_failure
+_FAILURE_MAX_LINES = common._FAILURE_MAX_LINES
 
 
 # --- subprocess -------------------------------------------------------------
@@ -311,64 +302,11 @@ def log_escalation(
 _run = common.run
 
 
-# --- failure summarization (retry-friendly, token-lean) ---------------------
-#
-# make test / make check can emit huge output (full tracebacks, every passing test line). Feeding that
-# raw into the implementer retry prompt / escalation log wastes tokens and buries the actionable lines,
-# so we keep only the salient lines and cap the size — the retry and the human escalation both get a
-# compact, actionable failure (retry-friendly error design) instead of a raw dump.
-
-# Match genuine failure/error/diagnostic lines across the pytest/ruff/mypy default stack and the documented
-# frontend (eslint/tsc), without pulling in passing-test noise. The markers are word-bounded so "error"/
-# "…Error" inside an identifier (e.g. a passing "test_error_handling" or "test_raises_ValueError PASSED")
-# is skipped, while a real exception line ("ValueError: msg") is kept via the colon-anchored branch.
-_SALIENT_RE = re.compile(
-    r"""
-      ^E\s                                                  # pytest assertion / exception detail ("E   " prefixed)
-    | ^=+.*\b(failed|error|passed|no\ tests\ ran)\b.*=+$    # pytest summary rule line
-    | \bFAILED\b                                            # pytest failure marker (summary or verbose inline)
-    | :\d+:\d+:\s                                           # ruff/mypy/eslint "file:line:col:" locations
-    | \(\d+,\d+\):\s                                        # tsc "file(line,col):" locations
-    | \berror\b                                             # error diagnostics (eslint/tsc/mypy), word-bounded
-    | \b\w*(?:Error|Exception):                             # exception line "ValueError: ..." (colon skips test names)
-    | ^Traceback\b                                          # traceback header
-    """,
-    re.IGNORECASE | re.VERBOSE,
-)
-
-_FAILURE_MAX_LINES = 40
-_FAILURE_MAX_CHARS = 1500
-
-
-def summarize_failure(cmd: str, rc: int, output: str) -> str:
-    """Reduce a quality-gate command's raw output to a compact, salient failure summary.
-
-    Keeps only the lines carrying the actionable signal (pytest FAILED / assertion lines, ruff/mypy
-    error locations, exception markers); when nothing matches, falls back to the non-empty tail (the
-    failure is usually last). Capped to a small line/char budget so retries and escalations stay
-    token-lean. Pure and deterministic — unit-tested in test_build_loop.py.
-    """
-    header = f"$ {cmd} (rc={rc})"
-    lines = output.splitlines()
-    salient = [ln for ln in lines if _SALIENT_RE.search(ln)]
-    if salient:
-        kept, note = salient, "salient lines only"
-    else:
-        kept, note = [ln for ln in lines if ln.strip()], "tail"
-    kept = kept[-_FAILURE_MAX_LINES:]
-    # Char-budget guard for pathological long lines: drop whole leading lines first so the disclosed
-    # omitted-count stays accurate, then keep the head of the remainder as a last resort (a single huge
-    # line) — the head holds the actionable "file:line:col: error:" prefix, not the trailing message text.
-    while len(kept) > 1 and len("\n".join(kept)) > _FAILURE_MAX_CHARS:
-        kept = kept[1:]
-    omitted = len(lines) - len(kept)
-    body = "\n".join(kept)[:_FAILURE_MAX_CHARS]
-    out_lines = [header]
-    if body and omitted > 0:  # a bare "N omitted" with no body (e.g. whitespace-only output) would confuse
-        out_lines.append(f"… ({omitted} line(s) omitted; kept {note})")
-    if body:
-        out_lines.append(body)
-    return "\n".join(out_lines)
+def _late_run(cmd: list[str], cwd: str | None = None, timeout: float | None = None) -> tuple[int, str]:
+    """Late-binding indirection to `_run`: resolved from this module's globals at call time, so a
+    test patching build_loop._run reaches the injected GitWorkspace runner too — regardless of
+    whether the patch lands before or after the Orchestrator is constructed."""
+    return _run(cmd, cwd, timeout)
 
 
 # --- scheduling (pure, under test) ------------------------------------------
@@ -404,6 +342,15 @@ class Orchestrator:
         self.root = str(self.repo.root)
         self.front = read_frontmatter(str(self.repo.state))
         self.branch = work_branch(self.front, self.root)
+        # The git/worktree layer (build_git.py); the runner is late-bound through _run above.
+        self.ws = build_git.GitWorkspace(
+            self.repo,
+            self.branch,
+            dry_run=dry_run,
+            worktree_dir=config.worktree_dir,
+            branch_pattern=config.branch_pattern,
+            run=_late_run,
+        )
         # Dry-run status overlay: the simulated statuses live here instead of tasks.yaml, so the
         # loop can progress to completion while the run stays strictly read-only.
         self._sim_status: dict[str, str] = {}
@@ -475,9 +422,7 @@ class Orchestrator:
         return build_prompts.review_prompt(task, gate_cmds=self.config.gate_cmds)
 
     def _tree_state(self, cwd: str) -> tuple[str, str]:
-        _, head = _run(["git", "rev-parse", "HEAD"], cwd=cwd)
-        _, dirty = _run(["git", "status", "--porcelain"], cwd=cwd)
-        return head.strip(), dirty.strip()
+        return self.ws.tree_state(cwd)
 
     def _run_agent_step(self, task: dag.Task, cwd: str) -> bool:
         """Run the review+simplify agent step headless. Returns True if it changed the tree."""
@@ -605,73 +550,16 @@ class Orchestrator:
     # -- worktree / merge --
 
     def _git(self, args: list[str], cwd: str | None = None) -> None:
-        cwd = cwd or self.root
-        if self.dry_run:
-            print(f"    [dry-run] git {' '.join(args)} (cwd={cwd})")
-            return
-        rc, out = _run(["git", *args], cwd=cwd)
-        if rc != 0:
-            raise StopLoop(f"git {' '.join(args)} failed (rc={rc})\n{out[-1000:]}")
+        self.ws.git(args, cwd)
 
     def _branch_for(self, task: dag.Task) -> str:
-        return self.config.branch_pattern.format(branch=self.branch, task_id=task.id)
+        return self.ws.branch_for(task.id)
 
     def _worktree_path(self, task: dag.Task) -> str:
-        return str(self.repo.path(self.config.worktree_dir) / task.id)
+        return self.ws.worktree_path(task.id)
 
     def _add_worktree(self, task: dag.Task) -> str:
-        """Create a worktree for a leaf task and return the branch name. Clean up any existing one first.
-
-        To avoid .git index.lock contention, worktree creation must be called **serially on the main thread**.
-        """
-        branch = self._branch_for(task)
-        path = self._worktree_path(task)
-        if not self.dry_run:
-            self._salvage_leftovers(task, branch, path)
-        self._git(["worktree", "add", "-b", branch, path, self.branch])
-        return branch
-
-    def _salvage_name(self, branch: str) -> str:
-        """A free salvage-branch name: `<branch>-salvage-<UTC stamp>`, suffixed on collision."""
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-        candidate = f"{branch}-salvage-{stamp}"
-        n = 1
-        while _run(["git", "rev-parse", "--verify", "--quiet", candidate], cwd=self.root)[0] == 0:
-            n += 1
-            candidate = f"{branch}-salvage-{stamp}-{n}"
-        return candidate
-
-    def _salvage_leftovers(self, task: dag.Task, branch: str, path: str) -> None:
-        """Preserve, then clear, a previous run's leftover worktree/branch so `worktree add -b` can re-run.
-
-        The clean-up used to be unconditional (`worktree remove --force` + `branch -D`), which
-        destroyed a crashed run's committed work — and the branch _cleanup_worktree deliberately
-        keeps for human inspection — the moment the loop was re-invoked. Nothing unmerged may be
-        the only copy: an uncommitted diff is finalized onto the leaf branch first (same principle
-        as _finalize_commit's), and a branch holding commits the work branch does not have is
-        renamed to a salvage name instead of deleted (recorded as a branch_salvaged event). A
-        fully-merged branch is deleted as before — its content is already in the work branch.
-        """
-        if Path(path).is_dir() and not self._finalize_commit(path, f"{task.id}: WIP (salvaged at restart)"):
-            # The tree may hold the only copy of the previous run's diff — stop rather than destroy it
-            # (the finalize failure is already escalated with the repair pointer).
-            raise StopLoop(f"{task.id}: could not preserve the leftover worktree {path}; kept for manual recovery")
-        _run(["git", "worktree", "remove", "--force", path], cwd=self.root)
-        if _run(["git", "rev-parse", "--verify", "--quiet", branch], cwd=self.root)[0] == 0:
-            rc, out = _run(["git", "rev-list", "-n", "1", branch, "--not", self.branch], cwd=self.root)
-            if rc != 0 or out.strip():  # unmerged commits — or unable to prove there are none
-                salvage = self._salvage_name(branch)
-                self._git(["branch", "-m", branch, salvage])
-                events.append_event(
-                    "branch_salvaged",
-                    task=task.id,
-                    detail=f"{branch} → {salvage} (unmerged work preserved at restart)",
-                    path=str(self.repo.events),
-                )
-                print(f"  [salvage] {task.id}: {branch} held unmerged work — renamed to {salvage}")
-            else:
-                _run(["git", "branch", "-D", branch], cwd=self.root)
-        _run(["git", "worktree", "prune"], cwd=self.root)
+        return self.ws.add_worktree(task.id)
 
     def _safe_run_task(self, task: dag.Task, cwd: str) -> tuple[bool, str]:
         """Call _run_task_to_done safely from a thread. Convert exceptions to (False, log).
@@ -685,45 +573,7 @@ class Orchestrator:
             return False, str(exc)
 
     def _finalize_commit(self, cwd: str, message: str) -> bool:
-        """Commit any outstanding diff in `cwd` (excluding .agentloop/) — a no-op on a clean tree.
-
-        The implementer is instructed to commit, but an uncommitted tree must never be the only
-        copy: a leaf's worktree is removed with --force after the merge (or when blocked), and only
-        what is on the branch survives. Finalizing here makes the branch the complete record.
-
-        Returns False (after escalating) when a dirty tree could not be committed — a real failure
-        (unset git identity, index lock, disk full) is the precursor of data loss, so the caller
-        must keep the tree/worktree intact instead of removing it. The clean-tree no-op is decided
-        by `git status --porcelain` up front, which is what makes a non-zero commit rc a genuine
-        failure rather than "nothing to commit". The commit runs --no-verify: this is a
-        preservation commit, not a quality decision (the quality gate already ran), and a hook
-        rejection that silently drops the WIP would defeat its purpose. That also bypasses the
-        commit-stage gate guard — covered instead by the loop's own merge/finalize-stage check
-        (_gate_violations): everything a task changed is re-evaluated against the gate rules
-        before it merges into the work branch (leaf) or is marked done (serial), so a stray
-        out-of-scope edit escalates instead of landing silently in HEAD.
-        """
-        if self.dry_run:
-            return True
-        pathspec = [".", ":(exclude).agentloop"]
-        rc, out = _run(["git", "status", "--porcelain", "--", *pathspec], cwd=cwd)
-        if rc == 0 and not out.strip():
-            return True  # clean tree — nothing to preserve
-        if rc == 0:
-            rc, out = _run(["git", "add", "-A", "--", *pathspec], cwd=cwd)
-        if rc == 0:
-            rc, out = _run(["git", "commit", "--no-verify", "-m", message], cwd=cwd)
-        if rc != 0:
-            task_id = message.split(":", 1)[0]
-            log_escalation(
-                "blocked",
-                f"{task_id}: finalize commit failed in {cwd} (rc={rc}) — the uncommitted diff is "
-                f"preserved only in that tree, which is kept for manual recovery.\n"
-                f"{summarize_failure('git finalize commit', rc, out)}",
-                task=task_id,
-            )
-            return False
-        return True
+        return self.ws.finalize_commit(cwd, message)
 
     def _gate_violations(self, paths: list[str]) -> list[tuple[str, str]]:
         """Gate-guard verdict for each path; [(path, deny reason)] for the denied ones.
@@ -739,26 +589,10 @@ class Orchestrator:
         return [(p, reason) for p, (ok, reason) in verdicts if not ok]
 
     def _branch_changed_paths(self, branch: str) -> list[str]:
-        """Paths a leaf branch changed since it forked off the work branch (merge-base diff)."""
-        rc, out = _run(["git", "diff", "--name-only", f"{self.branch}...{branch}"], cwd=self.root)
-        return [p for p in out.splitlines() if p.strip()] if rc == 0 else []
+        return self.ws.branch_changed_paths(branch)
 
     def _changed_since(self, base: str) -> list[str]:
-        """Paths a serial task changed on the work branch: commits since `base` plus the dirty tree."""
-        paths: set[str] = set()
-        rc, out = _run(["git", "diff", "--name-only", f"{base}..HEAD"], cwd=self.root)
-        if rc == 0:
-            paths.update(p for p in out.splitlines() if p.strip())
-        rc, out = _run(["git", "status", "--porcelain", "-uall", "--", ".", ":(exclude).agentloop"], cwd=self.root)
-        if rc == 0:
-            for line in out.splitlines():
-                if len(line) < 4:
-                    continue
-                path = line[3:]
-                if " -> " in path:
-                    path = path.split(" -> ", 1)[1]
-                paths.add(path.strip('"'))
-        return sorted(paths)
+        return self.ws.changed_since(base)
 
     def _escalate_gate_violation(self, task_id: str, where: str, violations: list[tuple[str, str]]) -> None:
         listing = "\n".join(f"  {p} — {reason}" for p, reason in violations)
@@ -770,38 +604,10 @@ class Orchestrator:
         )
 
     def _cleanup_worktree(self, task: dag.Task) -> None:
-        """Remove a leaf's worktree without merging (blocked / merge conflict).
-
-        Blocked tasks leave the frontier, so the startup cleanup in _add_worktree never reaches
-        their worktrees — without this they orphan under .worktrees/. The branch is kept: it holds
-        the diff a human needs to inspect or resolve, so any uncommitted leftovers are finalized
-        onto it first (otherwise the forced removal would silently drop them).
-        """
-        if self.dry_run:
-            return
-        if not self._finalize_commit(self._worktree_path(task), f"{task.id}: WIP (blocked)"):
-            return  # the worktree may hold the only copy of the diff — keep it rather than destroy it
-        _run(["git", "worktree", "remove", "--force", self._worktree_path(task)], cwd=self.root)
-        _run(["git", "worktree", "prune"], cwd=self.root)
+        self.ws.cleanup_worktree(task.id)
 
     def merge_leaf(self, task: dag.Task, branch: str) -> bool:
-        """Merge a leaf branch into work and remove the worktree. On a conflict, abort and return False."""
-        if self.dry_run:
-            print(f"    [dry-run] git merge --no-ff {branch} → {self.branch}, remove worktree")
-            return True
-        rc, out = _run(["git", "merge", "--no-ff", "--no-edit", branch], cwd=self.root)
-        if rc != 0:
-            _run(["git", "merge", "--abort"], cwd=self.root)
-            log_escalation(
-                "merge_conflict",
-                f"{task.id}: conflict merging into work. Manual resolution needed.\n{out[-500:]}",
-                task=task.id,
-                events_path=str(self.repo.events),
-                state_path=str(self.repo.state),
-            )
-            return False
-        self._git(["worktree", "remove", "--force", self._worktree_path(task)])
-        return True
+        return self.ws.merge_leaf(task.id, branch)
 
     def _log_task_done(self, task: dag.Task) -> None:
         """Record a task_done event carrying the work-branch commit that finalized the task.
@@ -811,8 +617,7 @@ class Orchestrator:
         """
         if self.dry_run:
             return
-        _, head = _run(["git", "rev-parse", "HEAD"], cwd=self.root)
-        events.append_event("task_done", task=task.id, commit=head.strip(), path=str(self.repo.events))
+        events.append_event("task_done", task=task.id, commit=self.ws.head(), path=str(self.repo.events))
 
     # -- main loop --
 
@@ -923,7 +728,7 @@ class Orchestrator:
         for task in tasks:
             self._set_status(task.id, "in_progress")
             print(f"  [serial] {task.id} {task.title}")
-            pre_head = "" if self.dry_run else _run(["git", "rev-parse", "HEAD"], cwd=self.root)[1].strip()
+            pre_head = "" if self.dry_run else self.ws.head()
             ok, log = self._run_task_to_done(task, cwd=self.root)
             if not ok:
                 self._set_status(task.id, "blocked")
@@ -1071,8 +876,7 @@ class Orchestrator:
                 "post-build security review is OFF (build.post_build.security_review: false) — "
                 "run /security-review by hand before approving gate ④."
             )
-        _, out = _run(["git", "rev-parse", "HEAD"], cwd=self.root)
-        head = out.strip()
+        head = self.ws.head()
         if head and self._reviewed_head() == head:
             return f"already reviewed at current HEAD — report: {SECURITY_REVIEW_PATH} (Reviewed-HEAD {head[:12]})"
         rc, out = _run(
