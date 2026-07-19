@@ -226,6 +226,16 @@ def render_summary(events: list[Event]) -> str:
     return "\n".join(lines)
 
 
+def log_escalation(
+    event: str, message: str, *, task: str = "", events_path: str = EVENTS_PATH, state_path: str = STATE_PATH
+) -> None:
+    """Record an escalation as a structured event (the machine-readable truth, see above),
+    refresh state.md's generated view, and echo it to stderr for the console."""
+    append_event(event, task=task, detail=message, path=events_path)
+    refresh_state_view(events_path, state_path)
+    logger.warning(f"[escalation] {message}")
+
+
 def refresh_state_view(path: str = EVENTS_PATH, state_path: str = STATE_PATH) -> bool:
     """Re-render state.md's generated escalation block (between the ESCALATION-VIEW markers).
 

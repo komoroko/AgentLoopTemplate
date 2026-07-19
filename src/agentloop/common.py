@@ -200,6 +200,66 @@ def set_updated_at(text: str, today: str) -> str:
     return pattern.sub(rf'\g<1>"{today}"', text)
 
 
+# --- failure summarization (retry-friendly, token-lean) ---------------------
+#
+# make test / make check can emit huge output (full tracebacks, every passing test line). Feeding that
+# raw into the implementer retry prompt / escalation log wastes tokens and buries the actionable lines,
+# so we keep only the salient lines and cap the size — the retry and the human escalation both get a
+# compact, actionable failure (retry-friendly error design) instead of a raw dump.
+
+# Match genuine failure/error/diagnostic lines across the pytest/ruff/mypy default stack and the documented
+# frontend (eslint/tsc), without pulling in passing-test noise. The markers are word-bounded so "error"/
+# "…Error" inside an identifier (e.g. a passing "test_error_handling" or "test_raises_ValueError PASSED")
+# is skipped, while a real exception line ("ValueError: msg") is kept via the colon-anchored branch.
+_SALIENT_RE = re.compile(
+    r"""
+      ^E\s                                                  # pytest assertion / exception detail ("E   " prefixed)
+    | ^=+.*\b(failed|error|passed|no\ tests\ ran)\b.*=+$    # pytest summary rule line
+    | \bFAILED\b                                            # pytest failure marker (summary or verbose inline)
+    | :\d+:\d+:\s                                           # ruff/mypy/eslint "file:line:col:" locations
+    | \(\d+,\d+\):\s                                        # tsc "file(line,col):" locations
+    | \berror\b                                             # error diagnostics (eslint/tsc/mypy), word-bounded
+    | \b\w*(?:Error|Exception):                             # exception line "ValueError: ..." (colon skips test names)
+    | ^Traceback\b                                          # traceback header
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+_FAILURE_MAX_LINES = 40
+_FAILURE_MAX_CHARS = 1500
+
+
+def summarize_failure(cmd: str, rc: int, output: str) -> str:
+    """Reduce a quality-gate command's raw output to a compact, salient failure summary.
+
+    Keeps only the lines carrying the actionable signal (pytest FAILED / assertion lines, ruff/mypy
+    error locations, exception markers); when nothing matches, falls back to the non-empty tail (the
+    failure is usually last). Capped to a small line/char budget so retries and escalations stay
+    token-lean. Pure and deterministic — unit-tested in test_build_loop.py.
+    """
+    header = f"$ {cmd} (rc={rc})"
+    lines = output.splitlines()
+    salient = [ln for ln in lines if _SALIENT_RE.search(ln)]
+    if salient:
+        kept, note = salient, "salient lines only"
+    else:
+        kept, note = [ln for ln in lines if ln.strip()], "tail"
+    kept = kept[-_FAILURE_MAX_LINES:]
+    # Char-budget guard for pathological long lines: drop whole leading lines first so the disclosed
+    # omitted-count stays accurate, then keep the head of the remainder as a last resort (a single huge
+    # line) — the head holds the actionable "file:line:col: error:" prefix, not the trailing message text.
+    while len(kept) > 1 and len("\n".join(kept)) > _FAILURE_MAX_CHARS:
+        kept = kept[1:]
+    omitted = len(lines) - len(kept)
+    body = "\n".join(kept)[:_FAILURE_MAX_CHARS]
+    out_lines = [header]
+    if body and omitted > 0:  # a bare "N omitted" with no body (e.g. whitespace-only output) would confuse
+        out_lines.append(f"… ({omitted} line(s) omitted; kept {note})")
+    if body:
+        out_lines.append(body)
+    return "\n".join(out_lines)
+
+
 class StopLoop(Exception):
     """A cause to stop the build loop and escalate to the human. `code` is the exit code.
 
