@@ -133,6 +133,32 @@ def test_sync_refreshes_a_pristine_file_deleted_locally(repo: repo_mod.Repo) -> 
     assert req.is_file()
 
 
+def test_stale_integrations_compares_versions_canonically() -> None:
+    data = {"integrations": {"claude": {"version": "0.8.0"}, "copilot": {"version": "0.8.1"}}}
+    assert install.stale_integrations(data, "0.8.1") == {"claude": "0.8.0"}
+    assert install.stale_integrations({}, "0.8.1") == {}
+    assert install.stale_integrations({"integrations": {"claude": {"version": "0.8.01"}}}, "0.8.1") == {}
+    assert install.stale_integrations({"integrations": {"claude": {}}}, "0.8.1") == {"claude": ""}
+
+
+def test_sync_flags_integration_surfaces_from_an_older_release(
+    repo: repo_mod.Repo, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert install.install_integration(repo, "claude") == 0
+    data = lock_mod.read(repo.lock)
+    assert data is not None
+    data["integrations"]["claude"]["version"] = "0.1.0"  # simulate surfaces from an older tool
+    lock_mod.write(repo.lock, data)
+    capsys.readouterr()
+    assert install.sync(repo, check=True) == 1
+    assert "agentloop install claude" in capsys.readouterr().out
+    assert install.sync(repo) == 0  # a plain sync still succeeds, but repeats the pointer
+    assert "agentloop install claude" in capsys.readouterr().out
+    assert install.install_integration(repo, "claude") == 0  # the pointed-at fix clears the skew
+    capsys.readouterr()
+    assert install.sync(repo, check=True) == 0
+
+
 def test_install_claude_writes_surfaces_and_merges_settings(repo: repo_mod.Repo) -> None:
     assert install.install_integration(repo, "claude") == 0
     assert repo.path(".claude/commands/req.md").is_file()

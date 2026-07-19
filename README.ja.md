@@ -145,6 +145,10 @@ agentloop install claude         # .claude/ のラッパーを書き、settings.
 agentloop install copilot        # .github/ に prompt / agent / hook のラッパーを書く
 ```
 
+エディタ／エージェントの統合は、多くの場合セッションやエディタの起動時にしかコマンド・プロンプトの
+ファイルを読み込まないので、`agentloop install claude|copilot` を実行したら**新しい**セッションを
+開く(またはエディタを再起動する)こと——起動済みのセッションは途中で追加されたファイルを拾わない。
+
 `agentloop init` が書き込むのは**状態だけ**である:
 
 - SSOT の3ファイル(`state.md` / `config.yaml` / `tasks.yaml`、プレースホルダ入り)と、docs の
@@ -312,6 +316,12 @@ CLI がない環境で使える唯一のモード。Claude Code は `/loop /buil
 - **フック実行時に `agentloop: command not found`** — CLI を PATH に入れる
   (`uv tool install git+<AgentLoop リポジトリ>`)。フックのバイナリが見つからない状態は
   `agentloop doctor` でも FAIL になる。
+- **`/req` などのフェーズコマンドが使っているエージェントに出てこない** — エージェントの入口は
+  任意で、`agentloop start`/`init` が自動で用意するわけではない。使っているエージェントに合わせて
+  `agentloop install claude`(`.claude/commands/` を書き、`.claude/settings.json` をマージ)や
+  `agentloop install copilot`(`.github/` 側のラッパーを書く)を実行すること。これらは多くの場合
+  セッションやエディタの起動時にしか読み込まれないので、実行後は**新しい**セッションを開く(または
+  エディタを再起動する)こと——起動済みのセッションは途中で追加されたファイルを拾わない。
 
 ## リポジトリ構成
 

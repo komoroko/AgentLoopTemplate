@@ -69,6 +69,29 @@ def test_project_passes_through_to_registry(monkeypatch: pytest.MonkeyPatch) -> 
     assert seen == [["add", "web", "/tmp/x"]]
 
 
+def test_verb_table_resolves_and_is_documented() -> None:
+    for verb, spec in cli.VERBS.items():
+        assert callable(cli._resolve(spec)), spec
+        assert verb in cli.HELP, verb
+
+
+def test_repo_flag_may_precede_the_verb(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(repo.parent)  # cwd is not a repo; only the global --repo points at one
+    assert cli.main(["--repo", str(repo), "next"]) == 0
+    assert capsys.readouterr().out.startswith("next: /build")
+
+
+def test_version_short_circuits_the_lock_check(chdir_tmp: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    (chdir_tmp / ".agentloop").mkdir()
+    (chdir_tmp / ".agentloop" / "agentloop.lock").write_text("version: 99\n", encoding="utf-8")
+    assert cli.main(["version"]) == 0  # identity must stay answerable under any lock
+    capsys.readouterr()
+    assert cli.main(["status"]) == 1  # every other verb hard-stops on a newer lock format
+    assert "upgrade the tool" in capsys.readouterr().err
+
+
 # --- start: wizard on a fresh copy, orientation afterwards -------------------------
 
 

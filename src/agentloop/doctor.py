@@ -492,6 +492,37 @@ def check_lock(repo: repo_mod.Repo) -> list[Finding]:
     return findings
 
 
+def check_integrations(repo: repo_mod.Repo) -> list[Finding]:
+    """Installed integration surfaces must come from the running tool release.
+
+    `sync` refreshes only the shared artifacts, so a repo can silently pair new prompts with
+    wrappers an older release wrote (`install`/`upgrade` are the only writers of those).
+    """
+    import agentloop
+
+    try:
+        data = lock.read(repo.lock)
+    except lock.LockError:
+        return []  # already FAILed by check_lock
+    if data is None:
+        return []
+    installed = data.get("integrations") if isinstance(data.get("integrations"), dict) else {}
+    if not installed:
+        return []
+    stale = install.stale_integrations(data, agentloop.__version__)
+    if not stale:
+        return [Finding("PASS", "integrations", f"surfaces current ({', '.join(sorted(installed))})")]
+    return [
+        Finding(
+            "WARN",
+            "integrations",
+            f"'{name}' surfaces were written by agentloop {recorded or '(unrecorded)'} "
+            f"(tool is {agentloop.__version__}) — re-run `agentloop install {name}` (or `agentloop upgrade`)",
+        )
+        for name, recorded in sorted(stale.items())
+    ]
+
+
 def check_version(repo: repo_mod.Repo) -> list[Finding]:
     """Which harness version this repo runs (identity only; upgrades are a human action)."""
     try:
@@ -534,6 +565,7 @@ def run_checks(repo: repo_mod.Repo | None = None) -> list[Finding]:
     findings += check_security_review(repo)
     findings += check_schema(repo)
     findings += check_lock(repo)
+    findings += check_integrations(repo)
     findings += check_version(repo)
     return findings
 

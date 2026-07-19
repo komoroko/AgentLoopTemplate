@@ -38,6 +38,8 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+from packaging.version import InvalidVersion, Version
+
 import agentloop
 from agentloop import common
 from agentloop import data as data_mod
@@ -369,6 +371,42 @@ def _lock_or_new(repo: repo_mod.Repo) -> dict[str, Any]:
     return data if data is not None else lock_mod.new(agentloop.__version__, "")
 
 
+def _versions_differ(recorded: str, running: str) -> bool:
+    """True when two version spellings denote different releases (canonical compare when possible)."""
+    if recorded == running:
+        return False
+    try:
+        return Version(recorded) != Version(running)
+    except InvalidVersion:
+        return True
+
+
+def stale_integrations(data: dict[str, Any], running_version: str) -> dict[str, str]:
+    """integration name → recorded version, for surfaces written by a different tool release.
+
+    `sync` refreshes only the shared artifacts; the per-agent surfaces stay at whatever
+    release last ran `install`/`upgrade`. Left unnoticed, a repo reads new prompts through
+    old wrappers — so sync/doctor surface this skew and point at the refresh command.
+    """
+    integrations = data.get("integrations")
+    if not isinstance(integrations, dict):
+        return {}
+    out: dict[str, str] = {}
+    for name, record in integrations.items():
+        recorded = str(record.get("version", "")) if isinstance(record, dict) else ""
+        if _versions_differ(recorded, running_version):
+            out[str(name)] = recorded
+    return out
+
+
+def _print_stale_integrations(stale: dict[str, str]) -> None:
+    for name, recorded in sorted(stale.items()):
+        print(
+            f"  stale         integration '{name}' surfaces were written by agentloop "
+            f"{recorded or '(unrecorded)'} — re-run `agentloop install {name}` (or `agentloop upgrade`)"
+        )
+
+
 # --- sync -----------------------------------------------------------------------
 
 
@@ -387,14 +425,20 @@ def sync(repo: repo_mod.Repo, *, check: bool = False, force: bool = False) -> in
     items = _plan(repo, desired, recorded, force)
 
     drift = [i for i in items if i.op != "unchanged"]
+    stale = stale_integrations(data, agentloop.__version__)
     if check:
-        if not drift:
+        if not drift and not stale:
             print(f"sync --check: {len(items)} materialized file(s) match the packaged payload.")
             return 0
         _print_plan(drift)
-        print(
-            f"sync --check: {len(drift)} file(s) differ from the packaged payload (agentloop {agentloop.__version__})."
-        )
+        _print_stale_integrations(stale)
+        if drift:
+            print(
+                f"sync --check: {len(drift)} file(s) differ from the packaged payload "
+                f"(agentloop {agentloop.__version__})."
+            )
+        if stale:
+            print(f"sync --check: {len(stale)} integration surface(s) predate agentloop {agentloop.__version__}.")
         return 1
 
     _print_plan(items)
@@ -407,6 +451,7 @@ def sync(repo: repo_mod.Repo, *, check: bool = False, force: bool = False) -> in
     skipped = sum(1 for i in items if i.op == "skip-modified")
     written = sum(1 for i in items if i.op in ("install", "update"))
     print(f"sync: {written} written, {skipped} kept (locally modified), {len(items) - written - skipped} unchanged.")
+    _print_stale_integrations(stale)
     return 0
 
 
@@ -498,6 +543,8 @@ def install_integration(repo: repo_mod.Repo, name: str, *, force: bool = False, 
     data.setdefault("agentloop", {}).setdefault("version", agentloop.__version__)
     lock_mod.write(repo.lock, data)
     print(f"installed integration: {name} (recorded in {lock_mod.LOCK_NAME})")
+    print("  note          open a new session (or restart the editor) to pick up the new commands —")
+    print("                an already-running session won't see files added mid-session.")
     return 0
 
 

@@ -5,6 +5,24 @@ upgrade` shows the sections between the installed version, recorded in
 `.agentloop/agentloop.lock`, and the new one). The version's single source is
 `pyproject.toml [project] version`.
 
+## [0.8.2] - 2026-07-20
+
+### Added
+- **Stale integration surfaces are surfaced.** `sync` only refreshes the shared artifacts, so
+  a repo could silently pair new prompts with `.claude/`/`.github/` wrappers an older release
+  wrote. `agentloop sync` now prints a pointer when an installed integration predates the
+  running tool, `sync --check` (the CI canary) fails on it, and `agentloop doctor` WARNs with
+  the fix command (`agentloop install <name>`, or `agentloop upgrade`).
+
+### Changed
+- **CLI verbs dispatch through one lazy table.** The dispatcher's if-chain (mixed eager/lazy
+  imports, special-cased `install` entry points) became a verb → entry-point table resolved
+  lazily per call; a test pins that every entry resolves and stays documented in `--help`.
+- **The headless prompts moved out of the build-loop Orchestrator.** The four agent prompts
+  (implementer, review step, integration fixer, security reviewer) now live in
+  `build_prompts.py` as pure functions; the Orchestrator keeps thin delegates. No wording
+  change.
+
 ## [0.8.1] - 2026-07-19
 
 ### Changed

@@ -16,16 +16,53 @@ tool warns toward `uv tool upgrade agentloop`; a newer lock *format* is a hard e
 
 from __future__ import annotations
 
+import importlib
 import logging
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import agentloop
-from agentloop import agent_cli, common, init_cmd, install, status_api, ui
+from agentloop import common
 from agentloop import lock as lock_mod
 from agentloop import repo as repo_mod
 
 logger = logging.getLogger(__name__)
+
+# verb → "module" or "module:function" (function defaults to `main`). Resolution is lazy and
+# happens per call, so a verb's module is only imported when invoked (and monkeypatching a
+# module's entry function in tests keeps working). `install` owns four verbs, hence its
+# per-verb `cmd_*` names; every single-verb module exposes `main(argv)`.
+VERBS: dict[str, str] = {
+    "status": "status_api",
+    "ui": "ui",
+    "agent": "agent_cli",
+    "project": "registry",
+    "init": "init_cmd",
+    "install": "install:cmd_install",
+    "uninstall": "install:cmd_uninstall",
+    "sync": "install:cmd_sync",
+    "upgrade": "install:cmd_upgrade",
+    "approve": "approve",
+    "revise": "revise",
+    "build": "build_loop",
+    "doctor": "doctor",
+    "events": "events",
+    "cycle-close": "cycle",
+    "issue-sync": "issue_sync",
+    "pr-draft": "pr_draft",
+    "guard": "gate_guard",
+    "dag": "dag",
+    "template-lint": "template_lint",
+}
+
+
+def _resolve(spec: str) -> Callable[[list[str] | None], int]:
+    mod_name, _, func = spec.partition(":")
+    module = importlib.import_module(f"agentloop.{mod_name}")
+    entry: Callable[[list[str] | None], int] = getattr(module, func or "main")
+    return entry
+
 
 HELP = """usage: agentloop [--repo PATH] <verb> [args]
 
@@ -62,6 +99,8 @@ operations:
 
 def _start(rest: list[str]) -> int:
     """First run → the init wizard; an initialized repo → a one-line where-you-are + what's next."""
+    from agentloop import init_cmd, status_api
+
     if rest:
         logger.error(f"agentloop start takes no arguments (got: {' '.join(rest)})")
         return 2
@@ -139,73 +178,12 @@ def main(argv: list[str] | None = None) -> int:
     if verb == "start":
         return _start(args[1:])
     if verb == "next":
-        return status_api.main(["--next", *rest])
-    if verb == "status":
-        return status_api.main(rest)
-    if verb == "ui":
-        return ui.main(rest)
-    if verb == "agent":
-        return agent_cli.main(rest)
-    if verb == "project":
-        from agentloop import registry
-
-        return registry.main(rest)
-    if verb == "init":
-        return init_cmd.main(rest)
-    if verb == "install":
-        return install.cmd_install(rest)
-    if verb == "uninstall":
-        return install.cmd_uninstall(rest)
-    if verb == "sync":
-        return install.cmd_sync(rest)
-    if verb == "upgrade":
-        return install.cmd_upgrade(rest)
-    if verb == "approve":
-        from agentloop import approve
-
-        return approve.main(rest)
-    if verb == "revise":
-        from agentloop import revise
-
-        return revise.main(rest)
-    if verb == "build":
-        from agentloop import build_loop
-
-        return build_loop.main(rest)
-    if verb == "doctor":
-        from agentloop import doctor
-
-        return doctor.main(rest)
-    if verb == "events":
-        from agentloop import events
-
-        return events.main(rest)
-    if verb == "cycle-close":
-        from agentloop import cycle
-
-        return cycle.main(rest)
-    if verb == "issue-sync":
-        from agentloop import issue_sync
-
-        return issue_sync.main(rest)
-    if verb == "pr-draft":
-        from agentloop import pr_draft
-
-        return pr_draft.main(rest)
-    if verb == "guard":
-        from agentloop import gate_guard
-
-        return gate_guard.main(rest)
-    if verb == "dag":
-        from agentloop import dag
-
-        return dag.main(rest)
-    if verb == "template-lint":
-        from agentloop import template_lint
-
-        return template_lint.main(rest)
-    logger.error(f"agentloop: unknown verb '{verb}' — run `agentloop --help` for the verb list")
-    return 2
+        return _resolve("status_api")(["--next", *rest])
+    spec = VERBS.get(verb)
+    if spec is None:
+        logger.error(f"agentloop: unknown verb '{verb}' — run `agentloop --help` for the verb list")
+        return 2
+    return _resolve(spec)(rest)
 
 
 if __name__ == "__main__":
