@@ -191,6 +191,14 @@ def test_install_claude_skips_claude_md_in_template_mode(
     assert "skip          CLAUDE.md" in capsys.readouterr().out
 
 
+def test_install_prints_the_new_session_and_next_pointers(
+    repo: repo_mod.Repo, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert install.install_integration(repo, "copilot") == 0
+    out = capsys.readouterr().out
+    assert "open a new session" in out and "agentloop next" in out
+
+
 def test_install_copilot_writes_the_github_surfaces(repo: repo_mod.Repo) -> None:
     assert install.install_integration(repo, "copilot") == 0
     assert repo.path(".github/prompts/req.prompt.md").is_file()

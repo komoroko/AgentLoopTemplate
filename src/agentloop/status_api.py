@@ -16,6 +16,7 @@ precisely when the state is odd).
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
@@ -26,6 +27,7 @@ import yaml
 
 from agentloop import common, dag, revise
 from agentloop import events as events_mod
+from agentloop import lock as lock_mod
 
 GATE_ORDER = common.GATE_ORDER
 PHASE_ORDER = common.PHASE_ORDER
@@ -51,6 +53,21 @@ class Recommendation:
     kind: str  # run_phase | approve_gate | reconcile | resolve | setup | close | fix
     reason: str
     also: tuple[str, ...] = ()
+
+
+def _no_agent_surface(root: Path) -> bool:
+    """True when the lock is readable and records no installed integration (agent surface).
+
+    A missing or broken lock stays False — pre-lock repos are legitimate, and this hint must
+    never turn a readable status into an error.
+    """
+    try:
+        data = lock_mod.read(root / lock_mod.LOCK_NAME)
+    except lock_mod.LockError:
+        return False
+    if data is None:
+        return False
+    return not (data.get("integrations") or {})
 
 
 def _is_placeholder(value: object) -> bool:
@@ -333,6 +350,16 @@ def collect_status(
         placeholders=_is_placeholder(front.get("project")) or _is_placeholder(front.get("branch")),
         has_adopt_manifest=(root / ".agentloop" / "adopt-manifest.yaml").exists(),
     )
+    # A /-command only exists inside an agent whose surface was installed; recommending one
+    # in a repo with no integration would send the user to a command their agent has never
+    # heard of (the exact Troubleshooting item), so close the chain here.
+    if recommendation.command.startswith("/") and _no_agent_surface(root):
+        recommendation = dataclasses.replace(
+            recommendation,
+            reason=recommendation.reason
+            + " (No agent surface is installed — run `agentloop install claude|copilot` first, then open a"
+            " new session so the /-commands exist in your agent.)",
+        )
 
     return {
         "project": front.get("project"),
