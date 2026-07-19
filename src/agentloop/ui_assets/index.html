@@ -30,10 +30,15 @@
     <section class="col-full"><h2>Needs attention</h2><div id="attention"></div></section>
   </div>
   <div class="view" id="view-review" style="display:none">
-    <section class="col-full"><h2>Gate review</h2><div id="review"></div></section>
+    <!-- Split three ways on purpose: a status poll repaints only the gate bar and the approval
+         footer, so the body keeps its scroll position while a long patch is being read. -->
+    <section class="col-full"><h2>Gate review</h2>
+      <div id="rvBar"></div><div id="rvMain"></div><div id="rvFoot"></div></section>
   </div>
   <div class="view" id="view-tasks" style="display:none">
-    <section class="col-full"><h2>Tasks</h2><div id="tasks"></div></section>
+    <section class="col-full"><h2>Tasks</h2><div id="tasks"></div>
+      <!-- outside #tasks: a re-render of the graph must not wipe the detail the human just opened -->
+      <div id="taskDetail"></div></section>
     <section class="col-full" id="traceSection" style="display:none"><h2>Traceability (requirements → tasks)</h2>
       <div id="trace"></div></section>
   </div>

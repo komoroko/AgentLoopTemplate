@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from agentloop import status_api
+from agentloop import events, status_api
 from tests._support import seed_repo
 
 # --- next_action: one test per decision-table row (first match wins) -----------
@@ -305,9 +305,39 @@ def test_logs_parses_both_tables(repo: Path) -> None:
     assert logs["rollback"] == [["2026-07-03", "design", "design, tasks, build, release", "rethink auth"]]
 
 
+def test_events_loader_is_injectable_and_defaults_to_load_events(repo: Path) -> None:
+    # The dashboard polls collect_status continuously and already caches the parsed log; without
+    # this seam every poll re-parsed the whole events.ndjson.
+    assert (status_api.collect_status.__kwdefaults__ or {})["events_loader"] is events.load_events
+    seen: list[str] = []
+
+    def fake(path: str) -> list[events.Event]:
+        seen.append(path)
+        return []
+
+    status_api.collect_status(repo, events_loader=fake)
+    assert seen == [str(repo / ".agentloop" / "events.ndjson")]
+
+
+def test_state_md_is_read_once_per_status(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The front matter and the two body log tables both come from state.md — one read serves both.
+    reads: list[str] = []
+    real = Path.read_text
+
+    def counting(self: Path, *args: object, **kwargs: object) -> str:
+        reads.append(str(self))
+        return real(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "read_text", counting)
+    status_api.collect_status(repo)
+    assert reads.count(str(repo / ".agentloop" / "state.md")) == 1
+
+
 def test_logs_skips_placeholder_and_missing(repo: Path) -> None:
-    # repo fixture's state.md has no log tables at all → both empty.
-    assert status_api._state_body_logs(repo) == {"speculative": [], "rollback": []}
+    # repo fixture's state.md has no log tables at all → both empty; an unreadable one likewise.
+    state_text = (repo / ".agentloop" / "state.md").read_text(encoding="utf-8")
+    assert status_api._state_body_logs(state_text) == {"speculative": [], "rollback": []}
+    assert status_api._state_body_logs(None) == {"speculative": [], "rollback": []}
     # header + separator + `_(…)_` placeholder row → nothing.
     section = status_api._section_table(
         "## Speculative work log\n| Date | X |\n|---|---|\n| _(append as needed)_ |\n", "Speculative work log"

@@ -2,7 +2,7 @@
 // operations console (kept away from the review flow — destructive actions live on this tab,
 // approval lives on the Review tab).
 
-import { READ_ONLY, esc, post, tableFrom } from "/assets/api.js";
+import { READ_ONLY, esc, pollDelay, post, tableFrom } from "/assets/api.js";
 
 // ---- event feed: polled only while this tab is visible ----
 const ESCALATION_KINDS = new Set(["blocked", "merge_conflict", "integration_red", "no_runnable", "gate_violation"]);
@@ -44,7 +44,11 @@ document.addEventListener("agentloop:view", e => {
   if (tabVisible) fetchEvents();
 });
 document.addEventListener("agentloop:refresh", () => { lastEvents = ""; if (tabVisible) fetchEvents(); });
-setInterval(() => { if (tabVisible) fetchEvents(); }, 3000);
+// Same visibility-aware pacing as the status poll (api.js pollDelay), so a backgrounded dashboard
+// does not keep two 3-second loops running against a repo nobody is looking at.
+(function pollEvents() {
+  setTimeout(() => { if (tabVisible) fetchEvents(); pollEvents(); }, pollDelay());
+})();
 
 export function resolveEsc(id) {
   const note = prompt("Resolution note for escalation #" + id + ":");
@@ -81,6 +85,8 @@ export function renderLogs(d) {
   document.getElementById("logs").innerHTML = html;
 }
 
+// Static markup with no data behind it — app.js draws it once at load. It used to be rebuilt on
+// every poll, which silently emptied a revise reason or cycle slug the moment the field lost focus.
 export function renderOps() {
   if (READ_ONLY) {
     document.getElementById("ops").innerHTML =

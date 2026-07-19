@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -262,9 +263,8 @@ def _section_table(text: str, heading: str) -> list[list[str]]:
     return rows
 
 
-def _state_body_logs(root: Path) -> dict[str, list[list[str]]]:
+def _state_body_logs(text: str | None) -> dict[str, list[list[str]]]:
     """The two hand-maintained state.md tables the dashboard mirrors: speculative work + roll-back history."""
-    text = _read_optional(root / ".agentloop" / "state.md")
     if text is None:
         return {"speculative": [], "rollback": []}
     return {
@@ -273,16 +273,29 @@ def _state_body_logs(root: Path) -> dict[str, list[list[str]]]:
     }
 
 
-def collect_status(root: str | Path = ".") -> dict[str, object]:
-    """Assemble the whole status object from the SSOT under `root`. Never raises for a readable repo."""
+def collect_status(
+    root: str | Path = ".",
+    *,
+    events_loader: Callable[[str], list[events_mod.Event]] = events_mod.load_events,
+) -> dict[str, object]:
+    """Assemble the whole status object from the SSOT under `root`. Never raises for a readable repo.
+
+    `events_loader` is a seam for callers that already cache the parsed log: the dashboard polls this
+    function every few seconds and would otherwise re-parse the whole events.ndjson each time.
+    """
     root = Path(root)
     warnings: list[str] = []
 
+    # state.md feeds both the front matter and the two body log tables — read it once for both.
+    state_text = _read_optional(root / ".agentloop" / "state.md")
     front: dict[str, object] = {}
-    try:
-        front = common.read_frontmatter(str(root / ".agentloop" / "state.md"))
-    except (OSError, yaml.YAMLError) as exc:
-        warnings.append(f"cannot read state.md front-matter: {exc}")
+    if state_text is None:
+        warnings.append("cannot read state.md front-matter: file is unreadable or absent")
+    else:
+        try:
+            front = common.parse_frontmatter(state_text) or {}
+        except yaml.YAMLError as exc:
+            warnings.append(f"cannot read state.md front-matter: {exc}")
     gates = common.gates_of(front) or {}
     current_phase = str(front.get("current_phase", ""))
 
@@ -308,7 +321,7 @@ def collect_status(root: str | Path = ".") -> dict[str, object]:
     except (dag.DagError, yaml.YAMLError) as exc:
         warnings.append(f"tasks.yaml is inconsistent: {exc}")
 
-    all_events = events_mod.load_events(str(root / ".agentloop" / "events.ndjson"))
+    all_events = events_loader(str(root / ".agentloop" / "events.ndjson"))
     opened = events_mod.open_escalations(all_events)
 
     recommendation = next_action(
@@ -335,7 +348,7 @@ def collect_status(root: str | Path = ".") -> dict[str, object]:
         "github_enabled": github_enabled,
         "tasks": tasks,
         "trace": trace,
-        "logs": _state_body_logs(root),
+        "logs": _state_body_logs(state_text),
         "escalations": {
             "open": [
                 {"id": e.id, "date": e.date, "event": e.event, "task": e.task, "step": e.step, "detail": e.detail}

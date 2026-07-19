@@ -38,9 +38,9 @@ function faviconColor(s) {
   return raw.trim();
 }
 
-// Only three distinct icons exist, but the status poll fires every 3 seconds for the whole life of
-// a supervised build — so repaint only when the colour actually changes. Otherwise each tick would
-// allocate a canvas, PNG-encode it, and hand the browser a fresh data: URI to decode.
+// Only three distinct icons exist, and they follow the loop's mood, not its detail — so repaint only
+// when the colour actually changes. Otherwise every status change (a task flipping to done, say)
+// would allocate a canvas, PNG-encode it, and hand the browser a fresh data: URI to decode.
 let lastColor = null;
 function favicon(s) {
   const color = faviconColor(s);
