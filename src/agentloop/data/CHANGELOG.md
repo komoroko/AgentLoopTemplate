@@ -5,7 +5,7 @@ upgrade` shows the sections between the installed version, recorded in
 `.agentloop/agentloop.lock`, and the new one). The version's single source is
 `pyproject.toml [project] version`.
 
-## [Unreleased]
+## [0.8.3] - 2026-07-20
 
 ### Added
 - **The what-next chain from init to /req is closed.** `agentloop next`/`start` used to
