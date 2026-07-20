@@ -42,12 +42,19 @@ upgrade` shows the sections between the installed version, recorded in
 - **The prompt layer restates AGENTS.md far less** (token-efficiency pass, adversarially
   reviewed). build.md narrates the consumption algorithm once for both modes; the
   "Once approved" / "While waiting" / self-assessment blocks in every phase procedure keep
-  only their load-bearing invariants plus an AGENTS.md section pointer; config.yaml's
-  comments compress to knob one-liners (1216 → 807 words) with the narrative delegated to
-  build.md; the state.md header shrinks so the SessionStart 20-line window shows more live
-  gate state; wrappers drop the repeated capability enumeration. The AGENTS.md core/module
-  split (the remaining ~2.5–3k tok always-on lever) is designed but deferred —
-  `docs/notes/agents-core-split.md`.
+  only their load-bearing invariants plus a rules-module pointer; config.yaml's comments
+  compress to knob one-liners (1216 → 807 words) with the narrative delegated to build.md;
+  the state.md header shrinks so the SessionStart 20-line window shows more live gate state;
+  wrappers drop the repeated capability enumeration.
+- **AGENTS.md splits into an always-on core plus a phase-scoped rules module.** The
+  always-loaded core (2,570 → 950 words) keeps only rules whose violation window is "any
+  time" — gate mechanics, branch/commit discipline, the capability vocabulary, the never-list
+  — while gate self-assessment, the adversarial-review/approval-wait conduct, the context-
+  budget tiers, cycle/hotfix mechanics, and the enforcement-layer detail move to
+  `.agentloop/prompts/rules/gate-workflow.md`, read by the phase commands that need it
+  (`/req` `/design` `/tasks` `/build` `/verify` `/onboard`; `/status` and `/revise` stay
+  core-only). A new template-lint canary (`check_rules_wiring`) guards against an orphaned
+  module or a stale reference. ~2.5–3k tok saved on every session.
 
 ## [0.8.3] - 2026-07-20
 

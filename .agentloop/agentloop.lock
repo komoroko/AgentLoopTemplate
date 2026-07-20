@@ -11,7 +11,7 @@ schema:
 prompts:
   version: 0.8.3
   files:
-    AGENTS.agentloop.md: sha256:aa98e9d08910ffd7d86bb860a4e0d6a269fe16f741a57371ed5e9a64e81dde95
+    AGENTS.agentloop.md: sha256:955c66dede137bdaafb26bb42386a9d321c6805a037fbf6e4a51cd1a7bc5dedc
     prompts/agents/architect.md: sha256:d36360652d81f2dcfae8861557cd49a679f2f29241551b13e4aa5364ffbf6479
     prompts/agents/implementer.md: sha256:99f58fc07f0ccf54fbedde9128b140a0d2ffe9b960eaf1c7a159ee572f39bce6
     prompts/agents/requirements-analyst.md: sha256:f856541626e80f3439a3681c70a9ab09f557b0e3dc5c4ddd229f214b5f8efab3
