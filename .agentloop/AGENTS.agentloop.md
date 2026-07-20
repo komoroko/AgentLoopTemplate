@@ -112,10 +112,10 @@ installed `agentloop guard` denies in code at three checkpoints — **edit-time*
 hook on deliverable writes), **commit-stage** (`agentloop guard --check-diff` in pre-commit
 / the quality gate), and **merge-stage** (`agentloop build` re-checks every path a task
 changed before it lands; violations escalate as `gate_violation`). Guarded paths:
-`gates.guard_paths`; unreadable gates **fail closed**. Rule 2 has its
-own mechanism layer: an edit that flips a state.md gate to `approved` is denied edit-time,
-and a commit-stage flip without a matching `gate_approved` event fails — `agentloop approve` is
-the only sanctioned write path (not relaxed by `template_mode`). Escape hatches:
+`gates.guard_paths`; unreadable gates **fail closed**. Rule 2's mechanism layer: a state.md
+gate-line flip to `approved` is denied edit-time, and commit-stage without a matching
+`gate_approved` event — `agentloop approve` is the only sanctioned write path (not relaxed by
+`template_mode`). Escape hatches:
 `gates.enforce_hook: false`; `gates.template_mode: true` while the repo IS the template.
 Detail: `gate_guard.py`'s docstring and the config comments.
 
@@ -249,8 +249,8 @@ recorded in `docs/test/test-plan.md`.
 commands cuts repeated prompts without touching the gates. The installed settings hold only
 **generic AgentLoop commands**; **product-specific** ones go in the product's own committed
 settings. Destructive / outward-facing actions (push, PR, merge, `agentloop cycle-close`) stay
-human-run — never pre-authorize them, and never pre-authorize `agentloop approve` either: its
-permission prompt is the human's approval confirmation (gate rule 2).
+human-run — never pre-authorize them, nor `agentloop approve` (gate rule 2: its permission
+prompt is the human's confirmation).
 
 ## Directories
 

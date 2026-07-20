@@ -14,21 +14,16 @@ You drive this project's requirements definition. **Human on the Loop**: you do 
 6. **Adversarial review** (required before gate ①): delegate to the `adversarial-reviewer` role (`role-delegation`) in a **fresh context — never the analyst that drafted** — with `docs/00-product-brief.md` and the written `docs/10-requirements.md` as its inputs. Record every finding in the `## Adversarial review` section of `10-requirements.md` with a disposition: `fixed` (the requirement text was updated), `disputed: <why>` (kept as-is, with the reason), or `accepted-risk`. **Every blocker must be resolved** (fixed or disputed-with-reason) before presenting the gate; re-invoke the reviewer once, on the blocker fixes only — no further rounds. Findings that need the human's judgment fold into the gate's single `structured-question` below. For a hotfix minimal cycle the human may waive this step; record the waiver in the `state.md` log.
 7. **Gate ①**: present the requirements summary as an **`approval-presentation`** and ask "may we freeze the requirements with this content?". Ask any accompanying confirmations **in a single `structured-question`**.
    - Present only when **no unresolved `[NEEDS CLARIFICATION]` marker remains** in `10-requirements.md`: anything deliberately left open is demoted to an explicit "Open questions" entry the human sees at the gate — never left as a stray marker or a silent assumption.
-   - **Always present a self-assessment as well** (AGENTS.md "Gate self-assessment"): assumptions made, per-requirement confidence (high/medium/low), open questions, anticipated risks, and a context-bloat signal when relevant. Also leave it in the "Self-assessment" section of `10-requirements.md`. Flag low-confidence requirements for the human's attention.
+   - **Always present a self-assessment as well** (contents: AGENTS.md "Gate self-assessment"); also leave it in the "Self-assessment" section of `10-requirements.md`, flagging low-confidence requirements for the human's attention.
    - **Also present the adversarial-review summary**: finding counts by severity, the dispositions, and any unresolved dispute (an unresolved dispute is the human's to settle — never loop further with the reviewer).
 
 Write the deliverable (`docs/10-requirements.md`) in the user's language.
 
-## While waiting for approval (minimizing the bottleneck)
-After presenting gate ①, while waiting for approval you may proceed with the following (**outcome-independent, throwaway-by-default**; see AGENTS.md "Minimizing the approval-wait bottleneck"). Record what you did in the "speculative work log" of `state.md`.
-- `notify-and-wait`: tell the human the approval is pending.
+## While waiting for approval
+`notify-and-wait` first; then only **outcome-independent, throwaway-by-default** work (rules: AGENTS.md "Minimizing the approval-wait bottleneck"), recorded in the "speculative work log" of `state.md`:
 - Repo scaffolding / directory layout / skeleton of the dev environment and CI.
 - **Read-only investigation** of candidate technologies surfaced in the brief (do not finalize the design).
 - **Forbidden**: writing the design body that pre-empts the requirements.
 
 ## Once approved
-- Record the approval by running `agentloop approve requirements [BY=<approver>]` — the operation stamps the gate line, advances `current_phase` to `design`, and logs the `gate_approved` event. It is deliberately not pre-authorized: the permission prompt is the human's confirmation. Never edit a gate line in `state.md` yourself (gate_guard denies it).
-- After committing the gate's deliverables, suggest `session-compaction` before starting `/design` — the next command rehydrates from the SSOT, so nothing is lost (pre-compact check: AGENTS.md "Context budget").
-- Point to "next is `/design`".
-
-Until approval is given, the gate stays `pending`. Do not run the approval operation without an explicit human "approve".
+Only after an explicit human "approve": record it by running `agentloop approve requirements [BY=<approver>]` — the operation is the only sanctioned write path; never edit a gate line in `state.md` yourself, and **running the next command is not itself approval** (mechanics: AGENTS.md "Gate rules" 2). After committing the gate's deliverables, suggest `session-compaction` (pre-compact check: AGENTS.md "Context budget") and point to "next is `/design`".

@@ -1,20 +1,18 @@
 ---
 # .agentloop/state.md — this project's "Single Source of Truth"
-# Every command/agent reads this file first and updates it after working.
-# gates values are one of pending | approved. You cannot advance to the next phase
-# unless the prerequisite gate is approved (see AGENTS.md "Gate rules").
-# An approval is recorded with `agentloop approve <gate> [--by <name>]` — the operation stamps
-# the date (and approver) on the gate line, e.g. `tasks: approved   # 2026-07-07 alice`, and
-# logs the gate_approved event. gate_guard denies a gate line edited to approved by hand.
+# Every command/agent reads this file first and updates it after working. Gates are
+# pending | approved; the ONLY write path to `approved` is `agentloop approve <gate>
+# [--by <name>]` after the human's explicit OK (AGENTS.md "Gate rules" 2 — gate_guard
+# denies a hand-edited gate line).
 project: "<enter the product name>"
 branch: "<enter the work branch name>"  # e.g. build/<product>. Implement on this branch.
 current_phase: brief          # brief | requirements | design | tasks | build | verify | done
 gates:
-  requirements: pending       # approved via `agentloop approve requirements` after the human OKs the /req result
-  design: pending             # approved via `agentloop approve design` after the human OKs the /design technical choices
-  tasks: pending              # approved via `agentloop approve tasks` after the human OKs the /tasks plan
-  build: pending              # approved via `agentloop approve build` after the human OKs the /build implementation review
-  release: pending            # approved via `agentloop approve release` after the human OKs the /verify release decision
+  requirements: pending       # gate ① — the human OKs the /req result
+  design: pending             # gate ② — the human OKs the /design technical choices
+  tasks: pending              # gate ③ — the human OKs the /tasks plan
+  build: pending              # gate ④ — the human OKs the /build implementation review
+  release: pending            # gate ⑤ — the human OKs the /verify release decision
 updated_at: "<YYYY-MM-DD>"
 ---
 

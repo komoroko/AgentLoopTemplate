@@ -41,19 +41,17 @@ On the first run (no tasks generated yet), create them with the steps below.
    - The generated view in `state.md` (between the `DAG-VIEW` markers) is the human-facing task table & execution plan. Fill it by pasting the output of `agentloop dag --render` between the markers (the truth lives in tasks.yaml; deterministic mode A refreshes the block automatically during `/build`).
 7. **Semantic consistency audit (read-only, before presenting gate ③)**: `agentloop dag --trace` checks that the requirement→design→task ID thread *exists*; it cannot judge *meaning*. Cross-read `docs/10-requirements.md`, `docs/20-design.md`, and the tickets, and run four detection passes: ① duplication (near-identical requirements/tasks), ② ambiguity (vague qualifiers with no measurable criterion), ③ semantic coverage (does each task's acceptance criteria actually satisfy the acceptance criteria of the requirement it claims to cover — not merely reference its ID), ④ inconsistency (terminology drift, conflicting directives between artifacts). If `docs/00-product-brief.md` has a filled-in "Principles (non-negotiables)" section, also flag violations of it. Report findings as a severity table (CRITICAL / HIGH / MEDIUM / LOW) in the gate ③ presentation — "no findings" is one line, not a table. An upstream (requirements/design) defect found here follows gate rule 3: escalate, never silently fix.
 8. **Gate ③**: in addition to the task list, present the **dependency chain (layer diagram, critical path, foundation tasks)**, the **consistency trace**, and the **semantic-audit findings** as an **`approval-presentation`** and confirm "may we proceed to implementation with this split and ordering plan?". Generate and present `agentloop dag --render` (layers/critical-path text), **`agentloop dag --mermaid` (the dependency graph as Mermaid `graph TD`)**, and **`agentloop dag --trace --require-design` (the requirement-coverage table)** (show diagrams/tables, not just words). Make it so the human can see at a glance that **every requirement is linked to a task and there are no dangling references**.
-   - **Always present a self-assessment as well** (AGENTS.md "Gate self-assessment"): assumptions behind the split, confidence in estimates, high-risk tasks (uncertain/external-dependency/coarse-grained), open questions, and a context-bloat signal when relevant. Also leave low-confidence tasks in the ticket's "Notes / design decisions".
+   - **Always present a self-assessment as well** (contents: AGENTS.md "Gate self-assessment"), highlighting high-risk tasks (uncertain/external-dependency/coarse-grained); also note low-confidence tasks in the ticket's "Notes / design decisions".
 
 Write the deliverables (`docs/tasks/T-NNN.md`) in the user's language.
 
-## While waiting for approval (minimizing the bottleneck)
-After presenting gate ③, while waiting you may proceed with the following (**outcome-independent, throwaway-by-default**). Record in the "speculative work log" of `state.md`.
-- `notify-and-wait`: tell the human the approval is pending.
+## While waiting for approval
+`notify-and-wait` first; then only **outcome-independent, throwaway-by-default** work (rules: AGENTS.md "Minimizing the approval-wait bottleneck"), recorded in the "speculative work log" of `state.md`:
 - Preparing test fixtures/harness/scaffolding that are clearly needed from the approved design
   (`tests/` is deliberately unguarded for exactly this; code paths in `gates.guard_paths` wait for gate ③).
 - **Forbidden**: real implementation of each feature that pre-empts the task plan.
 
 ## Once approved
-- Record the approval by running `agentloop approve tasks [BY=<approver>]` — it stamps the gate line, advances `current_phase` to `build`, and logs the `gate_approved` event (the permission prompt is the human's confirmation; never edit a gate line yourself — gate_guard denies it).
+- Only after an explicit human "approve": record it by running `agentloop approve tasks [BY=<approver>]` — the operation is the only sanctioned write path; never edit a gate line in `state.md` yourself, and **running the next command is not itself approval** (mechanics: AGENTS.md "Gate rules" 2).
 - **(Only with GitHub integration)** Run `agentloop issue-sync` to one-way-mirror the approved tasks to Issues. It only acts when `github.enabled: true` in `.agentloop/config.yaml`, and auto-skips if gh/remote is absent (does not fail). **Do not run it before approval** (avoid making issues for unapproved tasks). tasks.yaml is always the SSOT; Issues are not read back.
-- After committing the gate's deliverables, suggest `session-compaction` before starting `/build` — the next command rehydrates from the SSOT, so nothing is lost (pre-compact check: AGENTS.md "Context budget").
-- Point to "next is `/build`".
+- After committing the gate's deliverables, suggest `session-compaction` (pre-compact check: AGENTS.md "Context budget") and point to "next is `/build`".

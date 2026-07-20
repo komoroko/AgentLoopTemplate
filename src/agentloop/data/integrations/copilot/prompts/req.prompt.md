@@ -3,4 +3,4 @@ description: Phase 1 requirements. Sound out from the brief, firm up the require
 agent: agent
 ---
 
-Read the file `.agentloop/prompts/commands/req.md` and execute that procedure exactly. Capability terms (`structured-question`, `notify-and-wait`, `approval-presentation`, `session-compaction`, `role-delegation`) resolve per the capability mapping in `.github/instructions/agentloop.instructions.md`.
+Read the file `.agentloop/prompts/commands/req.md` and execute that procedure exactly. Capability terms resolve per the capability mapping in `.github/instructions/agentloop.instructions.md`.

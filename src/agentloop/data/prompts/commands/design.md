@@ -16,14 +16,13 @@ If `gates.design == approved` already, say "Design is approved; changing it need
 5. **Forward-coverage check**: cross-check that the design **covers all requirements and adds nothing not in the requirements**. Once `docs/20-design.md` has a design section for each requirement, confirm the requirement IDs in the headings match the requirement IDs in the requirements document (this requirement↔design linkage is mechanically re-checked later by `/tasks`'s `agentloop dag --trace`).
 6. **Adversarial review** (required before gate ②): delegate to the `adversarial-reviewer` role (`role-delegation`) in a **fresh context — never the architect that designed** — with `docs/10-requirements.md`, `docs/20-design.md`, and `docs/decisions/ADR-*.md` as its inputs. Record every finding in the `## Adversarial review` section of `20-design.md` with a disposition: `fixed` (the design text was updated), `disputed: <why>` (kept as-is, with the reason), or `accepted-risk`. **Every blocker must be resolved** (fixed or disputed-with-reason) before presenting the gate; re-invoke the reviewer once, on the blocker fixes only — no further rounds. Findings that need the human's judgment fold into the gate's single `structured-question` below. For a hotfix minimal cycle the human may waive this step; record the waiver in the `state.md` log.
 7. **Gate ②**: make an **`approval-presentation`** of the design summary + the finalized technical choices + **requirement coverage (every R-x has a corresponding design section / nothing out-of-scope was added)** and confirm "may we proceed with this design?". Ask the technical-choice confirmations **in a single `structured-question`**.
-   - **Always present a self-assessment as well** (AGENTS.md "Gate self-assessment"): assumptions made, per-area confidence (architecture/technical choices/non-functional, etc.), open questions, risks/trade-offs, and a context-bloat signal when relevant. Also leave it in the relevant section of `20-design.md`. Make low-confidence design spots explicit.
+   - **Always present a self-assessment as well** (contents: AGENTS.md "Gate self-assessment"); also leave it in the relevant section of `20-design.md`, making low-confidence design spots explicit.
    - **Also present the adversarial-review summary**: finding counts by severity, the dispositions, and any unresolved dispute (an unresolved dispute is the human's to settle — never loop further with the reviewer).
 
 Write the deliverables (`docs/20-design.md`, `docs/decisions/ADR-*.md`) in the user's language.
 
-## While waiting for approval (minimizing the bottleneck)
-After presenting gate ②, while waiting you may proceed with the following (**outcome-independent, throwaway-by-default**). Record in the "speculative work log" of `state.md`.
-- `notify-and-wait`: tell the human the approval is pending.
+## While waiting for approval
+`notify-and-wait` first; then only **outcome-independent, throwaway-by-default** work (rules: AGENTS.md "Minimizing the approval-wait bottleneck"), recorded in the "speculative work log" of `state.md`:
 - Setting up the skeleton of the dev environment / test harness / CI, lint/static-analysis config —
   **outside `gates.guard_paths`** (e.g. CI config, `tests/`, tooling); a path the guard denies waits
   for its gate instead.
@@ -31,8 +30,6 @@ After presenting gate ②, while waiting you may proceed with the following (**o
 - **Forbidden**: finalizing tasks or doing real implementation that pre-empts the design/technical choices.
 
 ## Once approved
-- Record the approval by running `agentloop approve design [BY=<approver>]` — it stamps the gate line, advances `current_phase` to `tasks`, and logs the `gate_approved` event (the permission prompt is the human's confirmation; never edit a gate line yourself — gate_guard denies it).
-- After committing the gate's deliverables, suggest `session-compaction` before starting `/tasks` — the next command rehydrates from the SSOT, so nothing is lost (pre-compact check: AGENTS.md "Context budget").
-- Point to "next is `/tasks`".
+Only after an explicit human "approve": record it by running `agentloop approve design [BY=<approver>]` — the operation is the only sanctioned write path; never edit a gate line in `state.md` yourself, and **running the next command is not itself approval** (mechanics: AGENTS.md "Gate rules" 2). After committing the gate's deliverables, suggest `session-compaction` (pre-compact check: AGENTS.md "Context budget") and point to "next is `/tasks`".
 
 Do not finalize technical choices on your own. Always go through the human's decision.

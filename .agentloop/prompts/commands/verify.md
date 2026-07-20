@@ -15,12 +15,12 @@ If unapproved, do not work — **invoking `/verify` is not itself the gate-④ a
    - **the dependency audit** (e.g. `make audit`, pip-audit, npm audit) — a dependency vulnerability audit (Python/frontend).
 4. Record discovered defects/vulnerabilities in the test-plan's defect table. Make serious ones into new tasks, append them to `state.md`, and prompt the human to decide on rolling back to `/build` (those new tasks are `phase: verify`). **Rolling back to `/build` is a `/revise` operation like any other**: at the human's decision run `agentloop revise --to build --reason '<defect>'`, which resets `gates.build` and `gates.release` to `pending` in a chain — do not re-enter `/build` while a stale `gates.build: approved` still stands; gate ④ is re-taken after the fix. For **requirement/design-level problems** (a spec error, etc.), use `/revise` at the human's discretion to roll back to the relevant phase (requirements/design).
 5. **Gate ⑤**: present the test result summary (pass/fail, remaining issues, non-functional status) as an **`approval-presentation`** and have the human decide on release.
-   - **Always present a self-assessment as well** (AGENTS.md "Gate self-assessment"): release confidence, thinly-verified aspects, residual risks, points for the human to decide.
+   - **Always present a self-assessment as well** (contents: AGENTS.md "Gate self-assessment"), centered on release confidence and thinly-verified aspects.
 
 Write the deliverable (`docs/test/test-plan.md`) in the user's language.
 
 ## Once approved
-- Record the approval by running `agentloop approve release [BY=<approver>]` — it stamps the gate line, advances `current_phase` to `done`, and logs the `gate_approved` event (the permission prompt is the human's confirmation; never edit a gate line yourself — gate_guard denies it).
+- Only after an explicit human "approve": record it by running `agentloop approve release [BY=<approver>]` — the operation is the only sanctioned write path; never edit a gate line in `state.md` yourself, and **running the next command is not itself approval** (mechanics: AGENTS.md "Gate rules" 2).
 - **Leave a retrospective (recovering the metacognition)**: generate/update `docs/retrospective.md`.
   - Classify needs-revision / blocked into "upstream (requirements/design) defect / implementation convenience / external factor" and summarize the lessons for upstream.
   - **Close the open items**: every open escalation in the event log (`agentloop events --render` lists them) gets a `agentloop events --resolve <ID> --note "…"`, and blank adoption columns in `state.md`'s "speculative work log" are filled — do not leave them dangling.
