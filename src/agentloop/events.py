@@ -67,7 +67,12 @@ EVENT_ORDER = (
 EVENT_VALUES = frozenset(EVENT_ORDER)
 
 # Parallel leaves emit events from worker threads of one process; serialize the read-max-id +
-# append pair so ids stay unique. (Cross-process writes are already excluded by build-loop.lock.)
+# append pair so ids stay unique. Cross-process writers exist (a human-run `agentloop events
+# --add/--resolve` during a live loop is a separate process this lock cannot see), which is
+# exactly why next_id is re-read from the file on every append instead of cached in memory:
+# the re-read keeps the duplicate-id window to the read+write instant, while an in-memory
+# counter would widen it to the whole run. Rotation caps the file at EVENTS_MAX_BYTES, so the
+# per-append reparse stays microseconds — do not "optimize" it away.
 _LOCK = threading.Lock()
 
 

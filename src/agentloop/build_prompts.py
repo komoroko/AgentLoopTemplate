@@ -59,10 +59,26 @@ def implementer_prompt(task: dag.Task, failure_log: str, *, gate_cmds: Sequence[
     return prompt
 
 
-def review_prompt(task: dag.Task, *, gate_cmds: Sequence[str]) -> str:
+def review_prompt(
+    task: dag.Task, *, gate_cmds: Sequence[str], changed_paths: Sequence[str] = (), diff_cmd: str = ""
+) -> str:
+    # Scope the reviewer's read to the task's actual diff: it runs in a fresh context (independent
+    # verification — deliberately not the implementer's session), and without this hint it must
+    # re-survey the tree cold to even find the changes it is reviewing.
     cmds = ", ".join(f"`{c}`" for c in gate_cmds)
+    if changed_paths:
+        listing = "\n".join(f"  {p}" for p in changed_paths)
+        scope = (
+            f"The task's changes are exactly these paths (diff: `{diff_cmd}`):\n{listing}\n"
+            "Review that diff plus the code it interacts with — do not re-survey the whole tree.\n"
+        )
+    elif diff_cmd:
+        scope = f"The task's diff is `{diff_cmd}` — review it plus the code it interacts with.\n"
+    else:
+        scope = ""
     return (
         f'You are the reviewer for task {task.id} "{task.title}" (the quality gate\'s agent step).\n'
+        f"{scope}"
         "Review this branch's changes for this task for correctness bugs (the /code-review discipline), "
         "then simplify: reuse existing code, remove needless complexity, and strip what the ticket's "
         "acceptance criteria do not require — speculative generality, unused knobs/hooks (YAGNI; the "

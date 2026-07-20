@@ -222,7 +222,7 @@ def test_consume_parallel_partial_failure_blocks_only_failed(project: Path, monk
     _provision(project)
     monkeypatch.setattr(build_loop, "_run", fake_git())  # treat all git calls as success
 
-    def fake_run_task(task: dag.Task, cwd: str) -> tuple[bool, str]:
+    def fake_run_task(task: dag.Task, cwd: str, base: str = "") -> tuple[bool, str]:
         return (task.id != "T-003"), ("" if task.id != "T-003" else "$ make test (rc=1)")
 
     orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
@@ -291,7 +291,7 @@ def _steps_orch(project: Path, monkeypatch: pytest.MonkeyPatch) -> build_loop.Or
 def test_pipeline_stops_at_first_failing_cmd_step(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     orch = _steps_orch(project, monkeypatch)
     monkeypatch.setattr(orch, "_run_cmd_step", lambda step, cwd: "boom" if step.name == "check" else "")
-    monkeypatch.setattr(orch, "_run_agent_step", lambda task, cwd: pytest.fail("agent step must not run"))
+    monkeypatch.setattr(orch, "_run_agent_step", lambda task, cwd, base="": pytest.fail("agent step must not run"))
     failed, log = orch._run_pipeline(_leaf("T-002", "leaf A"), cwd=".")
     assert failed == "check"
     assert log == "boom"
@@ -307,7 +307,7 @@ def test_pipeline_reruns_passed_cmd_steps_after_agent_change(project: Path, monk
         return ""
 
     monkeypatch.setattr(orch, "_run_cmd_step", record)
-    monkeypatch.setattr(orch, "_run_agent_step", lambda task, cwd: True)  # it changed the tree
+    monkeypatch.setattr(orch, "_run_agent_step", lambda task, cwd, base="": True)  # it changed the tree
     failed, _ = orch._run_pipeline(_leaf("T-002", "leaf A"), cwd=".")
     assert failed is None
     assert ran == ["test", "check", "test", "check"]  # smoke (empty run) is skipped, never executed
@@ -322,7 +322,7 @@ def test_pipeline_skips_rerun_when_agent_changed_nothing(project: Path, monkeypa
         return ""
 
     monkeypatch.setattr(orch, "_run_cmd_step", record)
-    monkeypatch.setattr(orch, "_run_agent_step", lambda task, cwd: False)
+    monkeypatch.setattr(orch, "_run_agent_step", lambda task, cwd, base="": False)
     failed, _ = orch._run_pipeline(_leaf("T-002", "leaf A"), cwd=".")
     assert failed is None
     assert ran == ["test", "check"]
@@ -331,7 +331,7 @@ def test_pipeline_skips_rerun_when_agent_changed_nothing(project: Path, monkeypa
 def test_pipeline_agent_steps_off_drops_agent_step(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     orch = _steps_orch(project, monkeypatch)
     orch.config.agent_steps = False
-    monkeypatch.setattr(orch, "_run_agent_step", lambda task, cwd: pytest.fail("agent step must not run"))
+    monkeypatch.setattr(orch, "_run_agent_step", lambda task, cwd, base="": pytest.fail("agent step must not run"))
     monkeypatch.setattr(orch, "_run_cmd_step", lambda step, cwd: "")
     failed, _ = orch._run_pipeline(_leaf("T-002", "leaf A"), cwd=".")
     assert failed is None
@@ -344,7 +344,7 @@ def test_run_task_to_done_budget_is_per_step(project: Path, monkeypatch: pytest.
     outcomes = iter([("test", "t red"), ("check", "c red"), (None, "")])
     implementer_calls: list[str] = []
     monkeypatch.setattr(orch, "_invoke_implementer", lambda task, cwd, log: implementer_calls.append(log))
-    monkeypatch.setattr(orch, "_run_pipeline", lambda task, cwd: next(outcomes))
+    monkeypatch.setattr(orch, "_run_pipeline", lambda task, cwd, base="": next(outcomes))
     ok, log = orch._run_task_to_done(_leaf("T-002", "leaf A"), cwd=".")
     assert ok is True
     assert implementer_calls == ["", "t red", "c red"]  # each failure went back to the implementer
@@ -353,7 +353,7 @@ def test_run_task_to_done_budget_is_per_step(project: Path, monkeypatch: pytest.
 def test_run_task_to_done_blocks_when_one_step_budget_runs_out(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     orch = _steps_orch(project, monkeypatch)
     monkeypatch.setattr(orch, "_invoke_implementer", lambda task, cwd, log: None)
-    monkeypatch.setattr(orch, "_run_pipeline", lambda task, cwd: ("test", "still red"))
+    monkeypatch.setattr(orch, "_run_pipeline", lambda task, cwd, base="": ("test", "still red"))
     ok, log = orch._run_task_to_done(_leaf("T-002", "leaf A"), cwd=".")
     assert ok is False  # retries: 1 → initial attempt + 1 send-back, then blocked
     assert log == "still red"
@@ -377,7 +377,7 @@ def test_task_test_runs_first_as_focused_step(project: Path, monkeypatch: pytest
         return ""
 
     monkeypatch.setattr(orch, "_run_cmd_step", record)
-    monkeypatch.setattr(orch, "_run_agent_step", lambda task, cwd: False)
+    monkeypatch.setattr(orch, "_run_agent_step", lambda task, cwd, base="": False)
     failed, _ = orch._run_pipeline(_leaf_with_test("pytest tests/test_a.py -q"), cwd=".")
     assert failed is None
     assert ran == ["task-test", "test", "check"]
@@ -393,7 +393,7 @@ def test_task_test_duplicating_a_config_step_runs_once(project: Path, monkeypatc
         return ""
 
     monkeypatch.setattr(orch, "_run_cmd_step", record)
-    monkeypatch.setattr(orch, "_run_agent_step", lambda task, cwd: False)
+    monkeypatch.setattr(orch, "_run_agent_step", lambda task, cwd, base="": False)
     failed, _ = orch._run_pipeline(_leaf_with_test("make test"), cwd=".")
     assert failed is None
     assert ran == ["test", "check"]
@@ -403,7 +403,7 @@ def test_task_test_failure_consumes_budget_and_blocks(project: Path, monkeypatch
     # The focused step carries the test step's send-back budget; running out blocks like any step.
     orch = _steps_orch(project, monkeypatch)
     monkeypatch.setattr(orch, "_invoke_implementer", lambda task, cwd, log: None)
-    monkeypatch.setattr(orch, "_run_pipeline", lambda task, cwd: ("task-test", "focused red"))
+    monkeypatch.setattr(orch, "_run_pipeline", lambda task, cwd, base="": ("task-test", "focused red"))
     ok, log = orch._run_task_to_done(_leaf_with_test("pytest tests/test_a.py -q"), cwd=".")
     assert ok is False  # test retries: 1 → initial attempt + 1 send-back, then blocked
     assert log == "focused red"
@@ -467,7 +467,7 @@ def test_consume_parallel_cleans_up_blocked_worktree(project: Path, monkeypatch:
 
     monkeypatch.setattr(build_loop, "_run", fake_git(record=calls))
 
-    def fake_run_task(task: dag.Task, cwd: str) -> tuple[bool, str]:
+    def fake_run_task(task: dag.Task, cwd: str, base: str = "") -> tuple[bool, str]:
         return (task.id != "T-003"), ("" if task.id != "T-003" else "$ make test (rc=1)")
 
     orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
@@ -530,7 +530,7 @@ def test_consume_serial_commits_task_diff_excluding_agentloop(project: Path, mon
     dirty = fake_git({("git", "status", "--porcelain"): (0, " M app.py")}, record=calls)
     monkeypatch.setattr(build_loop, "_run", dirty)
     orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
-    monkeypatch.setattr(orch, "_run_task_to_done", lambda task, cwd: (True, ""))
+    monkeypatch.setattr(orch, "_run_task_to_done", lambda task, cwd, base="": (True, ""))
     foundation = dag.Task(id="T-001", title="base", kind="foundation")
     orch._consume_serial([foundation])
     assert ["git", "add", "-A", "--", ".", ":(exclude).agentloop"] in calls  # one commit = one task
@@ -738,7 +738,7 @@ def _parallel_orch(project: Path, monkeypatch: pytest.MonkeyPatch) -> build_loop
     _provision(project)
     monkeypatch.setattr(build_loop, "_run", fake_git())
     orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
-    monkeypatch.setattr(orch, "_run_task_to_done", lambda task, cwd: (True, ""))
+    monkeypatch.setattr(orch, "_run_task_to_done", lambda task, cwd, base="": (True, ""))
     return orch
 
 
@@ -818,7 +818,7 @@ def test_integration_gate_skips_agent_and_empty_steps(project: Path, monkeypatch
         return ""
 
     monkeypatch.setattr(orch, "_run_cmd_step", record)
-    monkeypatch.setattr(orch, "_run_agent_step", lambda task, cwd: pytest.fail("agent step must not run"))
+    monkeypatch.setattr(orch, "_run_agent_step", lambda task, cwd, base="": pytest.fail("agent step must not run"))
     ok, _ = orch._integration_gate([_leaf("T-002", "leaf A"), _leaf("T-003", "leaf B")])
     assert ok is True
     assert ran == ["test", "check"]
@@ -924,7 +924,9 @@ def test_parallel_finalizes_worktree_before_merge_and_before_blocked_cleanup(
     monkeypatch.setattr(build_loop, "_run", fake_run)
     orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
     monkeypatch.setattr(
-        orch, "_run_task_to_done", lambda task, cwd: ((task.id != "T-003"), "" if task.id != "T-003" else "red")
+        orch,
+        "_run_task_to_done",
+        lambda task, cwd, base="": ((task.id != "T-003"), "" if task.id != "T-003" else "red"),
     )
     with pytest.raises(build_loop.StopLoop):
         orch._consume_parallel([_leaf("T-002", "leaf A"), _leaf("T-003", "leaf B")])
@@ -990,7 +992,7 @@ def test_finalize_commit_failure_blocks_serial_task_and_stops(project: Path, mon
     calls: list[tuple[list[str], str]] = []
     monkeypatch.setattr(build_loop, "_run", _failing_commit_run(calls))
     orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
-    monkeypatch.setattr(orch, "_run_task_to_done", lambda task, cwd: (True, ""))
+    monkeypatch.setattr(orch, "_run_task_to_done", lambda task, cwd, base="": (True, ""))
     with pytest.raises(build_loop.StopLoop, match="finalize commit failed"):
         orch._consume_serial([dag.Task(id="T-001", title="base", kind="foundation")])
     assert {t.id: t.status for t in dag.load(".agentloop/tasks.yaml").tasks}["T-001"] == "blocked"
@@ -1019,7 +1021,7 @@ def test_finalize_failure_before_merge_blocks_leaf_but_merges_the_rest(
     wt3 = _wt("T-003")
     monkeypatch.setattr(build_loop, "_run", _failing_commit_run(calls, fail_cwd=wt3))
     orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
-    monkeypatch.setattr(orch, "_run_task_to_done", lambda task, cwd: (True, ""))
+    monkeypatch.setattr(orch, "_run_task_to_done", lambda task, cwd, base="": (True, ""))
     with pytest.raises(build_loop.StopLoop):
         orch._consume_parallel([_leaf("T-002", "leaf A"), _leaf("T-003", "leaf B")])
     statuses = {t.id: t.status for t in dag.load(".agentloop/tasks.yaml").tasks}
@@ -1044,7 +1046,7 @@ def test_blocked_leaf_emits_event_and_refreshes_state_view(project: Path, monkey
     (project / ".agentloop" / "tasks.yaml").write_text(_TASKS, encoding="utf-8")
     monkeypatch.setattr(build_loop, "_run", fake_git())
     orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
-    monkeypatch.setattr(orch, "_run_task_to_done", lambda task, cwd: (False, "$ make test (rc=1)"))
+    monkeypatch.setattr(orch, "_run_task_to_done", lambda task, cwd, base="": (False, "$ make test (rc=1)"))
     with pytest.raises(build_loop.StopLoop):
         orch._consume_parallel([_leaf("T-002", "leaf A")])
     recorded = events.load_events()
@@ -1063,7 +1065,7 @@ def test_done_tasks_emit_task_done_with_commit(project: Path, monkeypatch: pytes
 
     monkeypatch.setattr(build_loop, "_run", fake_run)
     orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
-    monkeypatch.setattr(orch, "_run_task_to_done", lambda task, cwd: (True, ""))
+    monkeypatch.setattr(orch, "_run_task_to_done", lambda task, cwd, base="": (True, ""))
     orch._consume_serial([dag.Task(id="T-001", title="base", kind="foundation")])
     recorded = events.load_events()
     assert [(e.event, e.task, e.commit) for e in recorded] == [("task_done", "T-001", "abc123")]
@@ -1073,7 +1075,7 @@ def test_step_fail_is_recorded_per_retry(project: Path, monkeypatch: pytest.Monk
     orch = _steps_orch(project, monkeypatch)
     outcomes = iter([("test", "t red"), (None, "")])
     monkeypatch.setattr(orch, "_invoke_implementer", lambda task, cwd, log: None)
-    monkeypatch.setattr(orch, "_run_pipeline", lambda task, cwd: next(outcomes))
+    monkeypatch.setattr(orch, "_run_pipeline", lambda task, cwd, base="": next(outcomes))
     ok, _ = orch._run_task_to_done(_leaf("T-002", "leaf A"), cwd=".")
     assert ok is True
     recorded = events.load_events()
@@ -1111,6 +1113,39 @@ def test_implementer_prompt_falls_back_to_whole_design_when_no_req(project: Path
     task = dag.Task(id="T-002", title="leaf A", kind="parallel", blocked_by=("T-001",))  # req defaults to ""
     prompt = orch._implementer_prompt(task, failure_log="")
     assert "docs/tasks/T-002.md, docs/20-design.md, and the existing code" in prompt
+
+
+# --- review-step scoping (the fresh reviewer is pointed at the task's exact diff) --------
+
+
+def test_review_prompt_scopes_leaf_to_its_branch_diff(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A worktree leaf's reviewer gets the changed-path list and the merge-base diff command —
+    # a fresh context should not have to re-survey the tree to find the diff it reviews.
+    _provision(project)
+    orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
+    monkeypatch.setattr(orch.ws, "branch_changed_paths", lambda branch: ["src/a.py", "tests/test_a.py"])
+    prompt = orch._review_prompt(_leaf("T-002", "leaf A"), cwd="/elsewhere/worktree", base="")
+    assert "src/a.py" in prompt and "tests/test_a.py" in prompt
+    assert f"git diff {orch.branch}...HEAD" in prompt
+    assert "do not re-survey the whole tree" in prompt
+
+
+def test_review_prompt_scopes_serial_to_pre_task_head(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _provision(project)
+    orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
+    monkeypatch.setattr(orch.ws, "changed_since", lambda base: ["src/b.py"])
+    prompt = orch._review_prompt(_leaf("T-002", "leaf A"), cwd=orch.root, base="abcdef0123456789")
+    assert "src/b.py" in prompt
+    assert "git diff abcdef012345..HEAD" in prompt
+
+
+def test_review_prompt_degrades_to_unscoped_without_a_base(project: Path) -> None:
+    # No base on the work branch (or dry-run) keeps the old generic wording — never a wrong scope.
+    _provision(project)
+    orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
+    prompt = orch._review_prompt(_leaf("T-002", "leaf A"), cwd=orch.root, base="")
+    assert "T-002" in prompt
+    assert "git diff" not in prompt
 
 
 # --- headless CLI configurability (build.headless.cmd) -----------------------
@@ -1167,7 +1202,7 @@ def test_parallel_gate_violation_blocks_leaf_and_skips_merge(project: Path, monk
 
     monkeypatch.setattr(build_loop, "_run", fake_run)
     orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
-    monkeypatch.setattr(orch, "_run_task_to_done", lambda task, cwd: (True, ""))
+    monkeypatch.setattr(orch, "_run_task_to_done", lambda task, cwd, base="": (True, ""))
     with pytest.raises(build_loop.StopLoop):
         orch._consume_parallel([_leaf("T-002", "leaf A"), _leaf("T-003", "leaf B")])
     statuses = {t.id: t.status for t in dag.load(".agentloop/tasks.yaml").tasks}
@@ -1196,7 +1231,7 @@ def test_serial_gate_violation_blocks_task_and_stops(project: Path, monkeypatch:
 
     monkeypatch.setattr(build_loop, "_run", fake_run)
     orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
-    monkeypatch.setattr(orch, "_run_task_to_done", lambda task, cwd: (True, ""))
+    monkeypatch.setattr(orch, "_run_task_to_done", lambda task, cwd, base="": (True, ""))
     with pytest.raises(build_loop.StopLoop, match="gate-guarded"):
         orch._consume_serial([dag.Task(id="T-001", title="base", kind="foundation")])
     assert {t.id: t.status for t in dag.load(".agentloop/tasks.yaml").tasks}["T-001"] == "blocked"
@@ -1217,7 +1252,7 @@ def test_serial_unguarded_changes_pass_the_gate_check(project: Path, monkeypatch
 
     monkeypatch.setattr(build_loop, "_run", fake_run)
     orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
-    monkeypatch.setattr(orch, "_run_task_to_done", lambda task, cwd: (True, ""))
+    monkeypatch.setattr(orch, "_run_task_to_done", lambda task, cwd, base="": (True, ""))
     orch._consume_serial([dag.Task(id="T-001", title="base", kind="foundation")])
     assert {t.id: t.status for t in dag.load(".agentloop/tasks.yaml").tasks}["T-001"] == "done"
 
