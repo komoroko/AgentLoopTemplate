@@ -343,7 +343,9 @@ def test_run_task_to_done_budget_is_per_step(project: Path, monkeypatch: pytest.
     orch = _steps_orch(project, monkeypatch)
     outcomes = iter([("test", "t red"), ("check", "c red"), (None, "")])
     implementer_calls: list[str] = []
-    monkeypatch.setattr(orch, "_invoke_implementer", lambda task, cwd, log: implementer_calls.append(log))
+    monkeypatch.setattr(
+        orch, "_invoke_implementer", lambda task, cwd, log, session="", resume=False: implementer_calls.append(log)
+    )
     monkeypatch.setattr(orch, "_run_pipeline", lambda task, cwd, base="": next(outcomes))
     ok, log = orch._run_task_to_done(_leaf("T-002", "leaf A"), cwd=".")
     assert ok is True
@@ -352,7 +354,7 @@ def test_run_task_to_done_budget_is_per_step(project: Path, monkeypatch: pytest.
 
 def test_run_task_to_done_blocks_when_one_step_budget_runs_out(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     orch = _steps_orch(project, monkeypatch)
-    monkeypatch.setattr(orch, "_invoke_implementer", lambda task, cwd, log: None)
+    monkeypatch.setattr(orch, "_invoke_implementer", lambda task, cwd, log, session="", resume=False: None)
     monkeypatch.setattr(orch, "_run_pipeline", lambda task, cwd, base="": ("test", "still red"))
     ok, log = orch._run_task_to_done(_leaf("T-002", "leaf A"), cwd=".")
     assert ok is False  # retries: 1 → initial attempt + 1 send-back, then blocked
@@ -402,7 +404,7 @@ def test_task_test_duplicating_a_config_step_runs_once(project: Path, monkeypatc
 def test_task_test_failure_consumes_budget_and_blocks(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # The focused step carries the test step's send-back budget; running out blocks like any step.
     orch = _steps_orch(project, monkeypatch)
-    monkeypatch.setattr(orch, "_invoke_implementer", lambda task, cwd, log: None)
+    monkeypatch.setattr(orch, "_invoke_implementer", lambda task, cwd, log, session="", resume=False: None)
     monkeypatch.setattr(orch, "_run_pipeline", lambda task, cwd, base="": ("task-test", "focused red"))
     ok, log = orch._run_task_to_done(_leaf_with_test("pytest tests/test_a.py -q"), cwd=".")
     assert ok is False  # test retries: 1 → initial attempt + 1 send-back, then blocked
@@ -1074,7 +1076,7 @@ def test_done_tasks_emit_task_done_with_commit(project: Path, monkeypatch: pytes
 def test_step_fail_is_recorded_per_retry(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     orch = _steps_orch(project, monkeypatch)
     outcomes = iter([("test", "t red"), (None, "")])
-    monkeypatch.setattr(orch, "_invoke_implementer", lambda task, cwd, log: None)
+    monkeypatch.setattr(orch, "_invoke_implementer", lambda task, cwd, log, session="", resume=False: None)
     monkeypatch.setattr(orch, "_run_pipeline", lambda task, cwd, base="": next(outcomes))
     ok, _ = orch._run_task_to_done(_leaf("T-002", "leaf A"), cwd=".")
     assert ok is True
@@ -1146,6 +1148,73 @@ def test_review_prompt_degrades_to_unscoped_without_a_base(project: Path) -> Non
     prompt = orch._review_prompt(_leaf("T-002", "leaf A"), cwd=orch.root, base="")
     assert "T-002" in prompt
     assert "git diff" not in prompt
+
+
+# --- retry-session continuity (claude preset only) ---------------------------
+
+
+_CONFIG_RETRIES2 = _CONFIG_STEPS.replace("retries: 1}", "retries: 2}")
+
+
+def _capture_implementer_launches(
+    project: Path, monkeypatch: pytest.MonkeyPatch, config: str, outcomes: list[tuple[str | None, str]]
+) -> list[list[str]]:
+    (project / ".agentloop" / "config.yaml").write_text(config, encoding="utf-8")
+    _provision(project)
+    seen: list[list[str]] = []
+
+    def fake_run(cmd: list[str], cwd: str | None = None, timeout: float | None = None) -> tuple[int, str]:
+        seen.append(cmd)
+        return 0, ""
+
+    monkeypatch.setattr(build_loop, "_run", fake_run)
+    orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
+    it = iter(outcomes)
+    monkeypatch.setattr(orch, "_run_pipeline", lambda task, cwd, base="": next(it))
+    monkeypatch.setattr(events, "append_event", lambda *a, **k: None)
+    orch._run_task_to_done(_leaf("T-002", "leaf A"), cwd=".")
+    return seen
+
+
+def test_implementer_retry_resumes_its_session_then_final_retry_is_fresh(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # claude preset: launch 1 stamps a session (--session-id), the first send-back resumes it
+    # (--resume, same id), and the step's final retry is forced fresh with a new id — an
+    # anchored session must not get the last word. The prompt stays the last argument.
+    seen = _capture_implementer_launches(
+        project, monkeypatch, _CONFIG_RETRIES2, [("test", "red"), ("test", "red"), (None, "")]
+    )
+    assert [c[:2] for c in seen] == [["claude", "-p"]] * 3
+    assert seen[0][2] == "--session-id" and seen[1][2] == "--resume"
+    assert seen[1][3] == seen[0][3]  # the retry resumes the session the first launch stamped
+    assert seen[2][2] == "--session-id" and seen[2][3] != seen[0][3]  # final retry: fresh
+    assert all(c[-1].startswith("You are the implementer") for c in seen)
+
+
+def test_non_claude_headless_cmd_keeps_fresh_launches(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Resume flags are per-CLI; anything but the claude preset keeps today's behavior exactly.
+    config = _CONFIG_RETRIES2.replace("build:\n", 'build:\n  headless: {cmd: ["codex", "exec"]}\n')
+    seen = _capture_implementer_launches(project, monkeypatch, config, [("test", "red"), (None, "")])
+    for cmd in seen:
+        assert cmd[:2] == ["codex", "exec"]
+        assert "--session-id" not in cmd and "--resume" not in cmd
+
+
+def test_failed_resume_falls_back_to_a_fresh_launch(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A session file can expire mid-run; losing the continuity optimization must not stop the loop.
+    _provision(project)
+    seen: list[list[str]] = []
+
+    def fake_run(cmd: list[str], cwd: str | None = None, timeout: float | None = None) -> tuple[int, str]:
+        seen.append(cmd)
+        return (1, "no such session") if "--resume" in cmd else (0, "")
+
+    monkeypatch.setattr(build_loop, "_run", fake_run)
+    orch = build_loop.Orchestrator(build_loop.Config.load(), dry_run=False)
+    orch._invoke_implementer(_leaf("T-002", "leaf A"), cwd=".", failure_log="", session="sid", resume=True)
+    assert len(seen) == 2
+    assert "--resume" in seen[0] and "--resume" not in seen[1] and "--session-id" not in seen[1]
 
 
 # --- headless CLI configurability (build.headless.cmd) -----------------------

@@ -11,21 +11,21 @@ schema:
 prompts:
   version: 0.8.3
   files:
-    AGENTS.agentloop.md: sha256:4b20bd1033ee7c655e272e144245225bc38b5e9467aac662285a01f210cbdcfe
+    AGENTS.agentloop.md: sha256:aa98e9d08910ffd7d86bb860a4e0d6a269fe16f741a57371ed5e9a64e81dde95
     prompts/agents/architect.md: sha256:d36360652d81f2dcfae8861557cd49a679f2f29241551b13e4aa5364ffbf6479
     prompts/agents/implementer.md: sha256:8946f34cee40752191febba05f91d65dbbf71bfd00b664090344c70823baff1d
     prompts/agents/requirements-analyst.md: sha256:f856541626e80f3439a3681c70a9ab09f557b0e3dc5c4ddd229f214b5f8efab3
-    prompts/commands/build.md: sha256:7e6563ee44c221705882adb460ed1fdeecc372fd8fd2f4f5820fc2bb188e0bdd
+    prompts/commands/build.md: sha256:fe1e25bc41928650c43ad7c4fa10d48decc632bdd1aba37699e9c73c8e2897d2
     prompts/commands/design.md: sha256:ffa0b89ac6d03b783bfb26a2f5cf6e397119fcfd880172d8675821f0adedcb68
     prompts/commands/onboard.md: sha256:486c65a37d4740f53e638bea2b31a67a37f70b6f9a19a0176d519a8b769ce577
     prompts/commands/req.md: sha256:a0334db35d9ef4b6f060af6da95d119e068db66f5c4622054173d6934d38beea
     prompts/commands/revise.md: sha256:739d875341ab5def2b790b46ab3f6f907c3d4b6f36d5d6f14fd0a45575db920a
     prompts/commands/status.md: sha256:559917b9892dbf8efe74dbc2bd7e575b8f4fe7360a7553b9fb6265e7653b2b95
-    prompts/commands/tasks.md: sha256:9a7c6e5e03307e2acbf0e5eebe62c9fe4da4271117405ae5227bdbe35aa5bea6
+    prompts/commands/tasks.md: sha256:e2393eabb7510641346d55bdaf4889b7e0068a7440287f3331918e24cddb719d
     prompts/commands/verify.md: sha256:a2b08d188b5838ab33ae94509b3d8a59ce30b10e50038fcb5234f40340a1a550
     schema/config.schema.json: sha256:7ab4d34fac29e12beec8dfd81e50f50df882701da7d4540e94c7c9ab63692e70
     schema/tasks.schema.json: sha256:9e45b44bfab0a319b6a263b0df58e475a4f838c6f37041039bb06ac8d268fb7b
-    prompts/agents/adversarial-reviewer.md: sha256:83ede40a7805c2e26b0fb40f22a7bb46b6df2ec59623d0b702cf53890ffc6f36
+    prompts/agents/adversarial-reviewer.md: sha256:b93f3c5bb1f7aae40a7212b256b6f4693c8ce6b66e377eb7a86c8a10b4b54c3d
 integrations:
   claude:
     version: 0.8.3

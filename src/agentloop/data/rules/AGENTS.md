@@ -100,7 +100,10 @@ The truth is split across three files with distinct roles — do not conflate th
    next-phase command is not itself approval.** Recording is an **operation, not a file
    edit**: `agentloop approve <gate> [--by <approver>]` stamps
    the date/approver comment on the gate line (e.g. `tasks: approved   # 2026-07-07 alice`),
-   advances `current_phase`, and logs the `gate_approved` event. Never edit a gate line to
+   advances `current_phase`, and logs the `gate_approved` event. The operation also
+   machine-checks the gate's recorded evidence (unresolved `[NEEDS CLARIFICATION]` markers,
+   the security review's `Reviewed-HEAD` binding, open escalations) and refuses when it is
+   missing; `--force` overrides, recorded in the event. Never edit a gate line to
    `approved` yourself — the guard denies it (see below); and never pre-authorize
    `agentloop approve` (its permission prompt is the human's confirmation).
 3. **Do not silently fix problems in requirements/design.** On an upstream defect, set the
@@ -140,11 +143,12 @@ deliverable or log). Do not pretend to high confidence to let the human skip ver
 For requirements/design/task tickets, put it in the deliverable itself (each scaffold's
 "Self-assessment" section), not just spoken.
 
-Self-assessment alone is not independent verification: gates ① and ② additionally require one
-**adversarial-review round** by the `adversarial-reviewer` role (procedure: the req.md and
-design.md procedure files) — blockers resolved, findings and dispositions recorded in the
-deliverable's "Adversarial review" section. The human may waive it only for a hotfix minimal
-cycle, logged in `state.md`.
+Self-assessment alone is not independent verification: gates ①–③ additionally require one
+**adversarial-review round** by the `adversarial-reviewer` role (procedure: the req.md,
+design.md, and tasks.md procedure files) — blockers resolved, findings and dispositions
+recorded in the deliverable's "Adversarial review" section (gate ③: in the gate presentation
+and the affected tickets). The human may waive it only for a hotfix minimal cycle, logged in
+`state.md`.
 
 ## Minimizing the approval-wait bottleneck
 

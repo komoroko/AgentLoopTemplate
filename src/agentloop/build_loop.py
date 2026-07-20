@@ -35,6 +35,7 @@ import logging
 import os
 import re
 import shlex
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from datetime import date
@@ -384,15 +385,39 @@ class Orchestrator:
             has_baseline=self.repo.path("docs/05-current-state.md").exists(),
         )
 
-    def _invoke_implementer(self, task: dag.Task, cwd: str, failure_log: str) -> None:
+    @property
+    def _resume_capable(self) -> bool:
+        """Retry-session continuity is claude-preset-gated — deliberately no adapter layer.
+
+        Resume flags are per-CLI (codex is a different subcommand shape; gemini/custom are
+        unverifiable), so only the known `claude -p` contract gets them; every other CLI keeps
+        today's fresh launch per retry.
+        """
+        return bool(self.config.headless_cmd) and self.config.headless_cmd[0] == "claude"
+
+    def _invoke_implementer(
+        self, task: dag.Task, cwd: str, failure_log: str, session: str = "", resume: bool = False
+    ) -> None:
+        """One headless implementer launch; `session`/`resume` thread retry-session continuity.
+
+        With a session id, the first launch stamps it (--session-id) and a retry resumes it
+        (--resume) so the implementer keeps its own context across its retries instead of
+        re-reading ticket/design/code cold. A failed resume falls back to one fresh launch
+        (session files can expire) rather than stopping the loop on a continuity optimization.
+        """
         if self.dry_run:
             print(f"    [dry-run] launch implementer (cwd={cwd}) task={task.id}")
             return
+        prompt = self._implementer_prompt(task, failure_log)
+        flags = (["--resume", session] if resume else ["--session-id", session]) if session else []
         rc, out = _run(
-            [*self.config.headless_cmd, self._implementer_prompt(task, failure_log)],
+            [*self.config.headless_cmd, *flags, prompt],
             cwd=cwd,
             timeout=self.config.timeout_agent,
         )
+        if rc != 0 and resume:
+            print(f"    [resume] {task.id}: resuming session failed (rc={rc}); relaunching fresh")
+            rc, out = _run([*self.config.headless_cmd, prompt], cwd=cwd, timeout=self.config.timeout_agent)
         if rc != 0:
             raise StopLoop(f"{task.id}: failed to launch implementer (rc={rc})\n{out[-1000:]}")
 
@@ -503,8 +528,14 @@ class Orchestrator:
         """
         budgets = {s.name: s.retries for s in self._steps_for(task) if s.kind == "cmd"}
         failure_log = ""
+        # Retry-session continuity (claude preset only): the implementer resumes its own session
+        # across its retries. A step's final retry is forced fresh — a resumed session re-reads
+        # its own failed reasoning, and the last attempt deserves an unanchored mind working from
+        # the compact failure summary alone. The review agent step is never resumed (independence).
+        session = str(uuid.uuid4()) if self._resume_capable and not self.dry_run else ""
+        resume = False
         while True:
-            self._invoke_implementer(task, cwd, failure_log)
+            self._invoke_implementer(task, cwd, failure_log, session=session, resume=resume)
             failed, failure_log = self._run_pipeline(task, cwd, base)
             if failed is None:
                 return True, ""
@@ -515,6 +546,10 @@ class Orchestrator:
             if left <= 0:
                 return False, failure_log
             budgets[failed] = left - 1
+            if session and budgets[failed] <= 0:  # final retry for this step → fresh session
+                session, resume = str(uuid.uuid4()), False
+            else:
+                resume = bool(session)
 
     # -- post-merge integration gate --
 

@@ -44,10 +44,11 @@ agentloop build --dry-run   # check just the control flow without calling the ag
 
 The non-deterministic parts are each task's implementation code content and the `review` agent
 step's fixes. Both are absorbed deterministically: after an agent step changes code, the
-already-passed cmd steps are re-run; a red cmd step retries until green, else blocked. The
-`review` step, the integration fixer, and the security reviewer always run in **fresh
-contexts, independent of the implementer** — independent verification is the point; never
-fold them into the implementer's session.
+already-passed cmd steps are re-run; a red cmd step retries until green, else blocked. With
+the claude preset the implementer resumes its own session across its retries (a step's final
+retry is forced fresh); the `review` step, the integration fixer, and the security reviewer
+always run in **fresh contexts, independent of the implementer** — independent verification
+is the point; never fold them into the implementer's session.
 
 ### B. Interactive loop — `autonomous-build-iteration` of /build (fallback: the lead runs the algorithm by hand)
 For when the orchestrator can't run (no headless CLI on the machine) or the human wants to
