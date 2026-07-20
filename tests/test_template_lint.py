@@ -195,6 +195,43 @@ def test_neutral_texts_scans_docs_scaffolds_but_not_records(tmp_path: Path) -> N
     ]
 
 
+# --- rules-module wiring -----------------------------------------------------------
+
+
+def _rules_tree(root: Path) -> None:
+    (root / ".agentloop" / "prompts" / "rules").mkdir(parents=True)
+    (root / ".agentloop" / "prompts" / "rules" / "gate-workflow.md").write_text("# Rules\n", encoding="utf-8")
+
+
+_WIRED = {".agentloop/prompts/commands/req.md": "read `.agentloop/prompts/rules/gate-workflow.md` first\n"}
+
+
+def test_check_rules_wiring_green(tmp_path: Path) -> None:
+    _rules_tree(tmp_path)
+    assert template_lint.check_rules_wiring(tmp_path, dict(_WIRED)) == []
+
+
+def test_check_rules_wiring_trips_on_an_orphan_module(tmp_path: Path) -> None:
+    _rules_tree(tmp_path)
+    # A reference from AGENTS.md alone doesn't count — only a command body loads a module.
+    texts = {"AGENTS.md": "see `.agentloop/prompts/rules/gate-workflow.md`\n"}
+    failures = template_lint.check_rules_wiring(tmp_path, texts)
+    assert failures == [".agentloop/prompts/rules/gate-workflow.md: not read by any command body (orphan module)"]
+
+
+def test_check_rules_wiring_trips_on_a_stale_reference(tmp_path: Path) -> None:
+    _rules_tree(tmp_path)
+    texts = dict(_WIRED)
+    texts["docs/10-requirements.md"] = "spec: `.agentloop/prompts/rules/renamed.md`\n"
+    failures = template_lint.check_rules_wiring(tmp_path, texts)
+    assert failures == ["docs/10-requirements.md: references .agentloop/prompts/rules/renamed.md which does not exist"]
+
+
+def test_check_rules_wiring_green_without_a_rules_dir(tmp_path: Path) -> None:
+    """No rules/ directory and no references (a product repo that trimmed the modules) is healthy."""
+    assert template_lint.check_rules_wiring(tmp_path, {"AGENTS.md": "rules\n"}) == []
+
+
 # --- README parity ---------------------------------------------------------------
 
 _EN = "## A\n## B\nRun `make init` then `make -f agentloop.mk agentloop-upgrade`.\nSee src/agentloop/dag.py.\n"
@@ -280,7 +317,9 @@ def test_live_repo_has_no_drift() -> None:
         (_REPO_ROOT / template_lint.COPILOT_MAPPING).read_text(encoding="utf-8"),
         files[template_lint.AGENTS_MD],
     )
-    failures += template_lint.check_neutral_vocabulary(template_lint.neutral_texts(_REPO_ROOT))
+    texts = template_lint.neutral_texts(_REPO_ROOT)
+    failures += template_lint.check_neutral_vocabulary(texts)
+    failures += template_lint.check_rules_wiring(_REPO_ROOT, texts)
     failures += template_lint.check_data_parity(_REPO_ROOT)
     failures += template_lint.check_guard_defaults(files[template_lint.CONFIG_PATH])
     failures += template_lint.check_readme_parity(files["README.md"], files["README.ja.md"])
