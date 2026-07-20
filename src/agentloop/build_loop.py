@@ -35,6 +35,7 @@ import logging
 import os
 import re
 import shlex
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from datetime import date
@@ -384,15 +385,39 @@ class Orchestrator:
             has_baseline=self.repo.path("docs/05-current-state.md").exists(),
         )
 
-    def _invoke_implementer(self, task: dag.Task, cwd: str, failure_log: str) -> None:
+    @property
+    def _resume_capable(self) -> bool:
+        """Retry-session continuity is claude-preset-gated — deliberately no adapter layer.
+
+        Resume flags are per-CLI (codex is a different subcommand shape; gemini/custom are
+        unverifiable), so only the known `claude -p` contract gets them; every other CLI keeps
+        today's fresh launch per retry.
+        """
+        return bool(self.config.headless_cmd) and self.config.headless_cmd[0] == "claude"
+
+    def _invoke_implementer(
+        self, task: dag.Task, cwd: str, failure_log: str, session: str = "", resume: bool = False
+    ) -> None:
+        """One headless implementer launch; `session`/`resume` thread retry-session continuity.
+
+        With a session id, the first launch stamps it (--session-id) and a retry resumes it
+        (--resume) so the implementer keeps its own context across its retries instead of
+        re-reading ticket/design/code cold. A failed resume falls back to one fresh launch
+        (session files can expire) rather than stopping the loop on a continuity optimization.
+        """
         if self.dry_run:
             print(f"    [dry-run] launch implementer (cwd={cwd}) task={task.id}")
             return
+        prompt = self._implementer_prompt(task, failure_log)
+        flags = (["--resume", session] if resume else ["--session-id", session]) if session else []
         rc, out = _run(
-            [*self.config.headless_cmd, self._implementer_prompt(task, failure_log)],
+            [*self.config.headless_cmd, *flags, prompt],
             cwd=cwd,
             timeout=self.config.timeout_agent,
         )
+        if rc != 0 and resume:
+            print(f"    [resume] {task.id}: resuming session failed (rc={rc}); relaunching fresh")
+            rc, out = _run([*self.config.headless_cmd, prompt], cwd=cwd, timeout=self.config.timeout_agent)
         if rc != 0:
             raise StopLoop(f"{task.id}: failed to launch implementer (rc={rc})\n{out[-1000:]}")
 
@@ -418,17 +443,38 @@ class Orchestrator:
         retries = next((s.retries for s in self.config.steps if s.kind == "cmd" and s.name == "test"), 2)
         return (GateStep(name="task-test", kind="cmd", run=run, retries=retries), *steps)
 
-    def _review_prompt(self, task: dag.Task) -> str:
-        return build_prompts.review_prompt(task, gate_cmds=self.config.gate_cmds)
+    def _review_scope(self, task: dag.Task, cwd: str, base: str) -> tuple[list[str], str]:
+        """The changed-path list + exact diff command that scope the review step's read.
+
+        Computed fresh at review time (the tree moves between retries). A leaf worktree's scope
+        is everything since it forked off the work branch; a serial task's is the commits since
+        `base` (the pre-task HEAD) plus the dirty tree. No base on the work branch (dry-run,
+        or a caller without one) degrades to the unscoped prompt.
+        """
+        if self.dry_run:
+            return [], ""
+        if cwd != self.root:
+            return self.ws.branch_changed_paths(self.ws.branch_for(task.id)), f"git diff {self.branch}...HEAD"
+        if base:
+            return self.ws.changed_since(base), f"git diff {base[:12]}..HEAD"
+        return [], ""
+
+    def _review_prompt(self, task: dag.Task, cwd: str, base: str) -> str:
+        changed, diff_cmd = self._review_scope(task, cwd, base)
+        return build_prompts.review_prompt(
+            task, gate_cmds=self.config.gate_cmds, changed_paths=changed, diff_cmd=diff_cmd
+        )
 
     def _tree_state(self, cwd: str) -> tuple[str, str]:
         return self.ws.tree_state(cwd)
 
-    def _run_agent_step(self, task: dag.Task, cwd: str) -> bool:
+    def _run_agent_step(self, task: dag.Task, cwd: str, base: str) -> bool:
         """Run the review+simplify agent step headless. Returns True if it changed the tree."""
         before = self._tree_state(cwd)
         rc, out = _run(
-            [*self.config.headless_cmd, self._review_prompt(task)], cwd=cwd, timeout=self.config.timeout_agent
+            [*self.config.headless_cmd, self._review_prompt(task, cwd, base)],
+            cwd=cwd,
+            timeout=self.config.timeout_agent,
         )
         if rc != 0:
             raise StopLoop(f"{task.id}: failed to launch the review agent step (rc={rc})\n{out[-1000:]}")
@@ -443,7 +489,7 @@ class Orchestrator:
         rc, out = _run(shlex.split(step.run), cwd=cwd, timeout=self.config.timeout_cmd)
         return "" if rc == 0 else summarize_failure(step.run, rc, out)
 
-    def _run_pipeline(self, task: dag.Task, cwd: str) -> tuple[str | None, str]:
+    def _run_pipeline(self, task: dag.Task, cwd: str, base: str = "") -> tuple[str | None, str]:
         """Run the quality-gate steps (config quality_gate.steps = the DoD) in order.
 
         Returns (failed_step_name, failure_summary), or (None, "") when every step passed.
@@ -458,7 +504,7 @@ class Orchestrator:
         passed: list[GateStep] = []
         for step in steps:
             if step.kind == "agent":
-                if self._run_agent_step(task, cwd):
+                if self._run_agent_step(task, cwd, base):
                     for prev in passed:
                         failure = self._run_cmd_step(prev, cwd)
                         if failure:
@@ -473,7 +519,7 @@ class Orchestrator:
             passed.append(step)
         return None, ""
 
-    def _run_task_to_done(self, task: dag.Task, cwd: str) -> tuple[bool, str]:
+    def _run_task_to_done(self, task: dag.Task, cwd: str, base: str = "") -> tuple[bool, str]:
         """Take one task to done via implementer implementation + the quality-gate pipeline.
 
         Each cmd step carries its own send-back budget (step.retries); a failure consumes only
@@ -482,9 +528,15 @@ class Orchestrator:
         """
         budgets = {s.name: s.retries for s in self._steps_for(task) if s.kind == "cmd"}
         failure_log = ""
+        # Retry-session continuity (claude preset only): the implementer resumes its own session
+        # across its retries. A step's final retry is forced fresh — a resumed session re-reads
+        # its own failed reasoning, and the last attempt deserves an unanchored mind working from
+        # the compact failure summary alone. The review agent step is never resumed (independence).
+        session = str(uuid.uuid4()) if self._resume_capable and not self.dry_run else ""
+        resume = False
         while True:
-            self._invoke_implementer(task, cwd, failure_log)
-            failed, failure_log = self._run_pipeline(task, cwd)
+            self._invoke_implementer(task, cwd, failure_log, session=session, resume=resume)
+            failed, failure_log = self._run_pipeline(task, cwd, base)
             if failed is None:
                 return True, ""
             left = budgets.get(failed, 0)
@@ -494,6 +546,10 @@ class Orchestrator:
             if left <= 0:
                 return False, failure_log
             budgets[failed] = left - 1
+            if session and budgets[failed] <= 0:  # final retry for this step → fresh session
+                session, resume = str(uuid.uuid4()), False
+            else:
+                resume = bool(session)
 
     # -- post-merge integration gate --
 
@@ -729,7 +785,7 @@ class Orchestrator:
             self._set_status(task.id, "in_progress")
             print(f"  [serial] {task.id} {task.title}")
             pre_head = "" if self.dry_run else self.ws.head()
-            ok, log = self._run_task_to_done(task, cwd=self.root)
+            ok, log = self._run_task_to_done(task, cwd=self.root, base=pre_head)
             if not ok:
                 self._set_status(task.id, "blocked")
                 self._escalate(

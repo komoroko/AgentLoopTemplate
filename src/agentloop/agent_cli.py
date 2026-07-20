@@ -8,8 +8,8 @@ config comment shows) or any custom command string, which is shlex-split into th
 
 The rewrite is surgical line surgery (never a YAML round-trip), so every comment and the file
 layout survive. The prompt is appended by build_loop.py as the last
-argument — a CLI that cannot take it that way is the documented (and deliberately unbuilt)
-extension point in the config comment, not this tool's concern.
+argument — a CLI that cannot take it that way is a deliberately unbuilt (YAGNI) extension
+point: extend _parse_headless in build_loop.py at that point, not this tool.
 
 Usage:
   agentloop agent codex

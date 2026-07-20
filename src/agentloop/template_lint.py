@@ -33,6 +33,8 @@ logger = logging.getLogger(__name__)
 AGENTS_MD = "AGENTS.md"
 TASKS_CMD = ".agentloop/prompts/commands/tasks.md"
 BUILD_CMD = ".agentloop/prompts/commands/build.md"
+RULES_DIR = ".agentloop/prompts/rules"
+COMMANDS_DIR = ".agentloop/prompts/commands"
 STATE_PATH = common.STATE_PATH
 CONFIG_PATH = common.CONFIG_PATH
 CLAUDE_MAPPING = "CLAUDE.md"
@@ -56,6 +58,8 @@ _DESCRIPTION_RE = re.compile(r"^description:\s*(.+?)\s*$", re.MULTILINE)
 # Claude-only mechanism names must never leak into the agent-neutral files — they belong in
 # the capability mappings alone. A leak means a neutral body regressed to one agent's dialect.
 _CLAUDE_ONLY_TERMS = ("AskUserQuestion", "PushNotification", "ExitPlanMode")
+# A rules-module mention is the full materialized path — the form the wiring lines use.
+_RULES_REF_RE = re.compile(r"\.agentloop/prompts/rules/([a-z0-9-]+\.md)")
 
 
 def _require(text: str, path: str, terms: list[str], what: str) -> list[str]:
@@ -180,6 +184,29 @@ def check_neutral_vocabulary(texts: dict[str, str]) -> list[str]:
         for term in _CLAUDE_ONLY_TERMS:
             if term in text:
                 failures.append(f"{path}: Claude-only mechanism `{term}` leaked into a neutral file")
+    return failures
+
+
+def check_rules_wiring(root: Path, texts: dict[str, str]) -> list[str]:
+    """Every rules module is read by a command body, and every rules reference resolves.
+
+    The modules in .agentloop/prompts/rules/ (phase-scoped rules split out of AGENTS.md) are
+    loaded only through an explicit "read .agentloop/prompts/rules/<x>.md" line in a command
+    body — nothing auto-loads them. The drift this trips on: a module no command reads (it is
+    silently never loaded), or a reference left pointing at a renamed/deleted module. A repo
+    with no rules/ directory and no references is healthy (products may trim the modules).
+    """
+    modules = {p.name for p in (root / RULES_DIR).glob("*.md")}
+    failures: list[str] = []
+    read_by_commands: set[str] = set()
+    for path, text in sorted(texts.items()):
+        for name in _RULES_REF_RE.findall(text):
+            if path.startswith(COMMANDS_DIR + "/"):
+                read_by_commands.add(name)
+            if name not in modules:
+                failures.append(f"{path}: references {RULES_DIR}/{name} which does not exist")
+    for name in sorted(modules - read_by_commands):
+        failures.append(f"{RULES_DIR}/{name}: not read by any command body (orphan module)")
     return failures
 
 
@@ -333,7 +360,9 @@ def main(argv: list[str] | None = None) -> int:
             (root / COPILOT_MAPPING).read_text(encoding="utf-8"),
             files[AGENTS_MD],
         )
-        failures += check_neutral_vocabulary(neutral_texts(root))
+        texts = neutral_texts(root)
+        failures += check_neutral_vocabulary(texts)
+        failures += check_rules_wiring(root, texts)
         failures += check_data_parity(root)
         failures += check_guard_defaults(files[CONFIG_PATH])
         failures += check_readme_parity(files["README.md"], files["README.ja.md"])

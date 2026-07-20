@@ -7,6 +7,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+import yaml
 
 from agentloop import build_loop, doctor, events
 from tests._support import fake_git
@@ -113,6 +114,21 @@ def test_empty_smoke_with_explicit_required_false_is_accepted(project: Path) -> 
     findings = doctor.run_checks()
     assert not [m for m in _messages(findings, "WARN") if "smoke" in m]
     assert not _messages(findings, "FAIL")
+
+
+def test_shipped_scaffold_config_leaves_the_smoke_decision_open(project: Path) -> None:
+    # The scaffold must not pre-record `required: false` — that is a human decision, and an
+    # explicit key would silence the WARN above on every fresh repo before anyone decided.
+    from agentloop import data as data_mod
+
+    scaffold = data_mod.read_text("scaffold/agentloop/config.yaml")
+    smoke = next(
+        step for step in yaml.safe_load(scaffold)["build"]["quality_gate"]["steps"] if step.get("name") == "smoke"
+    )
+    assert "required" not in smoke
+    (project / ".agentloop" / "config.yaml").write_text(scaffold, encoding="utf-8")
+    findings = doctor.run_checks()
+    assert any("smoke has no command" in m for m in _messages(findings, "WARN"))
 
 
 def _install_schemas(project: Path) -> None:

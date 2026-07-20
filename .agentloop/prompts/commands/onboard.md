@@ -3,6 +3,7 @@
 Run once right after `agentloop init` seeded AgentLoop into an ongoing repository (harmless to
 re-run — it refreshes the baseline). This is what makes the existing implementation visible to
 the template's machinery: `/req` and `/design` start from the baseline this command produces.
+(Phase-scoped rules — gate self-assessment, approval-wait, context budget: read `.agentloop/prompts/rules/gate-workflow.md` before starting.)
 (Capability terms like `structured-question` resolve per AGENTS.md "Capability vocabulary" and your agent's capability mapping.)
 
 ## Scope guard (read first)
@@ -29,7 +30,7 @@ the template's machinery: `/req` and `/design` start from the baseline this comm
    - **implementation status**: implemented capabilities, in-flight/half-done work, TODO
      comments, and (reference only) open Issues/PRs.
 2. Fill `docs/05-current-state.md` (the scaffold's sections map 1:1 to the survey above).
-   Keep it lean — link out instead of inlining (AGENTS.md "Context budget").
+   Keep it lean — link out instead of inlining (`.agentloop/prompts/rules/gate-workflow.md` "Context budget").
 3. Write a short summary of the current product into `docs/00-product-brief.md` (what it is
    today), keeping the brief's brownfield note about delta-scoped cycles.
    - **Finding no documents at all is a supported, normal state** — the baseline's "Existing
@@ -50,7 +51,7 @@ the template's machinery: `/req` and `/design` start from the baseline this comm
    - next step: write the chosen change into `docs/00-product-brief.md` and run `/req`. Since the
      baseline now holds everything the survey learned, this is a clean checkpoint — suggest
      `session-compaction` (or starting `/req` in a fresh session); the survey conversation is no
-     longer needed (pre-compact check: AGENTS.md "Context budget").
+     longer needed (pre-compact check: `.agentloop/prompts/rules/gate-workflow.md` "Context budget").
 
 Write the deliverables in the user's language.
 

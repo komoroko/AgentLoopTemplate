@@ -109,7 +109,7 @@ AgentLoop is itself a multi-agent orchestration, built on three axes:
   scheduler; each phase is delegated to a dedicated role agent to separate concerns.
 - **Context** — kept minimal: SSOT files hold the truth, role agents read only what they need,
   failures are **summarized not dumped**, logs rotate, and memory is tiered (session / cycle /
-  permanent). See "Context budget" in `AGENTS.md`.
+  permanent). See "Context budget" in `.agentloop/prompts/rules/gate-workflow.md`.
 - **Tools** — minimal scoped role-agent grants; the quality gate has a retry cap.
 
 ## Setup
@@ -325,7 +325,7 @@ SSOT). Writing issues is outward-facing, so the opt-in is the consent.
 | `.agentloop/config.yaml` | deterministic-execution knobs + the single DoD (`quality_gate.steps`) |
 | `.agentloop/agentloop.lock` | the tool version/source, schema versions, and a content hash per installed file |
 | `.agentloop/schema/` | JSON Schemas for `config.yaml` / `tasks.yaml` (editor validation; `agentloop doctor`) — materialized |
-| `.agentloop/prompts/` | the shared phase procedures and role definitions every agent reads — materialized |
+| `.agentloop/prompts/` | the shared phase procedures, role definitions, and phase-scoped rules modules (`rules/`) every agent reads — materialized |
 | `.agentloop/AGENTS.agentloop.md` | the operating-rules body, imported by the agent surfaces — materialized |
 | `AGENTS.md` / `CLAUDE.md` | the agent-neutral operating rules / the Claude Code capability mapping (Claude Code reads CLAUDE.md, not AGENTS.md; its `@AGENTS.md` import loads the rules exactly once. `agentloop install claude` writes the mapping block and the `.claude/` wrappers into a product repo) |
 | `.claude/`, `.github/` | per-agent entry points, role wrappers, and gate-guard hook registration (opt-in via `agentloop install`) |

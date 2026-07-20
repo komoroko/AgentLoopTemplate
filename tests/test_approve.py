@@ -117,3 +117,55 @@ def test_main_missing_state_fails(repo: Path, capsys: pytest.CaptureFixture[str]
     (repo / ".agentloop" / "state.md").unlink()
     assert approve.main(["requirements"]) == 1
     assert "cannot read" in capsys.readouterr().err
+
+
+# --- readiness preconditions (machine anchors; --force is the audited override) --
+
+
+def _approve_through(gates: tuple[str, ...]) -> None:
+    for gate in gates:
+        assert approve.main([gate]) == 0
+
+
+def test_unresolved_marker_blocks_gate1_until_forced(repo: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    (repo / "docs").mkdir()
+    (repo / "docs" / "10-requirements.md").write_text(
+        "# req\n- R-1 must do X [NEEDS CLARIFICATION: which X?]\n", encoding="utf-8"
+    )
+    assert approve.main(["requirements"]) == 1
+    assert "unresolved [NEEDS CLARIFICATION] marker" in capsys.readouterr().err
+    assert approve.main(["requirements", "--force"]) == 0
+    recorded = events.load_events(str(repo / ".agentloop" / "events.ndjson"))
+    assert any(e.event == "gate_approved" and "forced past:" in e.detail for e in recorded)
+
+
+def test_taught_marker_in_backticks_or_comments_does_not_block(repo: Path) -> None:
+    # The scaffold *teaches* the marker inside backtick spans and HTML comments — not live work.
+    (repo / "docs").mkdir()
+    (repo / "docs" / "10-requirements.md").write_text(
+        "mark undecided things `[NEEDS CLARIFICATION: <what>]`\n<!-- resolved [NEEDS CLARIFICATION] audit -->\n",
+        encoding="utf-8",
+    )
+    assert approve.main(["requirements"]) == 0
+
+
+def test_gate4_requires_a_head_bound_security_review(repo: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    _approve_through(("requirements", "design", "tasks"))
+    assert approve.main(["build"]) == 1
+    assert "no security-review report" in capsys.readouterr().err
+    (repo / ".agentloop" / "security-review.md").write_text("Reviewed-HEAD: 0doesnotmatch\n", encoding="utf-8")
+    assert approve.main(["build"]) == 1  # bound to some other HEAD (or no git): still refused
+    (repo / ".agentloop" / "security-review.md").unlink()
+    assert approve.main(["build", "--force"]) == 0  # audited override
+
+
+def test_open_escalation_blocks_gate5_until_resolved(repo: Path) -> None:
+    _approve_through(("requirements", "design", "tasks"))
+    (repo / ".agentloop" / "security-review.md").write_text("Reviewed-HEAD: irrelevant\n", encoding="utf-8")
+    events_path = str(repo / ".agentloop" / "events.ndjson")
+    events.log_escalation("blocked", "T-001 stuck", task="T-001", events_path=events_path, state_path="")
+    assert approve.main(["build", "--force"]) == 0  # escalation also gates ④; force through to reach ⑤
+    assert approve.main(["release"]) == 1
+    eid = next(e.id for e in events.load_events(events_path) if e.event == "blocked")
+    assert events.main(["--resolve", str(eid), "--note", "fixed"]) == 0
+    assert approve.main(["release"]) == 0

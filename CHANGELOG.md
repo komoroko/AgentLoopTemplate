@@ -5,6 +5,57 @@ upgrade` shows the sections between the installed version, recorded in
 `.agentloop/agentloop.lock`, and the new one). The version's single source is
 `pyproject.toml [project] version`.
 
+## [0.8.4] - 2026-07-20
+
+### Added
+- **Gate ③ gets the adversarial-review round gates ① and ② already had.** The reviewer's new
+  task-plan lenses attack what `dag --validate/--trace` cannot check mechanically: missing
+  `blockedBy` edges, cross-task file collisions (the merge-conflict predictor), untestable
+  acceptance criteria, scope creep, and cutover splits. Same disposition vocabulary
+  (`fixed`/`disputed`/`accepted-risk`), same one-round + hotfix-waiver rules.
+- **`agentloop approve` machine-checks each gate's recorded evidence before recording.**
+  Gates ①/② refuse on an unresolved inline `[NEEDS CLARIFICATION]` marker (backticked/
+  commented teaching mentions don't count), gate ④ on a missing or stale `Reviewed-HEAD`
+  security-review binding (unknown HEAD fails closed) or open escalations, gate ⑤ on open
+  escalations. `--force` overrides, with the skipped findings recorded in the
+  `gate_approved` event — auditable, never silent.
+- **Mode A implementers resume their own session across retries (claude preset only).** The
+  first launch stamps `--session-id`, send-backs `--resume` it, and a step's final retry is
+  forced fresh so an anchored session never gets the last word; a failed resume falls back to
+  one fresh launch. Other headless CLIs keep fresh launches — deliberately no adapter layer.
+  The review step, integration fixer, and security reviewer stay independent fresh contexts.
+- **The quality gate's review step is scoped to the task's exact diff.** The reviewer prompt
+  now carries the changed-path list and the precise diff command (leaf: merge-base vs the
+  work branch; serial: pre-task HEAD) instead of making a cold context re-survey the tree.
+
+### Fixed
+- **The scaffold no longer pre-records the smoke decision.** Shipping `required: false`
+  explicitly read as "a human decided" and silenced doctor's empty-smoke WARN on every fresh
+  repo; the key is now absent until a human actually decides (build_loop's default behavior
+  is unchanged).
+- **events.py's id-lock comment claimed cross-process safety that does not exist.** A
+  human-run `agentloop events --add/--resolve` during a live loop is a separate process; the
+  per-append max-id re-read is what keeps ids unique across that gap, and the comment now
+  says so (and why it must not be "optimized" into an in-memory counter).
+
+### Changed
+- **The prompt layer restates AGENTS.md far less** (token-efficiency pass, adversarially
+  reviewed). build.md narrates the consumption algorithm once for both modes; the
+  "Once approved" / "While waiting" / self-assessment blocks in every phase procedure keep
+  only their load-bearing invariants plus a rules-module pointer; config.yaml's comments
+  compress to knob one-liners (1216 → 807 words) with the narrative delegated to build.md;
+  the state.md header shrinks so the SessionStart 20-line window shows more live gate state;
+  wrappers drop the repeated capability enumeration.
+- **AGENTS.md splits into an always-on core plus a phase-scoped rules module.** The
+  always-loaded core (2,570 → 950 words) keeps only rules whose violation window is "any
+  time" — gate mechanics, branch/commit discipline, the capability vocabulary, the never-list
+  — while gate self-assessment, the adversarial-review/approval-wait conduct, the context-
+  budget tiers, cycle/hotfix mechanics, and the enforcement-layer detail move to
+  `.agentloop/prompts/rules/gate-workflow.md`, read by the phase commands that need it
+  (`/req` `/design` `/tasks` `/build` `/verify` `/onboard`; `/status` and `/revise` stay
+  core-only). A new template-lint canary (`check_rules_wiring`) guards against an orphaned
+  module or a stale reference. ~2.5–3k tok saved on every session.
+
 ## [0.8.3] - 2026-07-20
 
 ### Added
