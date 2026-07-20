@@ -1,5 +1,6 @@
 # /build — Implementation phase (autonomous loop consumption)
 
+(Phase-scoped rules — gate self-assessment, approval-wait, context budget: read `.agentloop/prompts/rules/gate-workflow.md` before starting.)
 (Capability terms like `role-delegation` resolve per AGENTS.md "Capability vocabulary" and your agent's capability mapping.)
 
 ## Prerequisite gate check (always first)
@@ -86,7 +87,7 @@ puts four duties on the lead that mode A does in code:
 4. **Session hygiene.** At a layer boundary, when the conversation is heavy with re-run
    output, you may suggest `session-compaction` — only when no task is `in_progress`, merges
    are committed and marked `done`, and observations are recorded in tickets / `state.md`
-   (pre-compact check: AGENTS.md "Context budget"; the SSOT rehydrates the next iteration).
+   (pre-compact check: `.agentloop/prompts/rules/gate-workflow.md` "Context budget"; the SSOT rehydrates the next iteration).
    Never mid-retry or while a worktree awaits its merge. (Mode A runs in separate processes
    and needs none of this.)
 
@@ -142,7 +143,7 @@ algorithm above). Operational notes:
      without a launch check — and propose the command to fill in plus `required: true` (mode A
      prints this nudge mechanically at gate ④; with `required: true` set, an empty run refuses
      to build at all — an unnoticed empty smoke silently defeats its purpose).
-   - **Always present a self-assessment as well** (AGENTS.md "Gate self-assessment"),
+   - **Always present a self-assessment as well** (`.agentloop/prompts/rules/gate-workflow.md` "Gate self-assessment"),
      including the outcomes of spots that produced blocked/needs-revision.
 4. **While waiting for approval**, only outcome-independent speculative work (AGENTS.md
    "Minimizing the approval-wait bottleneck"; record it in the speculative work log of
@@ -154,7 +155,7 @@ algorithm above). Operational notes:
    `agentloop approve build [BY=<approver>]`: the operation is the only sanctioned write path;
    never edit a gate line yourself (mechanics: AGENTS.md "Gate rules" 2). Point to "next is
    `/verify`", and after committing the gate's deliverables, suggest `session-compaction`
-   (pre-compact check: AGENTS.md "Context budget").
+   (pre-compact check: `.agentloop/prompts/rules/gate-workflow.md` "Context budget").
 
 ## Monitoring long-running loops (optional)
 When running long in the background, you may periodically notify the human of progress

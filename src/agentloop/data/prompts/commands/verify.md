@@ -1,5 +1,6 @@
 # /verify — Test phase
 
+(Phase-scoped rules — gate self-assessment, approval-wait, context budget: read `.agentloop/prompts/rules/gate-workflow.md` before starting.)
 (Capability terms resolve per AGENTS.md "Capability vocabulary" and your agent's capability mapping.)
 
 ## Prerequisite gate check (always first)
@@ -15,7 +16,7 @@ If unapproved, do not work — **invoking `/verify` is not itself the gate-④ a
    - **the dependency audit** (e.g. `make audit`, pip-audit, npm audit) — a dependency vulnerability audit (Python/frontend).
 4. Record discovered defects/vulnerabilities in the test-plan's defect table. Make serious ones into new tasks, append them to `state.md`, and prompt the human to decide on rolling back to `/build` (those new tasks are `phase: verify`). **Rolling back to `/build` is a `/revise` operation like any other**: at the human's decision run `agentloop revise --to build --reason '<defect>'`, which resets `gates.build` and `gates.release` to `pending` in a chain — do not re-enter `/build` while a stale `gates.build: approved` still stands; gate ④ is re-taken after the fix. For **requirement/design-level problems** (a spec error, etc.), use `/revise` at the human's discretion to roll back to the relevant phase (requirements/design).
 5. **Gate ⑤**: present the test result summary (pass/fail, remaining issues, non-functional status) as an **`approval-presentation`** and have the human decide on release.
-   - **Always present a self-assessment as well** (contents: AGENTS.md "Gate self-assessment"), centered on release confidence and thinly-verified aspects.
+   - **Always present a self-assessment as well** (contents: `.agentloop/prompts/rules/gate-workflow.md` "Gate self-assessment"), centered on release confidence and thinly-verified aspects.
 
 Write the deliverable (`docs/test/test-plan.md`) in the user's language.
 
@@ -27,4 +28,4 @@ Write the deliverable (`docs/test/test-plan.md`) in the user's language.
   - **Promote durable lessons into the template before `cycle-close` archives the retrospective.** For each item in the retrospective's "Process / template improvement" and "Lessons for upstream" sections, decide with the human whether to lift it into the always-loaded template files (`AGENTS.md`, the procedure files in `.agentloop/prompts/**`, the per-agent wrappers and capability mappings); apply the agreed promotions and record where each landed (retrospective §5).
 - **If `docs/05-current-state.md` exists** (an adopted/ongoing repo), update it with what this cycle changed: new modules, new reusable assets, convention changes, in-flight work that got finished.
 - **If the cycle ships as a PR**, offer `agentloop pr-draft`: it assembles the PR body from the SSOT (gate approvals, task table, requirement coverage, security-review binding, commit list) into `.agentloop/pr-draft.md`. Creating/pushing the PR itself stays outward-facing and human-run — the tool only prints the `gh pr create --body-file` line for the human.
-- Report completion. **To start the next delta cycle** (ongoing repos run AgentLoop as a series of change-scoped cycles), tell the human to run `agentloop cycle-close --name <slug>` — it archives this cycle's deliverables to `docs/archive/`, restores fresh scaffolds, and resets gates/phase. Closing a cycle is the human's operation, like opening a gate; do not run it yourself. Recommend starting the next cycle in a fresh session: the previous cycle's conversation is no longer needed — its baseline lives in `docs/05-current-state.md` and `docs/archive/` (AGENTS.md "Context budget").
+- Report completion. **To start the next delta cycle** (ongoing repos run AgentLoop as a series of change-scoped cycles), tell the human to run `agentloop cycle-close --name <slug>` — it archives this cycle's deliverables to `docs/archive/`, restores fresh scaffolds, and resets gates/phase. Closing a cycle is the human's operation, like opening a gate; do not run it yourself. Recommend starting the next cycle in a fresh session: the previous cycle's conversation is no longer needed — its baseline lives in `docs/05-current-state.md` and `docs/archive/` (`.agentloop/prompts/rules/gate-workflow.md` "Context budget").
