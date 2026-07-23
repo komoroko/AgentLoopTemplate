@@ -41,7 +41,7 @@ from typing import Any
 from packaging.version import InvalidVersion, Version
 
 import agentloop
-from agentloop import common
+from agentloop import common, strict_yaml
 from agentloop import data as data_mod
 from agentloop import lock as lock_mod
 from agentloop import repo as repo_mod
@@ -57,6 +57,9 @@ SETTINGS_PATH = ".claude/settings.json"
 MATERIALIZED: tuple[tuple[str, str], ...] = (
     ("prompts/", ".agentloop/prompts/"),
     ("schema/", ".agentloop/schema/"),
+    # The Containerfiles are materialized so the sandbox a review ran in is reviewable in the
+    # repository, not only inside the wheel that built it.
+    ("oci/", ".agentloop/oci/"),
     ("rules/AGENTS.md", ".agentloop/AGENTS.agentloop.md"),
 )
 
@@ -446,7 +449,10 @@ def sync(repo: repo_mod.Repo, *, check: bool = False, force: bool = False) -> in
     files = dict(recorded_raw or {})
     files.update({_materialized_key(rel): digest for rel, digest in hashes.items()})
     data["prompts"] = {"version": agentloop.__version__, "files": files}
-    data.setdefault("agentloop", {})["version"] = agentloop.__version__
+    # Stamp the running release into the lock. Without this the lock keeps claiming the version
+    # that wrote the repo *before* the upgrade, so the startup skew warning fires forever and
+    # `doctor` reports a repository that was just brought up to date as stale.
+    data["tool_version"] = agentloop.__version__
     lock_mod.write(repo.lock, data)
     skipped = sum(1 for i in items if i.op == "skip-modified")
     written = sum(1 for i in items if i.op in ("install", "update"))
@@ -459,10 +465,13 @@ def sync(repo: repo_mod.Repo, *, check: bool = False, force: bool = False) -> in
 
 
 def _template_mode(repo: repo_mod.Repo) -> bool:
-    """gates.template_mode from config.yaml (False when unreadable — products default off)."""
-    raw = common.read_yaml(str(repo.config))
-    gates = raw.get("gates") if isinstance(raw, dict) else None
-    return bool(gates.get("template_mode")) if isinstance(gates, dict) else False
+    """guard.template_mode from config.yaml (False when unreadable — products default off)."""
+    from agentloop import models
+
+    try:
+        return models.Config.parse(repo.config.read_text(encoding="utf-8")).template_mode
+    except (OSError, models.DocumentError, strict_yaml.StrictParseError):
+        return False
 
 
 def _settings_template() -> dict[str, Any]:

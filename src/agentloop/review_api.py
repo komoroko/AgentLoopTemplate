@@ -26,7 +26,7 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
-from agentloop import common, mdlite
+from agentloop import event_chain, mdlite, models, strict_yaml
 from agentloop import events as events_mod
 
 _MAX_DELIVERABLE = 300_000  # bytes of one deliverable the pane will render
@@ -57,8 +57,10 @@ _GATE_SPEC: dict[str, dict[str, list[_SpecItem]]] = {
         "main": ["docs/20-design.md", ("glob", "docs/decisions", "ADR-*.md")],
         "context": ["docs/10-requirements.md"],
     },
-    "tasks": {"main": [("glob", "docs/tasks", "T-*.md"), ("code", ".agentloop/tasks.yaml")], "context": []},
-    "build": {"main": [".agentloop/security-review.md"], "context": []},
+    "tasks": {"main": [("glob", "docs/tasks", "T-*.md"), ("code", ".agentloop/plan.yaml")], "context": []},
+    # Gate 4 reviews the generated review, not a security-review markdown file: green tests
+    # plus an AI's summary was never the evidence this gate is supposed to weigh.
+    "build": {"main": [("code", ".agentloop/review.yaml")], "context": []},
     "release": {"main": ["docs/test/test-plan.md", "docs/retrospective.md"], "context": []},
 }
 
@@ -225,22 +227,32 @@ def _review_meta(root: Path, head: str | None) -> dict[str, object]:
     return {"reviewed_head": reviewed, "head": head, "fresh": bool(reviewed and head and reviewed == head)}
 
 
+def _gate_statuses(root: Path) -> dict[str, str]:
+    """Gate statuses from state.yaml; {} when it cannot be read.
+
+    A broken SSOT must not take the review pane down — but an unreadable gate reads as
+    `pending`, never as approved, so the pane can only ever understate what has been decided.
+    """
+    try:
+        raw = strict_yaml.load_mapping((root / ".agentloop" / "state.yaml").read_text(encoding="utf-8"))
+    except (OSError, strict_yaml.StrictParseError):
+        return {}
+    state = models.State(raw)
+    return {gate: state.gate_status(gate) for gate in models.GATE_ORDER}
+
+
 def collect_review(root: str | Path, gate: str) -> dict[str, object]:
     """Everything the review pane shows for `gate`. Raises ReviewError only for an unknown gate."""
     if gate not in _GATE_SPEC:
-        raise ReviewError(f"unknown gate '{gate}' (expected one of {', '.join(common.GATE_ORDER)})")
+        raise ReviewError(f"unknown gate '{gate}' (expected one of {', '.join(models.GATE_ORDER)})")
     root = Path(root)
 
-    gates: dict[str, str] = {}
-    try:
-        gates = common.gates_of(common.read_frontmatter(str(root / ".agentloop" / "state.md"))) or {}
-    except Exception:  # noqa: BLE001 - a broken SSOT must not take the review pane down
-        pass
-    awaiting = next((g for g in common.GATE_ORDER if gates.get(g) != "approved"), None)
+    gates = _gate_statuses(root)
+    awaiting = next((g for g in models.GATE_ORDER if gates.get(g) != "approved"), None)
 
     result: dict[str, object] = {
         "gate": gate,
-        "index": common.GATE_ORDER.index(gate) + 1,
+        "index": models.GATE_ORDER.index(gate) + 1,
         "status": gates.get(gate, "pending"),
         "awaiting": awaiting,
         "is_awaiting": gate == awaiting,
@@ -257,6 +269,6 @@ def collect_review(root: str | Path, gate: str) -> dict[str, object]:
         head_value = diff.get("head")
         result["review_meta"] = _review_meta(root, head_value if isinstance(head_value, str) else None)
     if gate == "release":
-        opened = events_mod.open_escalations(events_mod.load_events(str(root / ".agentloop" / "events.ndjson")))
-        result["open_escalations"] = len(opened)
+        events, _ = event_chain.scan(root / ".agentloop" / "events.ndjson")
+        result["open_escalations"] = sum(1 for e in events if e.event in events_mod.ATTENTION_EVENTS)
     return result

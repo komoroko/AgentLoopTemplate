@@ -29,7 +29,7 @@ from typing import Any
 
 import yaml
 
-from agentloop import common, dag
+from agentloop import common, dag, models
 from agentloop import repo as repo_mod
 
 logger = logging.getLogger(__name__)
@@ -97,9 +97,16 @@ class Action:
 # --- pure logic (under test) -----------------------------------------------
 
 
+#: Label families this tool owns. Anything else on an issue belongs to a human and is left
+#: alone. Keeping this in step with `desired_issue` is load-bearing: a family that is emitted
+#: but not listed here reads as "missing" on every run, so each sync re-adds the same labels
+#: forever.
+MANAGED_PREFIXES: tuple[str, ...] = ("kind:", "status:", "risk:", "claim:")
+
+
 def _managed(label: str, base_label: str) -> bool:
-    """Whether this is a label this tool manages (agentloop/kind:/status:/phase:/req:). Others' labels untouched."""
-    return label == base_label or label.startswith(("kind:", "status:", "phase:", "req:"))
+    """Whether this is a label this tool manages. Everyone else's labels are untouched."""
+    return label == base_label or label.startswith(MANAGED_PREFIXES)
 
 
 # The invisible task marker embedded in each mirror issue's body. Matching by it (not the title)
@@ -117,15 +124,16 @@ def _issue_body(task: dag.Task) -> str:
     deps = ", ".join(task.blocked_by) if task.blocked_by else "none"
     return "\n".join(
         [
-            f"`{task.id}` — AgentLoop task (SSOT: `.agentloop/tasks.yaml` / details: `docs/tasks/{task.id}.md`)",
+            f"`{task.id}` — AgentLoop task (SSOT: `.agentloop/plan.yaml` / details: `docs/tasks/{task.id}.md`)",
             "",
             f"- kind: {task.kind}",
-            f"- phase: {task.phase}",
-            f"- req: {task.req or '(unset)'}",
+            f"- risk: {task.risk}",
+            f"- claims: {', '.join(task.claim_ids) or '(none)'}",
+            f"- oracles: {', '.join(task.oracle_ids) or '(none)'}",
             f"- blockedBy: {deps}",
-            f"- test: {task.test or '(unset)'}",
             "",
-            "> This issue is a **one-way mirror** from tasks.yaml. Editing it here is not reflected in the SSOT.",
+            "> This issue is a **one-way mirror** from plan.yaml. Editing it here changes nothing:",
+            "> the plan is frozen at gate 3 and only `agentloop revise` can move it.",
             "",
             f"<!-- agentloop:{task.id} -->",
         ]
@@ -133,8 +141,8 @@ def _issue_body(task: dag.Task) -> str:
 
 
 def desired_issue(task: dag.Task, *, base_label: str, close_on_done: bool) -> DesiredIssue:
-    labels = [base_label, f"kind:{task.kind}", f"status:{task.status}", f"phase:{task.phase}"]
-    labels += [f"req:{token}" for token in dag.task_req_ids(task)]
+    labels = [base_label, f"kind:{task.kind}", f"status:{task.status}", f"risk:{task.risk}"]
+    labels += [f"claim:{cid}" for cid in task.claim_ids]
     return DesiredIssue(
         title=f"{task.id}: {task.title}",
         body=_issue_body(task),
@@ -205,19 +213,19 @@ class LabelSpec:
 
 
 def label_specs(graph: dag.Graph, base_label: str) -> list[LabelSpec]:
-    """The deterministic set of all labels this tool uses. Fixed (kind/status/phase) + dynamic (current tasks' req)."""
+    """Every label this tool uses: the fixed kind/status/risk sets plus one per claim in the plan."""
     specs: list[LabelSpec] = [LabelSpec(base_label, _BASE_COLOR, "mirror issue for an AgentLoop task")]
     for kind in sorted(dag.KIND_VALUES):
         specs.append(LabelSpec(f"kind:{kind}", _KIND_COLORS.get(kind, _DEFAULT_COLOR), f"kind: {kind}"))
     for status in sorted(dag.STATUS_VALUES):
         specs.append(LabelSpec(f"status:{status}", _STATUS_COLORS.get(status, _DEFAULT_COLOR), f"status: {status}"))
-    for phase in dag.PHASE_ORDER:
-        specs.append(LabelSpec(f"phase:{phase}", _PHASE_COLORS.get(phase, _DEFAULT_COLOR), f"phase: {phase}"))
-    reqs: set[str] = set()
+    for risk in models.RISK_ORDER:
+        specs.append(LabelSpec(f"risk:{risk}", _PHASE_COLORS.get(risk, _DEFAULT_COLOR), f"risk: {risk}"))
+    claims: set[str] = set()
     for task in graph.tasks:
-        reqs.update(dag.task_req_ids(task))
-    for token in sorted(reqs):
-        specs.append(LabelSpec(f"req:{token}", _REQ_COLOR, f"covered requirement: {token}"))
+        claims.update(task.claim_ids)
+    for claim_id in sorted(claims):
+        specs.append(LabelSpec(f"claim:{claim_id}", _REQ_COLOR, f"answers claim {claim_id}"))
     return specs
 
 
@@ -353,7 +361,7 @@ def main(argv: list[str] | None = None) -> int:
     cfg = GithubConfig.load(str(repo.config))
 
     if args.dry_run:
-        graph = dag.load(repo.tasks)
+        graph = dag.load(repo)
         print("[dry-run] labels to create/ensure:")
         print(", ".join(spec.name for spec in label_specs(graph, cfg.label)))
         actions = plan_actions(graph.tasks, {}, base_label=cfg.label, close_on_done=cfg.close_on_done)
@@ -367,7 +375,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     try:
-        graph = dag.load(repo.tasks)
+        graph = dag.load(repo)
         ensure_labels(graph, cfg)  # provision labels before creating issues (create fails if they are absent)
         existing = fetch_existing(cfg)
         actions = plan_actions(graph.tasks, existing, base_label=cfg.label, close_on_done=cfg.close_on_done)

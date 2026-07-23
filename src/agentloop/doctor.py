@@ -1,43 +1,49 @@
-"""agentloop doctor — one-shot diagnosis of the environment and the SSOT's consistency (read-only).
+"""`agentloop doctor` — one read-only diagnosis of everything the guarantees rest on.
 
-The orchestration depends on several pieces staying mutually consistent: the binaries on PATH,
-`.agentloop/config.yaml` (knobs), `.agentloop/state.md` (gates/phase), `.agentloop/tasks.yaml`
-(the DAG), the gate-guard hook registration, and git's actual state (branch, worktrees, lock).
-Each failure mode surfaces late and cryptically — build-loop refusing to start, a hook silently
-absent, a downstream gate approved while its upstream is pending. This command checks them all
-up front and prints one PASS/INFO/WARN/FAIL line per aspect.
+Every failure mode 0.9.0 defends against surfaces late and cryptically if nobody looks for it:
+a Trust Manifest that is not there, a runtime directory another user owns, a sandbox profile
+that is quietly running repository code on the host, an audit chain with a hole in it. This
+command asks all of those questions at once and prints one line each, in the five categories
+of plan §26: **format · trust · runtime/sandbox · plan/evidence · review**.
 
-Levels: FAIL = broken invariant, fix before running the loop (exit code 1).
-        WARN = suspicious but not fatal (leftovers of an interruption, drift to tidy up).
-        INFO = context worth knowing. PASS = checked and healthy.
-Read-only: doctor never repairs anything — every fix stays a deliberate human/agent action.
+Levels: FAIL = a broken invariant, fix before continuing (exit 1). WARN = suspicious or
+weaker-than-intended. INFO = context worth knowing. PASS = checked and healthy.
 
-Usage:
-  agentloop doctor
-  agentloop doctor
+Two rules make the output trustworthy:
+
+**It never repairs anything.** A doctor that fixes what it finds is a doctor whose findings
+nobody reads, and several of the things it checks (an approval, an audit record) must only
+ever change by a deliberate human action.
+
+**It never reports "not measured" as "fine".** A missing Trust Manifest is not a pass, and an
+unreadable chain is not an empty one. Where the honest answer is "this could not be checked",
+that is what the line says.
+
+`--unsupported-layout` is the one mode that runs against a 0.8.x repository — the single
+command this release will execute there, so that a human who upgrades gets a diagnosis instead
+of a bare refusal.
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 import logging
-import re
+import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-import yaml
-
-from agentloop import build_loop, common, dag, events, install, lock, revise
+import agentloop
+from agentloop import common, dag, dag_trace, event_chain, install, models, strict_yaml
+from agentloop import lock as lock_mod
 from agentloop import repo as repo_mod
+from agentloop import store as store_mod
 
 logger = logging.getLogger(__name__)
 
 SETTINGS_PATH = ".claude/settings.json"
 COPILOT_HOOKS_DIR = ".github/hooks"
-MANIFEST_PATH = ".agentloop/adopt-manifest.yaml"
-GATE_VALUES = ("pending", "approved")
+TRUST_MANIFEST_ENV = "AGENTLOOP_TRUST_MANIFEST"
 
 
 @dataclass(frozen=True)
@@ -47,279 +53,301 @@ class Finding:
     message: str
 
 
-# Tolerant YAML reading is shared (None for unreadable/non-mapping — see common.py).
-_read_yaml = common.read_yaml
+# --- format --------------------------------------------------------------------
 
 
-def check_binaries(repo: repo_mod.Repo) -> list[Finding]:
-    """The binaries the loop shells out to. uv/git are load-bearing; the headless CLI/gh degrade features."""
+def check_layout(repo: repo_mod.Repo) -> list[Finding]:
+    """Is this repository on the 0.9.0 layout at all?"""
+    legacy = repo.legacy_markers()
+    if legacy:
+        return [
+            Finding(
+                "FAIL", "format", f"0.8.x layout detected ({', '.join(legacy)}). {repo_mod.UNSUPPORTED_LAYOUT_MESSAGE}"
+            )
+        ]
+    missing = [
+        name
+        for name, path in (
+            ("config.yaml", repo.config),
+            ("state.yaml", repo.state),
+            ("plan.yaml", repo.plan),
+            ("review.yaml", repo.review),
+        )
+        if not path.exists()
+    ]
+    if missing:
+        return [Finding("FAIL", "format", f"missing SSOT document(s): {', '.join(missing)} — run `agentloop init`")]
+    return [Finding("PASS", "format", "the four SSOT documents are present")]
+
+
+def check_lock(repo: repo_mod.Repo) -> list[Finding]:
     try:
-        headless = build_loop.Config.load(str(repo.config)).headless_cmd[0]
-    except (OSError, yaml.YAMLError, ValueError, IndexError):
-        headless = "claude"  # config problems are reported by check_config; probe the default here
-    out: list[Finding] = []
-    for name, level, why in (
-        ("uv", "FAIL", "every agentloop.mk target launches through it"),
-        ("git", "FAIL", "worktrees/merges/commits are git operations"),
-        (headless, "WARN", "headless mode A (build-loop) launches it (build.headless.cmd); mode B does not"),
-        ("gh", "INFO", "only needed when github.enabled is turned on"),
+        data = lock_mod.read(repo.lock)
+    except lock_mod.LockError as exc:
+        return [Finding("FAIL", "format", str(exc))]
+    if data is None:
+        return [Finding("INFO", "format", f"no {lock_mod.LOCK_NAME} yet — `agentloop init`/`sync` writes it")]
+    findings = [Finding("PASS", "format", f"{lock_mod.LOCK_NAME} readable (format {data.get('format')})")]
+    warning = lock_mod.startup_warning(repo, agentloop.__version__)
+    if warning:
+        findings.append(Finding("WARN", "format", warning))
+    return findings
+
+
+def check_documents(repo: repo_mod.Repo) -> tuple[list[Finding], dict[str, object]]:
+    """Every SSOT document against its strict schema and cross-references."""
+    store = store_mod.Store(repo)
+    findings: list[Finding] = []
+    loaded: dict[str, object] = {}
+    for name, reader in (
+        ("config", store.read_config),
+        ("state", store.read_state),
+        ("plan", store.read_plan),
+        ("review", store.read_review),
     ):
-        if shutil.which(name):
-            out.append(Finding("PASS", "env", f"{name} found on PATH"))
-        else:
-            out.append(Finding(level, "env", f"{name} not found on PATH — {why}"))
-    return out
+        try:
+            value = reader()
+        except (models.DocumentError, strict_yaml.StrictParseError, store_mod.StoreError) as exc:
+            findings.append(Finding("FAIL", "format", f"{name}.yaml: {exc}"))
+            continue
+        if value is None:
+            findings.append(Finding("INFO", "format", f"{name}.yaml is absent"))
+            continue
+        loaded[name] = value
+        findings.append(Finding("PASS", "format", f"{name}.yaml valid (schema + cross-references)"))
+    return findings, loaded
 
 
-def check_config(repo: repo_mod.Repo) -> tuple[list[Finding], dict[str, object]]:
-    """config.yaml must parse and its quality_gate.steps must be a loadable DoD."""
-    raw = _read_yaml(str(repo.config))
-    if raw is None:
-        return [Finding("FAIL", "config", f"{build_loop.CONFIG_PATH} is missing or not valid YAML")], {}
-    try:
-        config = build_loop.Config.load(str(repo.config))
-    except (OSError, yaml.YAMLError, ValueError) as exc:
-        return [Finding("FAIL", "config", f"config does not load: {exc}")], raw
-    findings = [Finding("PASS", "config", f"loads; DoD steps: {', '.join(s.name for s in config.steps)}")]
-    runnable = [s for s in config.steps if s.kind == "cmd" and s.run]
-    if not runnable:
-        findings.append(Finding("WARN", "config", "no cmd step has a command — the quality gate would check nothing"))
-    findings.extend(_check_step_commands(config, raw))
-    findings.extend(_check_legacy_keys(raw))
-    return findings, raw
+def check_materialized(repo: repo_mod.Repo) -> list[Finding]:
+    """The materialized prompts/schema/oci/rules must equal the packaged payload.
 
-
-def _check_legacy_keys(raw: dict[str, object]) -> list[Finding]:
-    """Keys from the pre-0.3.0 config form are dead weight: with `steps` present they are
-    silently ignored, which can fool a reader into thinking they still steer the gate."""
-    build = raw.get("build") if isinstance(raw.get("build"), dict) else {}
-    qg = build.get("quality_gate") if isinstance(build, dict) else {}
-    stale = [f"quality_gate.{k}" for k in ("test_cmd", "check_cmd") if isinstance(qg, dict) and k in qg]
-    if isinstance(build, dict) and isinstance(build.get("retries"), dict):
-        stale.append("build.retries")
-    if stale:
+    Reuses install's own destination map rather than re-deriving it, so "what sync writes" and
+    "what doctor checks" cannot answer differently — a drift canary that drifts is worse than
+    none at all.
+    """
+    desired = install._dest_map(install.MATERIALIZED)
+    drifted: list[str] = []
+    for rel, blob in sorted(desired.items()):
+        try:
+            if lock_mod.norm_hash(repo.path(rel).read_bytes()) != lock_mod.norm_hash(blob):
+                drifted.append(rel)
+        except OSError:
+            drifted.append(f"{rel} (absent)")
+    if drifted:
         return [
             Finding(
                 "WARN",
-                "config",
-                f"legacy pre-0.3.0 keys are ignored: {', '.join(stale)} — the DoD lives in "
-                "quality_gate.steps (per-step retries); delete them",
+                "format",
+                f"{len(drifted)} materialized file(s) differ from the packaged payload "
+                f"(e.g. {drifted[0]}) — `agentloop sync --check` lists them all",
             )
         ]
-    return []
+    return [Finding("PASS", "format", f"{len(desired)} materialized file(s) match the packaged payload")]
 
 
-def _check_step_commands(config: build_loop.Config, raw: dict[str, object]) -> list[Finding]:
-    """A `required` step with no command is a contradiction build_loop refuses to run (FAIL here
-    too, so it surfaces before the loop is even launched). An empty smoke without a *deliberate*
-    `required: false` gets a WARN: a runnable deliverable whose DoD never launches it is the
-    exact miss the smoke step exists to catch."""
-    build = raw.get("build") if isinstance(raw.get("build"), dict) else {}
-    qg = build.get("quality_gate") if isinstance(build, dict) else {}
-    raw_steps = qg.get("steps") if isinstance(qg, dict) else None
-    explicit: dict[str, bool] = {}  # step name → `required` key present in the YAML
-    if isinstance(raw_steps, list):
-        for entry in raw_steps:
-            if isinstance(entry, dict):
-                explicit[str(entry.get("name", ""))] = "required" in entry
-    out: list[Finding] = []
-    for step in config.steps:
-        if step.kind != "cmd" or step.run.strip():
-            continue
-        if step.required:
-            out.append(
-                Finding(
-                    "FAIL",
-                    "config",
-                    f"step '{step.name}' is `required: true` but has no command — "
-                    "build_loop refuses to start; fill `run` or drop `required`",
-                )
-            )
-        elif step.name == "smoke" and not explicit.get("smoke", False):
-            out.append(
-                Finding(
-                    "WARN",
-                    "config",
-                    "smoke has no command — fill `run` (+ `required: true`) for a runnable "
-                    "deliverable, or set `required: false` explicitly to record the decision",
-                )
-            )
-    return out
+# --- trust ----------------------------------------------------------------------
 
 
-def check_state(repo: repo_mod.Repo) -> tuple[list[Finding], dict[str, object]]:
-    """state.md's front matter: gate vocabulary, the gate-chain invariant, and the phase value."""
-    try:
-        front = build_loop.read_frontmatter(str(repo.state))
-    except OSError:
-        return [Finding("FAIL", "state", f"{build_loop.STATE_PATH} is missing")], {}
-    if not front:
-        return [Finding("FAIL", "state", f"{build_loop.STATE_PATH} has no parseable front matter")], {}
-    findings: list[Finding] = []
-    gates = front.get("gates")
-    if not isinstance(gates, dict):
-        return [Finding("FAIL", "state", "front matter has no gates: mapping")], front
-    for gate in revise.GATE_ORDER:
-        value = gates.get(gate)
-        if value is None:
-            findings.append(Finding("FAIL", "state", f"gate '{gate}' is missing"))
-        elif value not in GATE_VALUES:
-            findings.append(Finding("FAIL", "state", f"gate '{gate}' has invalid value {value!r} (pending|approved)"))
-    for approved, upstream in common.gate_chain_violations(common.gates_of(front) or {}):
-        findings.append(
-            Finding("FAIL", "state", f"gate '{approved}' is approved while upstream '{upstream}' is pending")
-        )
-    phase = front.get("current_phase")
-    if phase not in common.PHASE_ORDER:
-        findings.append(
-            Finding("FAIL", "state", f"current_phase {phase!r} is not one of {'|'.join(common.PHASE_ORDER)}")
-        )
-    if not findings:
-        findings.append(Finding("PASS", "state", f"gates consistent; current_phase: {phase}"))
-    return findings, front
+def trust_manifest_path() -> Path:
+    """Where the external Trust Manifest is expected. Deliberately outside the repository."""
+    override = os.environ.get(TRUST_MANIFEST_ENV, "").strip()
+    if override:
+        return Path(override)
+    return store_mod.config_home() / "agentloop" / "trust.yaml"
 
 
-def check_placeholders(front: dict[str, object], config: dict[str, object]) -> list[Finding]:
-    """Unfilled `<...>` placeholders are expected in the pristine template, fatal in a product."""
-    gates_cfg = config.get("gates") if isinstance(config.get("gates"), dict) else {}
-    template_mode = bool(gates_cfg.get("template_mode")) if isinstance(gates_cfg, dict) else False
-    unfilled = [k for k in ("project", "branch") if str(front.get(k, "")).startswith("<")]
-    if not unfilled:
-        return [Finding("PASS", "init", "project/branch are filled in")]
-    if template_mode:
-        return [Finding("INFO", "init", f"{'/'.join(unfilled)} still placeholder (fine: template_mode is on)")]
-    return [Finding("FAIL", "init", f"{'/'.join(unfilled)} still placeholder — run `agentloop init --name <product>`")]
+def check_trust() -> list[Finding]:
+    """The Trust Manifest and the signing toolchain.
 
-
-def check_tasks(repo: repo_mod.Repo) -> list[Finding]:
-    """tasks.yaml must be a valid DAG; leftovers that stall or need a human are surfaced."""
-    if not repo.tasks.is_file():
-        return [Finding("INFO", "tasks", f"{build_loop.TASKS_PATH} not present yet (before /tasks)")]
-    try:
-        graph = dag.load(repo.tasks)
-    except (OSError, dag.DagError, yaml.YAMLError) as exc:
-        return [Finding("FAIL", "tasks", f"tasks.yaml does not load: {exc}")]
-    findings: list[Finding] = []
-    counts = graph.counts()
-    stuck = [t.id for t in graph.tasks if t.status == "in_progress"]
-    if stuck:
-        findings.append(
-            Finding("WARN", "tasks", f"in_progress leftovers: {', '.join(stuck)} (build-loop resets them on start)")
-        )
-    needy = [t.id for t in graph.tasks if t.status in ("blocked", "needs-revision")]
-    if needy:
-        findings.append(Finding("WARN", "tasks", f"awaiting human intervention: {', '.join(needy)}"))
-    findings.extend(_check_ticket_parity(graph, repo))
-    if not findings:
-        summary = " / ".join(f"{s}={counts[s]}" for s in dag.STATUS_ORDER if counts[s])
-        findings.append(Finding("PASS", "tasks", f"valid DAG ({len(graph.tasks)} tasks: {summary or 'empty'})"))
-    return findings
-
-
-def _check_ticket_parity(graph: dag.Graph, repo: repo_mod.Repo) -> list[Finding]:
-    """Every task id should have its docs/tasks/T-NNN.md ticket (the implementer reads it first).
-
-    A task without a ticket runs the implementer on title-only context; an orphan ticket usually
-    means a task was dropped from tasks.yaml without cleaning up (or a scaffold example remains).
+    Its absence is a FAIL, not a warning: without it there is no authorized principal, so no
+    gate can open. Saying "PASS: no manifest configured" would describe a repository in which
+    nothing can ever be approved as healthy.
     """
-    tickets_dir = repo.path("docs/tasks")
-    if not graph.tasks or not tickets_dir.is_dir():
-        return []
-    tickets = {p.stem for p in tickets_dir.glob("T-*.md")}
-    ids = {t.id for t in graph.tasks}
-    out: list[Finding] = []
-    if missing := sorted(ids - tickets):
-        out.append(Finding("WARN", "tasks", f"no ticket file under docs/tasks/ for: {', '.join(missing)}"))
-    if orphans := sorted(tickets - ids):
-        out.append(Finding("INFO", "tasks", f"ticket files with no tasks.yaml entry: {', '.join(orphans)}"))
-    return out
-
-
-def check_git(front: dict[str, object], config: dict[str, object], repo: repo_mod.Repo) -> list[Finding]:
-    """git reality vs the SSOT: current branch, leftover worktrees, and the single-run lock."""
-    rc, out = build_loop._run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=str(repo.root))
-    if rc != 0:
-        return [Finding("FAIL", "git", "not a git repository (or git is broken here)")]
     findings: list[Finding] = []
-    current = out.strip()
-    declared = str(front.get("branch", ""))
-    if declared and not declared.startswith("<") and current != declared:
-        findings.append(Finding("WARN", "git", f"checked-out branch '{current}' ≠ state.md branch '{declared}'"))
-    build_cfg = config.get("build")
-    wt_cfg = build_cfg.get("worktree") if isinstance(build_cfg, dict) else None
-    wt_dir = repo.path(str(wt_cfg.get("dir", ".worktrees"))) if isinstance(wt_cfg, dict) else repo.path(".worktrees")
-    leftovers = sorted(p.name for p in wt_dir.iterdir() if p.is_dir()) if wt_dir.is_dir() else []
-    if leftovers:
+    path = trust_manifest_path()
+    if not path.exists():
         findings.append(
-            Finding("WARN", "git", f"leftover worktrees under {wt_dir}: {', '.join(leftovers)} (interrupted run?)")
+            Finding(
+                "FAIL",
+                "trust",
+                f"no Trust Manifest at {path} — no principal is authorized, so no gate can open. "
+                f"Create it (or point {TRUST_MANIFEST_ENV} at it); it stays OUTSIDE the repository so a "
+                "pull request cannot add its own approvers.",
+            )
         )
-    lock = repo.path(build_loop.LOCK_PATH)
-    if lock.is_file():
+    else:
         try:
-            pid = int(lock.read_text(encoding="utf-8").strip())
-        except (OSError, ValueError):
-            pid = 0
-        if pid > 0 and build_loop._pid_alive(pid):
-            findings.append(Finding("INFO", "git", f"a build-loop run appears active (lock PID {pid})"))
-        else:
-            findings.append(Finding("WARN", "git", "stale build-loop.lock (dead PID; auto-reclaimed on next run)"))
-    findings.extend(_check_leaf_branches(declared, wt_cfg if isinstance(wt_cfg, dict) else {}, repo))
-    if not findings:
-        findings.append(Finding("PASS", "git", f"on branch '{current}'; no leftover worktrees or lock"))
+            manifest = strict_yaml.load_mapping(path.read_text(encoding="utf-8"), what=str(path))
+        except (OSError, strict_yaml.StrictParseError) as exc:
+            return [Finding("FAIL", "trust", f"{path}: {exc}")]
+        identities = manifest.get("identities")
+        count = len(identities) if isinstance(identities, list) else 0
+        level = "PASS" if count else "FAIL"
+        findings.append(Finding(level, "trust", f"Trust Manifest readable at {path} ({count} identity/identities)"))
+        if path.exists() and hasattr(os, "getuid"):
+            mode = path.stat().st_mode & 0o077
+            if mode:
+                findings.append(Finding("WARN", "trust", f"{path} is group/world accessible (mode {oct(mode)})"))
+
+    if shutil.which("ssh-keygen"):
+        findings.append(Finding("PASS", "trust", "ssh-keygen found (attestation signing/verification)"))
+    else:
+        findings.append(Finding("FAIL", "trust", "ssh-keygen not found on PATH — attestations cannot be verified"))
     return findings
 
 
-def _check_leaf_branches(declared: str, wt_cfg: dict[str, object], repo: repo_mod.Repo) -> list[Finding]:
-    """Leaf branches (`<branch>-T-NNN`) left behind by parallel batches.
+def check_attestations(repo: repo_mod.Repo, state: models.State | None) -> list[Finding]:
+    """Every approved gate must cite an attestation that is actually in the tree."""
+    if state is None:
+        return []
+    findings: list[Finding] = []
+    for gate in models.GATE_ORDER:
+        if state.gate_status(gate) != "approved":
+            continue
+        receipt = state.gate_receipt(gate) or {}
+        attestation_id = receipt.get("attestation_id")
+        if not isinstance(attestation_id, str):
+            findings.append(Finding("FAIL", "trust", f"gate '{gate}' is approved with no attestation id"))
+            continue
+        if not (repo.attestations / f"{attestation_id}.json").exists():
+            findings.append(
+                Finding(
+                    "FAIL", "trust", f"gate '{gate}' cites {attestation_id}, which is not in .agentloop/attestations/"
+                )
+            )
+        else:
+            findings.append(Finding("PASS", "trust", f"gate '{gate}' receipt cites {attestation_id}"))
+    if not findings:
+        findings.append(Finding("INFO", "trust", "no gate is approved yet"))
+    return findings
 
-    A *merged* leaf branch is normal residue (merge_leaf removes only the worktree) — INFO with a
-    cleanup hint. An *unmerged* one is interrupted or blocked work whose diff lives only there —
-    WARN, because deleting it by reflex would lose that diff.
-    """
-    if not declared or declared.startswith("<"):
-        return []
-    pattern = str(wt_cfg.get("branch_pattern", "{branch}-{task_id}"))
-    glob = pattern.format(branch=declared, task_id="T-*")
-    rc, all_out = build_loop._run(["git", "branch", "--list", glob], cwd=str(repo.root))
-    if rc != 0:
-        return []
-    leaves = {ln.strip().lstrip("* ") for ln in all_out.splitlines() if ln.strip()}
-    if not leaves:
-        return []
-    rc, unmerged_out = build_loop._run(["git", "branch", "--no-merged", "HEAD", "--list", glob], cwd=str(repo.root))
-    unmerged = {ln.strip().lstrip("* ") for ln in unmerged_out.splitlines() if ln.strip()} if rc == 0 else set()
-    out: list[Finding] = []
-    if unmerged:
-        out.append(
+
+# --- runtime and sandbox ---------------------------------------------------------
+
+
+def check_runtime(repo: repo_mod.Repo) -> list[Finding]:
+    """The runtime directory, its privacy, and any leftovers from an interrupted run."""
+    findings: list[Finding] = []
+    base, private = store_mod.runtime_home()
+    runtime = store_mod.runtime_dir(repo)
+    if not private:
+        findings.append(
             Finding(
                 "WARN",
-                "git",
-                f"UNMERGED leaf branch(es): {', '.join(sorted(unmerged))} — interrupted/blocked work; "
-                "inspect before deleting (the diff may live only there)",
+                "runtime",
+                f"XDG_RUNTIME_DIR is unset; falling back to {base}. A temp directory is not guaranteed to be "
+                "cleared at logout or unreachable by other users — the isolation is weaker, not equivalent.",
             )
         )
-    if merged := sorted(leaves - unmerged):
-        out.append(Finding("INFO", "git", f"merged leaf branch(es) left behind: {', '.join(merged)} — safe to delete"))
-    return out
+    if runtime.exists():
+        try:
+            store_mod.ensure_private_dir(runtime)
+            findings.append(Finding("PASS", "runtime", f"runtime directory {runtime} is private (0700)"))
+        except store_mod.StoreError as exc:
+            findings.append(Finding("FAIL", "runtime", str(exc)))
+        store = store_mod.Store(repo)
+        if store.journal.exists():
+            findings.append(
+                Finding(
+                    "WARN",
+                    "runtime",
+                    "a store journal is present — a transaction was interrupted. The next command recovers it "
+                    "automatically (forward past the point events were appended, back before it).",
+                )
+            )
+    else:
+        findings.append(Finding("INFO", "runtime", f"no runtime directory yet ({runtime})"))
+
+    if repo.git_common_dir is None:
+        findings.append(
+            Finding("WARN", "runtime", "not a git checkout — change digests and blob anchors are unavailable")
+        )
+    elif not repo.is_canonical_checkout:
+        findings.append(
+            Finding(
+                "INFO",
+                "runtime",
+                "this is a linked worktree; mutations must go through the control plane, not the store directly",
+            )
+        )
+    return findings
+
+
+def check_sandbox(config: models.Config | None) -> list[Finding]:
+    """Executor profiles: anything running repository code must be an OCI profile (plan §10.1)."""
+    if config is None:
+        return []
+    findings: list[Finding] = []
+    offenders = config.unsandboxed_code_profiles()
+    if offenders:
+        findings.append(
+            Finding(
+                "FAIL",
+                "sandbox",
+                f"profile(s) {', '.join(offenders)} run repository-derived code on the host. A test file is "
+                "code an agent wrote, and it would run with your credentials. Build the packaged image "
+                "(`agentloop oci build --profile <name>`) and pin its digest.",
+            )
+        )
+    for name, profile in sorted(config.profiles.items()):
+        if profile.is_sandboxed and not profile.image_digest:
+            findings.append(Finding("FAIL", "sandbox", f"profile '{name}' has no digest-pinned image"))
+        elif profile.is_sandboxed:
+            findings.append(Finding("PASS", "sandbox", f"profile '{name}' pinned to {profile.image_digest[:19]}…"))
+
+    if any(p.is_sandboxed for p in config.profiles.values()):
+        runtime = shutil.which("docker") or shutil.which("podman")
+        level, message = (
+            ("PASS", f"container runtime found ({Path(runtime).name})")
+            if runtime
+            else ("FAIL", "no docker/podman on PATH, but OCI profiles are configured")
+        )
+        findings.append(Finding(level, "sandbox", message))
+    return findings
+
+
+def check_independence(config: models.Config | None) -> list[Finding]:
+    """The actual-extractor / comparator pair (plan §12.4)."""
+    if config is None:
+        return []
+    from agentloop import agent_cli
+
+    warnings = agent_cli.independence_report(config)
+    if not warnings:
+        left = config.independence_group("actual_extractor")
+        right = config.independence_group("comparator")
+        return [Finding("PASS", "review", f"independent groups: {left} vs {right}")]
+    # A shared group blocks critical work; distinct models of one provider merely weaken it.
+    level = (
+        "FAIL" if any("share the independence group" in w or "no independence_group" in w for w in warnings) else "WARN"
+    )
+    return [Finding(level, "review", w) for w in warnings]
+
+
+def check_binaries() -> list[Finding]:
+    findings: list[Finding] = []
+    for name, level, why in (
+        ("git", "FAIL", "change digests, blob anchors and worktrees are git operations"),
+        ("uv", "WARN", "the documented way to run this tool and its quality gate"),
+        ("gh", "INFO", "only needed when github.enabled is turned on"),
+    ):
+        if shutil.which(name):
+            findings.append(Finding("PASS", "env", f"{name} found on PATH"))
+        else:
+            findings.append(Finding(level, "env", f"{name} not found on PATH — {why}"))
+    return findings
 
 
 def _mentions_guard(text: str) -> bool:
-    """True when a hook file carries the gate guard — either spelling ('agentloop guard' is
-    the installed-CLI form; 'gate_guard' covers module-path invocations and older setups)."""
     return "agentloop guard" in text or "gate_guard" in text
 
 
-def check_hook(config: dict[str, object], repo: repo_mod.Repo) -> list[Finding]:
-    """The gate guard is only real if the PreToolUse hook is registered in at least one hook host.
+def check_hook(repo: repo_mod.Repo) -> list[Finding]:
+    """The gate guard is only real if a PreToolUse hook actually invokes it.
 
-    Two hosts can carry it: .claude/settings.json (Claude Code) and .github/hooks/*.json
-    (VS Code Copilot agent hooks). One is enough for that host's sessions; the other host —
-    and any agent without a compatible hook mechanism (e.g. Codex) — runs convention-layer only.
+    There is no `enforce_hook` knob to check any more: a guard with an off switch an agent can
+    reach is a convention, so the only question left is whether a host carries it.
     """
-    gates_cfg = config.get("gates") if isinstance(config.get("gates"), dict) else {}
-    enforce = bool(gates_cfg.get("enforce_hook", True)) if isinstance(gates_cfg, dict) else True
-    if not enforce:
-        return [Finding("INFO", "hook", "gates.enforce_hook is false — convention layer only")]
     surfaces: list[str] = []
     try:
         if _mentions_guard(repo.path(SETTINGS_PATH).read_text(encoding="utf-8")):
@@ -336,211 +364,115 @@ def check_hook(config: dict[str, object], repo: repo_mod.Repo) -> list[Finding]:
     if not surfaces:
         return [
             Finding(
-                "FAIL",
+                "WARN",
                 "hook",
-                f"gate_guard.py is registered in neither {SETTINGS_PATH} nor {COPILOT_HOOKS_DIR}/*.json "
-                "while gates.enforce_hook is true (mechanism layer absent)",
+                f"the gate guard is registered in neither {SETTINGS_PATH} nor {COPILOT_HOOKS_DIR}/*.json — "
+                "edit-time enforcement is absent. The commit-stage check (`agentloop guard --check-diff`) "
+                "still applies if the pre-commit hook is installed.",
             )
         ]
-    findings = [Finding("PASS", "hook", f"gate_guard hook registered ({', '.join(surfaces)})")]
+    findings = [Finding("PASS", "hook", f"gate guard registered ({', '.join(surfaces)})")]
     if len(surfaces) == 1:
         other = "VS Code Copilot" if surfaces == ["claude"] else "Claude Code"
         findings.append(
-            Finding(
-                "INFO",
-                "hook",
-                f"only the {surfaces[0]} hook host is registered — {other} sessions (and hook-less "
-                "agents such as Codex) run convention-layer only",
-            )
+            Finding("INFO", "hook", f"only the {surfaces[0]} hook host is registered — {other} sessions run without it")
         )
     return findings
 
 
-def check_events(repo: repo_mod.Repo) -> list[Finding]:
-    """Open escalations are pending human decisions — they must not sit forgotten."""
+# --- plan and evidence ------------------------------------------------------------
+
+
+def check_plan(plan: models.Plan | None, state: models.State | None) -> list[Finding]:
+    if plan is None:
+        return [Finding("INFO", "plan", "no plan yet — /req and /design fill it")]
     findings: list[Finding] = []
-    opened = events.open_escalations(events.load_events(str(repo.events)))
-    if opened:
-        ids = ", ".join(f"#{e.id} {e.event}({e.task or '-'})" for e in opened)
-        findings.append(
-            Finding("WARN", "events", f"{len(opened)} open escalation(s): {ids} — resolve via `agentloop events`")
-        )
-    log = repo.events
-    if log.is_file() and log.stat().st_size > events.EVENTS_MAX_BYTES * 0.8:
-        findings.append(
-            Finding(
-                "INFO",
-                "events",
-                f"{events.EVENTS_PATH} is {log.stat().st_size // 1024} KiB (>80% of the rotation "
-                "threshold) — the next build-loop run rotates it, carrying open escalations forward",
-            )
-        )
-    return findings or [Finding("PASS", "events", "no open escalations")]
-
-
-def check_security_review(repo: repo_mod.Repo) -> list[Finding]:
-    """Once every task is done, the security-review report must exist and be bound to HEAD.
-
-    Before that point the report legitimately doesn't exist yet, so the check stays silent.
-    A stale Reviewed-HEAD means commits landed after the review — gate ④ must not treat the
-    old report as covering them.
-    """
     try:
-        graph = dag.load(repo.tasks)
-    except (OSError, dag.DagError, yaml.YAMLError):
-        return []
-    if not graph.tasks or any(t.status != "done" for t in graph.tasks):
-        return []
-    try:
-        text = repo.path(build_loop.SECURITY_REVIEW_PATH).read_text(encoding="utf-8")
-    except OSError:
-        return [
-            Finding(
-                "INFO",
-                "security",
-                f"all tasks done but no {build_loop.SECURITY_REVIEW_PATH} (mode B, or the knob is off) — "
-                "run /security-review before gate ④",
-            )
-        ]
-    m = re.search(r"^Reviewed-HEAD:\s*([0-9a-fA-F]+)", text, re.MULTILINE)
-    reviewed = m.group(1) if m else ""
-    rc, out = build_loop._run(["git", "rev-parse", "HEAD"], cwd=str(repo.root))
-    head = out.strip() if rc == 0 else ""
-    if reviewed and head and (head.startswith(reviewed) or reviewed.startswith(head)):
-        return [Finding("PASS", "security", f"security review is bound to HEAD ({reviewed[:12]})")]
-    return [
-        Finding(
-            "WARN",
-            "security",
-            f"security review is STALE (Reviewed-HEAD {reviewed[:12] or '(missing)'} ≠ HEAD {head[:12]}) — "
-            "commits landed after the review; re-run it before gate ④",
-        )
-    ]
+        graph = dag.join(plan, state)
+        findings.append(Finding("PASS", "plan", f"the task DAG is acyclic ({len(graph.tasks)} task(s))"))
+        orphan_claims = graph.claims_without_a_task(plan)
+        if orphan_claims:
+            findings.append(Finding("WARN", "plan", f"claims with no answerable task: {', '.join(orphan_claims)}"))
+    except dag.DagError as exc:
+        findings.append(Finding("FAIL", "plan", str(exc)))
+
+    report = dag_trace.trace(plan)
+    findings += [Finding("FAIL", "evidence", e) for e in report.errors]
+    findings += [Finding("WARN", "evidence", w) for w in report.warnings]
+    if not report.errors and not report.warnings:
+        findings.append(Finding("PASS", "evidence", "the requirement → claim → task/oracle thread is whole"))
+
+    unavailable = sorted({p for s in plan.searches for p in s.unavailable_providers})
+    if unavailable:
+        # Surfaced even when an alternate evidence path succeeded: a hidden provider failure is
+        # how "no documentation exists" gets invented (plan §15.3).
+        findings.append(Finding("INFO", "evidence", f"provider(s) unavailable during search: {', '.join(unavailable)}"))
+    for source in plan.sources:
+        if source.verification_status == "failed":
+            findings.append(Finding("FAIL", "evidence", f"{source.id}: source verification failed"))
+    return findings
 
 
-def check_guard_paths(config: dict[str, object]) -> list[Finding]:
-    """guard_paths values must be real gate names — a typo silently disables that path's guard."""
-    gates_cfg = config.get("gates") if isinstance(config.get("gates"), dict) else {}
-    guard = gates_cfg.get("guard_paths") if isinstance(gates_cfg, dict) else None
-    if not isinstance(guard, dict):
+def check_gate_chain(state: models.State | None) -> list[Finding]:
+    if state is None:
         return []
-    bad = {str(path): str(gate) for path, gate in guard.items() if gate not in revise.GATE_ORDER}
-    if bad:
-        detail = ", ".join(f"{p!r}: {g!r}" for p, g in bad.items())
+    violations = state.gate_chain_violations()
+    if violations:
         return [
             Finding(
                 "FAIL",
-                "config",
-                f"guard_paths values must be one of {'|'.join(revise.GATE_ORDER)} — invalid: {detail}",
+                "gates",
+                f"gate '{approved}' is approved while '{pending}' upstream is pending — an approval survived "
+                "a roll back, so downstream work stands on a withdrawn decision",
+            )
+            for approved, pending in violations
+        ]
+    return [Finding("PASS", "gates", "the gate chain invariant holds")]
+
+
+# --- review and audit chain --------------------------------------------------------
+
+
+def check_chain(repo: repo_mod.Repo) -> list[Finding]:
+    events, defects = event_chain.scan(repo.events)
+    if defects:
+        shown = "; ".join(str(d) for d in defects[:3])
+        return [
+            Finding(
+                "FAIL",
+                "event-chain",
+                f"{len(defects)} defect(s): {shown}{' …' if len(defects) > 3 else ''}. "
+                "Restore events.ndjson from git — never rewrite it to agree with the current state.",
             )
         ]
-    return [Finding("PASS", "config", f"guard_paths valid ({len(guard)} entries)")]
-
-
-SCHEMA_DIR = ".agentloop/schema"
-
-
-def check_schema(repo: repo_mod.Repo) -> list[Finding]:
-    """Validate config.yaml / tasks.yaml against the bundled JSON Schemas when possible.
-
-    The schemas (.agentloop/schema/*.schema.json) are primarily editor tooling (the
-    yaml-language-server modeline); here they double as a lint. jsonschema is an optional
-    extra — `agentloop doctor` provides it via `--with`, a bare python run degrades to INFO —
-    so the ordinary agentloop runtime stays pyyaml-only.
-    """
-    try:
-        import jsonschema
-    except ImportError:
-        msg = "jsonschema not installed — schema validation skipped (`agentloop doctor` has it)"
-        return [Finding("INFO", "schema", msg)]
-    out: list[Finding] = []
-    for data_path, schema_name in ((repo.config, "config"), (repo.tasks, "tasks")):
-        schema_path = repo.schema_dir / f"{schema_name}.schema.json"
-        if not schema_path.exists():
-            out.append(Finding("INFO", "schema", f"{schema_path} absent (older template) — skipped"))
-            continue
-        data = _read_yaml(str(data_path))
-        if data is None:
-            continue  # unreadable/missing data files are already FAILed by their own checks
-        try:
-            schema = json.loads(schema_path.read_text(encoding="utf-8"))
-            jsonschema.validate(data, schema)
-        except jsonschema.ValidationError as exc:
-            where = "/".join(str(p) for p in exc.absolute_path) or "(root)"
-            out.append(Finding("FAIL", "schema", f"{data_path.name} violates its schema at {where}: {exc.message}"))
-        except (OSError, ValueError, jsonschema.SchemaError) as exc:
-            out.append(Finding("WARN", "schema", f"cannot validate {data_path.name}: {exc}"))
-        else:
-            out.append(Finding("PASS", "schema", f"{data_path.name} matches {schema_path.name}"))
-    return out
-
-
-def check_lock(repo: repo_mod.Repo) -> list[Finding]:
-    """agentloop.lock health: format readable, and its writer version vs the running tool."""
-    import agentloop
-
-    try:
-        data = lock.read(repo.lock)
-    except lock.LockError as exc:
-        return [Finding("FAIL", "lock", str(exc))]
-    if data is None:
-        return [Finding("INFO", "lock", f"no {lock.LOCK_NAME} yet — `agentloop init`/`sync` writes it")]
-    findings = [Finding("PASS", "lock", f"{lock.LOCK_NAME} readable (format {data.get('version')})")]
-    warning = lock.startup_warning(repo, agentloop.__version__)
-    if warning:
-        findings.append(Finding("WARN", "lock", warning))
-    return findings
-
-
-def check_integrations(repo: repo_mod.Repo) -> list[Finding]:
-    """Installed integration surfaces must come from the running tool release.
-
-    `sync` refreshes only the shared artifacts, so a repo can silently pair new prompts with
-    wrappers an older release wrote (`install`/`upgrade` are the only writers of those).
-    """
-    import agentloop
-
-    try:
-        data = lock.read(repo.lock)
-    except lock.LockError:
-        return []  # already FAILed by check_lock
-    if data is None:
-        return []
-    installed = data.get("integrations") if isinstance(data.get("integrations"), dict) else {}
-    if not installed:
-        return []
-    stale = install.stale_integrations(data, agentloop.__version__)
-    if not stale:
-        return [Finding("PASS", "integrations", f"surfaces current ({', '.join(sorted(installed))})")]
     return [
-        Finding(
-            "WARN",
-            "integrations",
-            f"'{name}' surfaces were written by agentloop {recorded or '(unrecorded)'} "
-            f"(tool is {agentloop.__version__}) — re-run `agentloop install {name}` (or `agentloop upgrade`)",
-        )
-        for name, recorded in sorted(stale.items())
+        Finding("PASS", "event-chain", f"{len(events)} event(s), chain intact, root {event_chain.chain_root(events)}")
     ]
 
 
-def check_version(repo: repo_mod.Repo) -> list[Finding]:
-    """Which harness version this repo runs (identity only; upgrades are a human action)."""
-    try:
-        data = lock.read(repo.lock)
-    except lock.LockError:
-        data = None  # already FAILed by check_lock
-    if data is not None:
-        recorded = lock.tool_version_of(data)
-        return [Finding("INFO", "version", f"agentloop.lock: written by agentloop {recorded or '(unrecorded)'}")]
-    manifest = _read_yaml(str(repo.path(MANIFEST_PATH)))
-    if manifest is not None:
-        template = manifest.get("template") if isinstance(manifest.get("template"), dict) else {}
-        version = template.get("version") if isinstance(template, dict) else None
-        return [Finding("INFO", "version", f"adopt-manifest: template version {version or '(pre-0.1.0, unrecorded)'}")]
-    version_text = install.read_version(repo.root)
-    if not version_text:
-        return [Finding("INFO", "version", "no agentloop.lock, adopt-manifest, or version record (pre-lock setup)")]
-    return [Finding("INFO", "version", f"template repo, VERSION {version_text}")]
+def check_review(review: models.Review | None) -> list[Finding]:
+    if review is None or not review.is_generated:
+        return [Finding("INFO", "review", "no machine review generated yet")]
+    findings: list[Finding] = []
+    if review.coverage_sufficient:
+        findings.append(
+            Finding("PASS", "review", f"coverage sufficient; {len(review.extra_behaviors)} extra behaviour(s)")
+        )
+    else:
+        findings.append(
+            Finding(
+                "FAIL",
+                "review",
+                "the coverage manifest is insufficient — extra-behaviour counts are undeterminable, not zero",
+            )
+        )
+    blocking = review.blocking_security_findings
+    findings.append(Finding("FAIL" if blocking else "PASS", "review", f"{len(blocking)} blocking security finding(s)"))
+    findings.append(Finding("INFO", "review", f"human review: {review.human_status}"))
+    return findings
+
+
+# --- driver -----------------------------------------------------------------------
 
 
 def run_checks(repo: repo_mod.Repo | None = None) -> list[Finding]:
@@ -548,46 +480,81 @@ def run_checks(repo: repo_mod.Repo | None = None) -> list[Finding]:
         try:
             repo = repo_mod.get()
         except repo_mod.RepoNotFoundError:
-            # No .agentloop/ anywhere above: anchor at cwd so every SSOT check FAILs loudly
-            # (exactly what a diagnosis of an uninitialized directory should say).
             repo = repo_mod.Repo(Path.cwd().resolve())
-    findings = check_binaries(repo)
-    config_findings, config = check_config(repo)
-    findings += config_findings
-    state_findings, front = check_state(repo)
-    findings += state_findings
-    findings += check_placeholders(front, config)
-    findings += check_guard_paths(config)
-    findings += check_tasks(repo)
-    findings += check_git(front, config, repo)
-    findings += check_hook(config, repo)
-    findings += check_events(repo)
-    findings += check_security_review(repo)
-    findings += check_schema(repo)
+
+    findings = check_layout(repo)
+    if any(f.level == "FAIL" and "0.8.x layout" in f.message for f in findings):
+        return findings  # nothing below can be read against this layout
+
+    findings += check_binaries()
     findings += check_lock(repo)
-    findings += check_integrations(repo)
-    findings += check_version(repo)
+    document_findings, loaded = check_documents(repo)
+    findings += document_findings
+    findings += check_materialized(repo)
+
+    config = loaded.get("config")
+    state = loaded.get("state")
+    plan = loaded.get("plan")
+    review = loaded.get("review")
+    assert config is None or isinstance(config, models.Config)
+    assert state is None or isinstance(state, models.State)
+    assert plan is None or isinstance(plan, models.Plan)
+    assert review is None or isinstance(review, models.Review)
+
+    findings += check_trust()
+    findings += check_attestations(repo, state)
+    findings += check_runtime(repo)
+    findings += check_sandbox(config)
+    findings += check_independence(config)
+    findings += check_hook(repo)
+    findings += check_gate_chain(state)
+    findings += check_plan(plan, state)
+    findings += check_chain(repo)
+    findings += check_review(review)
     return findings
+
+
+def unsupported_layout_report(repo: repo_mod.Repo) -> list[Finding]:
+    """The only diagnosis this release runs against a 0.8.x repository."""
+    legacy = repo.legacy_markers()
+    if not legacy:
+        return [Finding("PASS", "format", "no 0.8.x artifacts — this repository is on the 0.9.0 layout")]
+    return [Finding("FAIL", "format", f"0.8.x artifact present: {marker}") for marker in legacy] + [
+        Finding(
+            "INFO",
+            "format",
+            "There is deliberately no migration. Rebuilding a plan from these artifacts would mean "
+            "manufacturing evidence and authority for decisions that were never grounded — which is the "
+            "failure 0.9.0 exists to prevent. Archive the cycle, remove .agentloop, and run `agentloop init`.",
+        )
+    ]
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="diagnose the AgentLoop environment and SSOT (read-only)")
+    parser.add_argument(
+        "--unsupported-layout",
+        action="store_true",
+        help="diagnose a 0.8.x repository (the only command that runs against one)",
+    )
     parser.add_argument("--repo", default=None, help="repository root (default: discovered from cwd)")
     args = parser.parse_args(argv)
     common.configure_logging()
+
     try:
-        repo = repo_mod.get(args.repo) if args.repo else None
+        repo = repo_mod.get(args.repo) if args.repo else repo_mod.get()
     except repo_mod.RepoNotFoundError as exc:
         logger.error(str(exc))
         return 1
-    findings = run_checks(repo)
+
+    findings = unsupported_layout_report(repo) if args.unsupported_layout else run_checks(repo)
     for f in findings:
         print(f"  [{f.level:<4}] {f.area}: {f.message}")
     fails = sum(1 for f in findings if f.level == "FAIL")
     warns = sum(1 for f in findings if f.level == "WARN")
     print(f"\ndoctor: {fails} FAIL / {warns} WARN / {len(findings)} checks")
     if fails:
-        logger.error("fix the FAIL items before running the loop.")
+        logger.error("fix the FAIL items before continuing.")
     return 1 if fails else 0
 
 

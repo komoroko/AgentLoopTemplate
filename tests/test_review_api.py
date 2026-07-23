@@ -7,7 +7,6 @@ caps, and that agent-written markup never reaches the payload as live HTML.
 
 from __future__ import annotations
 
-import json
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
@@ -125,12 +124,13 @@ class TestGateMapping:
         assert labels == ["docs/20-design.md", "docs/decisions/ADR-001.md", "docs/decisions/ADR-002.md"]
 
     def test_tasks_gate_renders_tickets_and_verbatim_yaml(self, make_repo: MakeRepo) -> None:
-        root = make_repo(tasks="tasks: []  # <script>alert(1)</script>\n")
+        root = make_repo()
+        _write(root, ".agentloop/plan.yaml", "claims: []  # <script>alert(1)</script>\n")
         _write(root, "docs/tasks/T-001.md", "# T-001\n\n## Self-assessment\n- **Confidence**: medium\n")
         _write(root, "docs/tasks/T-template.md", "# template")
         out = _review(root, "tasks")
         labels = [d["label"] for d in out["deliverables"]]
-        assert labels == ["docs/tasks/T-001.md", ".agentloop/tasks.yaml"]
+        assert labels == ["docs/tasks/T-001.md", ".agentloop/plan.yaml"]
         yaml_entry = out["deliverables"][1]
         assert yaml_entry["kind"] == "code"
         assert yaml_entry["html"].startswith("<pre><code>")
@@ -143,8 +143,11 @@ class TestGateMapping:
 
     def test_release_gate_counts_open_escalations(self, make_repo: MakeRepo) -> None:
         root = make_repo()
-        line = {"id": 1, "ts": "2026-07-19T00:00:00", "event": "blocked", "task": "T-001", "detail": "x"}
-        _write(root, ".agentloop/events.ndjson", json.dumps(line) + "\n")
+        from agentloop import event_chain
+        from tests._support import chain
+
+        event_chain.append_lines(root / ".agentloop" / "events.ndjson", chain("task_completed", "oracle_failed"))
+        # Only the event awaiting a human decision counts; a completed task does not.
         assert _review(root, "release")["open_escalations"] == 1
 
 

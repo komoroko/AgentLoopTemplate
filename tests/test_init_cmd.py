@@ -44,11 +44,31 @@ _BRIEF = """# Product Brief
 
 
 def test_fill_state_fills_placeholders_and_keeps_comments() -> None:
-    out = init_cmd.fill_state(_STATE, "demo", "build/demo", "2026-07-02")
-    assert 'project: "demo"' in out
-    assert 'branch: "build/demo"  # e.g. build/<product>. Implement on this branch.' in out
-    assert 'updated_at: "2026-07-02"' in out
-    assert "current_phase: brief" in out  # the rest is untouched
+    scaffold = (
+        "# a comment that must survive\n"
+        'project: "product"\n'
+        "cycle_id: cycle-1                      # lowercase slug\n"
+        "current_phase: brief\n"
+        'updated_at: ""\n'
+    )
+    filled = init_cmd.fill_state(scaffold, "demo", "demo-cycle", "2026-07-23")
+    assert 'project: "demo"' in filled
+    assert "cycle_id: demo-cycle" in filled
+    assert 'updated_at: "2026-07-23"' in filled
+    assert "# a comment that must survive" in filled
+    assert "# lowercase slug" in filled  # line surgery, never a YAML round-trip
+
+
+def test_fill_plan_and_config_fill_their_own_placeholders() -> None:
+    plan = init_cmd.fill_plan("cycle:\n  id: cycle-1\n  branch: build/product\n", "demo-cycle", "build/demo")
+    assert "id: demo-cycle" in plan and "branch: build/demo" in plan
+    config = init_cmd.fill_config("project:\n  name: product\n  work_branch: build/product\n", "demo", "build/demo")
+    assert "name: demo" in config and "work_branch: build/demo" in config
+
+
+def test_the_cycle_slug_is_schema_safe() -> None:
+    assert init_cmd._cycle_slug("My Product!") == "my-product"
+    assert init_cmd._cycle_slug("!!!") == "cycle-1"
 
 
 def test_disable_template_mode_flips_only_that_flag() -> None:
@@ -95,15 +115,16 @@ build:
 
 
 def test_brownfield_config_scopes_guard_to_docs_and_sets_cmds() -> None:
-    out = init_cmd.brownfield_config(_GUARD_CONFIG, "npm test", "npm run lint")
+    """A pending gate must not freeze normal development on code that already exists, so the
+    guard is scoped to the docs deliverables and the code prefixes are commented out."""
+    from agentloop import data as data_mod
+
+    out = init_cmd.brownfield_config(data_mod.read_text("scaffold/agentloop/config.yaml"), "npm test", "npm run lint")
+    assert "#     - { path: src/, requires_gate: tasks }" in out
+    assert "- { path: docs/20-design.md, requires_gate: requirements }" in out  # docs stay guarded
+    assert 'command: ["npm", "test"]' in out
+    assert 'command: ["npm", "run", "lint"]' in out
     assert "template_mode: false" in out
-    # Code paths are commented out (existing development keeps flowing), docs stay guarded.
-    assert "\n    # src/: tasks" in out
-    assert "\n    # backend/: tasks" in out
-    assert "\n    # scripts/: tasks" in out
-    assert "docs/tasks/: design" in out
-    assert 'run: "npm test"' in out
-    assert 'run: "npm run lint"' in out
 
 
 def test_brownfield_config_keeps_make_cmds_when_flags_absent() -> None:
@@ -166,11 +187,13 @@ def test_is_brownfield_detects_code_markers(tmp_path: Path) -> None:
 def test_run_init_seeds_a_bare_directory(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert init_cmd.run_init(tmp_path, "demo", "build/demo", "git+https://example.com/agentloop") == 0
     # The SSOT trio, placeholder-filled, gate guard live.
-    state = (tmp_path / ".agentloop" / "state.md").read_text(encoding="utf-8")
-    assert 'project: "demo"' in state and 'branch: "build/demo"' in state
+    state = (tmp_path / ".agentloop" / "state.yaml").read_text(encoding="utf-8")
+    assert 'project: "demo"' in state
     config = (tmp_path / ".agentloop" / "config.yaml").read_text(encoding="utf-8")
     assert "template_mode: false" in config
-    assert "schema_version: 1" in (tmp_path / ".agentloop" / "tasks.yaml").read_text(encoding="utf-8")
+    # The four SSOT documents, each valid against its own schema (seeded from the scaffold).
+    for name in ("plan", "state", "review", "config"):
+        assert (tmp_path / ".agentloop" / f"{name}.yaml").exists()
     # Docs scaffolds + the pristine snapshot cycle-close restores from.
     assert (tmp_path / "docs" / "00-product-brief.md").is_file()
     assert (tmp_path / "docs" / "10-requirements.md").is_file()
@@ -187,7 +210,7 @@ def test_run_init_seeds_a_bare_directory(tmp_path: Path, capsys: pytest.CaptureF
     data = lock_mod.read(tmp_path / ".agentloop" / "agentloop.lock")
     assert data is not None
     assert data["agentloop"]["source"] == "git+https://example.com/agentloop"
-    assert ".agentloop/state.md" in data["seeded"]
+    assert ".agentloop/state.yaml" in data["seeded"]
     assert "prompts/commands/req.md" in data["prompts"]["files"]
 
 
@@ -214,7 +237,7 @@ def test_run_init_explicit_source_is_not_overridden_by_detection(
 
 def test_run_init_rerun_never_overwrites(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert init_cmd.run_init(tmp_path, "demo", "build/demo", "") == 0
-    state_path = tmp_path / ".agentloop" / "state.md"
+    state_path = tmp_path / ".agentloop" / "state.yaml"
     state_path.write_text(state_path.read_text(encoding="utf-8").replace("brief", "design"), encoding="utf-8")
     (tmp_path / "docs" / "10-requirements.md").write_text("FILLED\n", encoding="utf-8")
     capsys.readouterr()
@@ -233,14 +256,15 @@ def test_run_init_brownfield_adapts_config_and_brief(tmp_path: Path, capsys: pyt
     out = capsys.readouterr().out
     assert "brownfield" in out and "/onboard" in out
     config = (tmp_path / ".agentloop" / "config.yaml").read_text(encoding="utf-8")
-    assert "\n    # src/: tasks" in config  # code paths unguarded until re-enabled
-    assert 'run: "npm test"' in config and 'run: "npm run lint"' in config
+    assert "#     - { path: src/, requires_gate: tasks }" in config  # code paths unguarded until re-enabled
+    assert 'command: ["npm", "test"]' in config and 'command: ["npm", "run", "lint"]' in config
     brief = (tmp_path / "docs" / "00-product-brief.md").read_text(encoding="utf-8")
     assert "Adopted into an existing codebase" in brief
     # The guard config still parses and validates as YAML.
     parsed = yaml.safe_load(config)
-    assert parsed["gates"]["guard_paths"].get("docs/tasks/") == "design"
-    assert "src/" not in parsed["gates"]["guard_paths"]
+    guarded = {entry["path"]: entry["requires_gate"] for entry in parsed["guard"]["paths"]}
+    assert guarded.get("docs/tasks/") == "design"
+    assert "src/" not in guarded  # commented out: existing code keeps flowing
 
 
 def test_main_requires_a_name_without_a_tty(
@@ -258,7 +282,7 @@ def test_main_greenfield_flag_overrides_detection(tmp_path: Path, capsys: pytest
     assert init_cmd.main(["--name", "demo", "--greenfield", "--repo", str(tmp_path)]) == 0
     assert "greenfield" in capsys.readouterr().out
     config = (tmp_path / ".agentloop" / "config.yaml").read_text(encoding="utf-8")
-    assert "\n    src/: tasks" in config  # code paths stay guarded (greenfield semantics)
+    assert "- { path: src/, requires_gate: tasks }" in config  # code paths stay guarded (greenfield semantics)
 
 
 def test_wizard_asks_only_name_and_brief(
@@ -281,7 +305,7 @@ def test_wizard_asks_only_name_and_brief(
     out = capsys.readouterr().out
     assert "2/2 What do you want to build?" in out
     # Name defaults to the folder, branch to build/<name>, source is the detected one.
-    state = (proj / ".agentloop" / "state.md").read_text(encoding="utf-8")
-    assert 'project: "myproduct"' in state and 'branch: "build/myproduct"' in state
+    state = (proj / ".agentloop" / "state.yaml").read_text(encoding="utf-8")
+    assert 'project: "myproduct"' in state
     data = lock_mod.read(proj / ".agentloop" / "agentloop.lock")
     assert data is not None and data["agentloop"]["source"] == "git+https://example.com/agentloop@vX"

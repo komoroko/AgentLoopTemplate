@@ -1,175 +1,221 @@
-"""Verify revise.py's gate chaining and surgical state.md update (deterministic, offline)."""
+"""Tests for revise.py — rewinding approval, in a chain.
+
+The invariant the whole file circles: **an upstream gate returning to pending must never
+leave a downstream gate approved.** Everything else here — the plan un-freezing, the receipts
+clearing, the review going stale — follows from the same idea, that a decision standing on a
+withdrawn decision is not a decision.
+"""
 
 from __future__ import annotations
 
-import re
-from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
-from agentloop import revise
+from agentloop import models, revise
+from agentloop import repo as repo_mod
+from agentloop import store as store_mod
+from tests._support import make_plan, make_review, make_state, make_task, seed_repo
 
-_STATE = """---
-project: "demo"
-branch: "build/demo"
-current_phase: build          # brief | requirements | ... | done
-gates:
-  requirements: approved      # c1
-  design: approved            # c2
-  tasks: approved             # c3
-  build: approved             # c4
-  release: pending            # c5
-updated_at: "2026-06-26"
----
-# board
-
-## Roll-back (revision) log
-
-| Date | Target (phase) | Gates reset to pending in chain | Reason |
-|------|---------------|-------------------------------|------|
-<!-- REVISE-LOG -->
-"""
+ALL_APPROVED = dict.fromkeys(models.GATE_ORDER, "approved")
 
 
-def test_cascade_gates_per_phase() -> None:
-    assert revise.cascade_gates("requirements") == ["requirements", "design", "tasks", "build", "release"]
-    assert revise.cascade_gates("design") == ["design", "tasks", "build", "release"]
-    assert revise.cascade_gates("tasks") == ["tasks", "build", "release"]
-    assert revise.cascade_gates("build") == ["build", "release"]
+def repo_at(tmp_path: Path, **kwargs: object) -> repo_mod.Repo:
+    seed_repo(tmp_path, **kwargs)  # type: ignore[arg-type]
+    return repo_mod.Repo(tmp_path)
 
 
-def test_cascade_gates_rejects_invalid() -> None:
-    with pytest.raises(revise.ReviseError):
-        revise.cascade_gates("verify")
+def state_of(repo: repo_mod.Repo) -> models.State:
+    state = store_mod.Store(repo).read_state()
+    assert state is not None
+    return state
 
 
-def test_apply_revision_to_design() -> None:
-    out = revise.apply_revision(_STATE, "design", "rethink the auth method", "2026-07-01")
-    # Upstream (requirements) stays approved; design onward is pending.
-    assert re.search(r"requirements: approved\s+# c1", out)
-    assert re.search(r"design: pending\s+# c2", out)  # comment preserved
-    assert re.search(r"tasks: pending\s+# c3", out)
-    assert re.search(r"build: pending\s+# c4", out)
-    assert re.search(r"release: pending\s+# c5", out)
-    # current_phase / updated_at (comment preserved).
-    assert re.search(r"current_phase: design\s+# brief", out)
-    assert 'updated_at: "2026-07-01"' in out
-    # The log row is inserted right before the marker.
-    assert "| 2026-07-01 | design | design, tasks, build, release | rethink the auth method |" in out
-    row_idx = out.index("| 2026-07-01 | design")
-    assert row_idx < out.index(revise.REVISE_MARKER)
+# --- the chain reset ----------------------------------------------------------
 
 
-def test_apply_revision_to_requirements_reverts_all() -> None:
-    out = revise.apply_revision(_STATE, "requirements", "", "2026-07-01")
-    for gate in ("requirements", "design", "tasks", "build", "release"):
-        assert re.search(rf"{gate}: pending", out)
-    assert re.search(r"current_phase: requirements\s+# brief", out)
-    # An empty reason becomes "-".
-    assert "| 2026-07-01 | requirements |" in out and "| - |" in out
+def test_the_reset_runs_forward_from_the_target(tmp_path: Path) -> None:
+    repo = repo_at(tmp_path, state=make_state(gates=ALL_APPROVED, phase="done"))
+    assert revise.gates_to_reset("design", state_of(repo)) == ["design", "tasks", "build", "release"]
+    assert revise.gates_to_reset("build", state_of(repo)) == ["build", "release"]
 
 
-def test_apply_revision_without_marker_is_safe() -> None:
-    # Even a state.md with no marker is not broken; only the gates are updated.
-    text = _STATE.replace(revise.REVISE_MARKER, "")
-    out = revise.apply_revision(text, "build", "x", "2026-07-01")
-    assert re.search(r"build: pending\s+# c4", out)
-    assert re.search(r"release: pending\s+# c5", out)
-    assert re.search(r"requirements: approved\s+# c1", out)  # what is not in the chain is unchanged
+def test_an_already_pending_chain_resets_nothing(tmp_path: Path) -> None:
+    repo = repo_at(
+        tmp_path,
+        state=make_state(gates=dict.fromkeys(models.GATE_ORDER, "pending"), phase="brief", plan_status="draft"),
+    )
+    assert revise.gates_to_reset("requirements", state_of(repo)) == []
 
 
-# --- main(): the CLI entry (dry-run plans only; the real run rewrites state.md) ---
+def test_applying_a_rollback_leaves_no_downstream_approval(tmp_path: Path) -> None:
+    repo = repo_at(tmp_path, state=make_state(gates=ALL_APPROVED, phase="done"))
+    revision = revise.plan_revision(repo, "design", [])
+    revise.apply(repo, revision, "the auth method was wrong")
+
+    state = state_of(repo)
+    assert state.gate_status("requirements") == "approved"
+    assert [state.gate_status(g) for g in ("design", "tasks", "build", "release")] == ["pending"] * 4
+    assert state.current_phase == "design"
+    assert state.gate_chain_violations() == []
 
 
-@pytest.fixture
-def project(make_repo: Callable[..., Path]) -> Path:
-    return make_repo(state=_STATE)
+def test_an_unknown_target_phase_is_refused(tmp_path: Path) -> None:
+    repo = repo_at(tmp_path)
+    with pytest.raises(revise.ReviseError, match="unknown target phase"):
+        revise.plan_revision(repo, "verify", [])
 
 
-def test_main_dry_run_plans_without_writing(project: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    assert revise.main(["--to", "design", "--dry-run"]) == 0
-    out = capsys.readouterr().out
-    assert "design, tasks, build, release" in out
-    assert (project / ".agentloop" / "state.md").read_text(encoding="utf-8") == _STATE  # untouched
+def test_verify_is_not_a_rollback_target() -> None:
+    # It precedes gate 5, so "rewind to verify" would reset nothing and mean nothing.
+    assert "verify" not in revise.PHASE_GATE
 
 
-def test_main_rewrites_state_and_logs(project: Path) -> None:
-    assert revise.main(["--to", "build", "--reason", "verify found a defect"]) == 0
-    state = (project / ".agentloop" / "state.md").read_text(encoding="utf-8")
-    assert re.search(r"build: pending\s+# c4", state) and re.search(r"release: pending\s+# c5", state)
-    assert re.search(r"tasks: approved\s+# c3", state)  # upstream untouched
-    assert "| build | build, release | verify found a defect |" in state
+# --- consequences 0.8.x did not have ------------------------------------------
 
 
-def test_main_errors_when_state_missing(project: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    (project / ".agentloop" / "state.md").unlink()
-    assert revise.main(["--to", "design"]) == 1
-    assert "cannot read state.md" in capsys.readouterr().err
+def test_rewinding_past_gate_three_unfreezes_the_plan(tmp_path: Path) -> None:
+    repo = repo_at(tmp_path, state=make_state(gates=ALL_APPROVED, phase="done", plan_status="frozen"))
+    revision = revise.plan_revision(repo, "tasks", [])
+    assert revision["unfreezes_plan"] is True
+    revise.apply(repo, revision, "the oracle was wrong")
+
+    state = state_of(repo)
+    assert state.plan_status == "draft"
+    # The frozen digests described a plan that is editable again; leaving them would let a
+    # later check "verify" against a freeze that no longer holds.
+    assert state.plan_digest == ""
 
 
-# --- --impacted: deterministic impact marking in tasks.yaml -------------------
-
-_TASKS = """tasks:
-  - {id: T-001, title: base, kind: foundation, blockedBy: [], status: done, test: make test}
-  - {id: T-002, title: leaf A, kind: parallel, blockedBy: [T-001], status: done, test: make test}
-  - {id: T-003, title: leaf B, kind: parallel, blockedBy: [T-001], status: todo, test: make test}
-  - {id: T-004, title: join, kind: integration, blockedBy: [T-002, T-003], status: todo, test: make test}
-"""
+def test_rewinding_to_build_leaves_the_plan_frozen(tmp_path: Path) -> None:
+    repo = repo_at(tmp_path, state=make_state(gates=ALL_APPROVED, phase="done"))
+    revision = revise.plan_revision(repo, "build", [])
+    assert revision["unfreezes_plan"] is False
+    revise.apply(repo, revision, "the implementation was wrong, the plan was not")
+    assert state_of(repo).plan_status == "frozen"
 
 
-def _statuses() -> dict[str, str]:
-    from agentloop import dag
+def test_receipts_are_cleared_but_the_envelopes_stay(tmp_path: Path) -> None:
+    repo = repo_at(tmp_path, state=make_state(gates=ALL_APPROVED, phase="done"))
+    attestations = repo.attestations
+    attestations.mkdir(parents=True, exist_ok=True)
+    (attestations / "ATT-BUILD-0001.json").write_text("{}", encoding="utf-8")
 
-    return {t.id: t.status for t in dag.load(".agentloop/tasks.yaml").tasks}
+    revision = revise.plan_revision(repo, "build", [])
+    assert revision["cleared_receipts"] == ["build", "release"]
+    revise.apply(repo, revision, "reason")
 
-
-def test_main_impacted_marks_seed_and_transitive_dependents(project: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    # Missing an impacted task is the dangerous direction: the whole closure is marked in code;
-    # "keep" is a deliberate reclassification at the /tasks reconcile, never a silent default.
-    (project / ".agentloop" / "tasks.yaml").write_text(_TASKS, encoding="utf-8")
-    assert revise.main(["--impacted", "T-002"]) == 0
-    statuses = _statuses()
-    assert statuses["T-002"] == "needs-revision"  # seed
-    assert statuses["T-004"] == "needs-revision"  # transitive dependent
-    assert statuses["T-001"] == "done" and statuses["T-003"] == "todo"  # outside the closure: untouched
-    out = capsys.readouterr().out
-    assert "T-002 → needs-revision (was done)" in out  # former statuses feed the reconcile
-    assert "1 seed(s) + 1 transitive dependent(s)" in out
+    assert state_of(repo).gate_receipt("build") is None
+    # An audit record you can erase is not one: the signature stays as history.
+    assert (attestations / "ATT-BUILD-0001.json").exists()
 
 
-def test_main_impacted_dry_run_lists_without_writing(project: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    (project / ".agentloop" / "tasks.yaml").write_text(_TASKS, encoding="utf-8")
-    assert revise.main(["--impacted", "T-002", "--dry-run"]) == 0
-    assert _statuses()["T-002"] == "done"  # untouched
-    assert "[dry-run] would mark T-002" in capsys.readouterr().out
+def test_the_review_is_invalidated(tmp_path: Path) -> None:
+    repo = repo_at(
+        tmp_path,
+        state=make_state(gates=ALL_APPROVED, phase="done"),
+        review=make_review(generated=True, human_status="frozen"),
+    )
+    revise.apply(repo, revise.plan_revision(repo, "build", []), "reason")
+    assert state_of(repo).review.get("status") == "stale"
 
 
-def test_main_impacted_unknown_id_errors(project: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    (project / ".agentloop" / "tasks.yaml").write_text(_TASKS, encoding="utf-8")
-    assert revise.main(["--impacted", "T-999"]) == 1
-    assert "unknown task id" in capsys.readouterr().err
-    assert _statuses() == {"T-001": "done", "T-002": "done", "T-003": "todo", "T-004": "todo"}
+# --- impact analysis ----------------------------------------------------------
 
 
-def test_main_impacted_broken_tasks_yaml_names_the_file_and_next_step(
-    project: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    (project / ".agentloop" / "tasks.yaml").write_text("tasks: [broken\n", encoding="utf-8")
-    assert revise.main(["--impacted", "T-001"]) == 1  # a YAML parse error must not traceback
-    err = capsys.readouterr().err
-    assert ".agentloop/tasks.yaml" in err and "agentloop doctor" in err  # cause + the next step
+def _plan_with_chain() -> dict[str, object]:
+    return make_plan(
+        tasks=[
+            make_task("T-001", claim_ids=["C-001"]),
+            make_task("T-002", kind="parallel", blocked_by=["T-001"], claim_ids=["C-001"]),
+            make_task("T-003", kind="parallel", blocked_by=["T-002"], claim_ids=["C-001"]),
+            make_task("T-004", kind="parallel", claim_ids=["C-001"]),
+        ]
+    )
 
 
-def test_main_combines_to_and_impacted(project: Path) -> None:
-    (project / ".agentloop" / "tasks.yaml").write_text(_TASKS, encoding="utf-8")
-    assert revise.main(["--to", "design", "--impacted", "T-002,T-003"]) == 0
-    state = (project / ".agentloop" / "state.md").read_text(encoding="utf-8")
-    assert re.search(r"design: pending\s+# c2", state)  # gates reset...
-    statuses = _statuses()
-    assert statuses["T-002"] == statuses["T-003"] == statuses["T-004"] == "needs-revision"  # ...and impact marked
+def test_the_whole_downstream_closure_is_marked(tmp_path: Path) -> None:
+    """Missing an impacted task is the dangerous direction, so the closure is marked
+    mechanically; "this one is actually fine" is a human reclassification at /tasks."""
+    repo = repo_at(
+        tmp_path,
+        plan=_plan_with_chain(),
+        state=make_state(gates=ALL_APPROVED, phase="done", tasks={"T-001": "done", "T-002": "done"}),
+    )
+    revision = revise.plan_revision(repo, "build", ["T-001"])
+    assert revision["marked_tasks"] == ["T-001", "T-002", "T-003"]
+    assert revision["ripple"] == ["T-002", "T-003"]
+    assert "T-004" not in revision["marked_tasks"]  # type: ignore[operator]
 
 
-def test_main_requires_to_or_impacted(project: Path) -> None:
-    with pytest.raises(SystemExit):
-        revise.main([])
+def test_marking_records_what_was_invalidated(tmp_path: Path) -> None:
+    repo = repo_at(
+        tmp_path,
+        plan=_plan_with_chain(),
+        state=make_state(gates=ALL_APPROVED, phase="done", tasks={"T-001": "done", "T-002": "done"}),
+    )
+    revision = revise.plan_revision(repo, "build", ["T-001"])
+    assert revision["previous_status"]["T-001"] == "done"  # type: ignore[index]
+    revise.apply(repo, revision, "reason")
+    statuses = state_of(repo).task_status
+    assert statuses["T-001"] == statuses["T-002"] == statuses["T-003"] == "needs-revision"
+
+
+def test_an_unknown_seed_is_reported_not_silently_dropped(tmp_path: Path) -> None:
+    repo = repo_at(tmp_path, plan=_plan_with_chain(), state=make_state(gates=ALL_APPROVED, phase="done"))
+    revision = revise.plan_revision(repo, "build", ["T-001", "T-999"])
+    assert revision["unknown_seeds"] == ["T-999"]
+    assert "unknown task id(s) ignored: T-999" in revise.render(revision)
+
+
+def test_impacted_needs_a_plan(tmp_path: Path) -> None:
+    repo = repo_at(tmp_path, plan=None)
+    with pytest.raises(revise.ReviseError, match="needs a plan"):
+        revise.plan_revision(repo, "build", ["T-001"])
+
+
+# --- CLI ----------------------------------------------------------------------
+
+
+def test_dry_run_writes_nothing(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    repo = repo_at(tmp_path, state=make_state(gates=ALL_APPROVED, phase="done"))
+    before = store_mod.Store(repo).document_digest("state")
+    assert revise.main(["--to", "design", "--dry-run", "--repo", str(tmp_path)]) == 0
+    assert "dry run" in capsys.readouterr().out
+    assert store_mod.Store(repo).document_digest("state") == before
+
+
+def test_dry_run_and_the_real_run_agree(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Two code paths that 'do the same thing' are two code paths that eventually do not, so
+    both render one computed revision."""
+    seed_repo(tmp_path, state=make_state(gates=ALL_APPROVED, phase="done"))
+    revise.main(["--to", "design", "--dry-run", "--repo", str(tmp_path)])
+    dry = capsys.readouterr().out.split("\n\n(dry run")[0]
+    revise.main(["--to", "design", "--reason", "r", "--repo", str(tmp_path)])
+    real = capsys.readouterr().out.split("\n\nRolled back")[0]
+    assert dry == real
+
+
+def test_a_rollback_needs_a_reason(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """The audit chain has to say why an approval was withdrawn, or the next reader cannot
+    tell a correction from a mistake."""
+    seed_repo(tmp_path, state=make_state(gates=ALL_APPROVED, phase="done"))
+    assert revise.main(["--to", "design", "--repo", str(tmp_path)]) == 2
+    assert "refusing to roll back with no --reason" in capsys.readouterr().err
+
+
+def test_the_reason_lands_in_the_audit_chain(tmp_path: Path) -> None:
+    repo = repo_at(tmp_path, state=make_state(gates=ALL_APPROVED, phase="done"))
+    assert revise.main(["--to", "tasks", "--reason", "the oracle was wrong", "--repo", str(tmp_path)]) == 0
+    events = store_mod.Store(repo).read_events()
+    kinds = [e.event for e in events]
+    assert "gate_revised" in kinds
+    assert "plan_invalidated" in kinds  # rewinding to tasks un-freezes the plan
+    revised = next(e for e in events if e.event == "gate_revised")
+    assert revised.detail["reason"] == "the oracle was wrong"
+
+
+def test_an_unsupported_layout_stops_the_command(tmp_path: Path) -> None:
+    seed_repo(tmp_path)
+    (tmp_path / ".agentloop" / "state.md").write_text("legacy\n", encoding="utf-8")
+    assert revise.main(["--to", "design", "--reason", "r", "--repo", str(tmp_path)]) == 1

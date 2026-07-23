@@ -1,81 +1,72 @@
-"""Deterministic derivation utilities for the task graph (DAG).
+"""The task DAG: structure from the frozen plan, status from the mutable state.
 
-Reads `.agentloop/tasks.yaml` and provides pure functions that **deterministically derive from blockedBy**
-the executable frontier, execution layers, critical path, and fan-out.
-Shared by src/agentloop/build_loop.py (deciding the consumption order) and /status (`--render`).
+Consumption order, parallelism, merge order, and stopping are decided **in code from this
+graph**, not by agent discretion (AGENTS.md "Task dependency graph"). That is the whole point
+of deriving layers and the critical path here: two runs of the same plan schedule identically,
+and a reviewer can predict what `/build` will do before it does it.
 
-Derived values (fan-out, etc.) are not saved to the file. They are always computed from the graph, so they never drift.
+The 0.9.0 change is where the two halves come from. 0.8.x kept titles, dependencies, *and*
+status together in `tasks.yaml`, which meant progress edits and plan edits touched one file
+and drifted apart. Now:
+
+  ``plan.yaml.tasks``   id, title, kind, blocked_by, claim_ids, oracle_ids, risk, scope — frozen at gate ③
+  ``state.yaml.tasks``  status, attempts, completed_commit — mutated every iteration
+
+A status entry naming a task the plan does not declare is an error, not a stray key: it means
+the plan was rewound without the state following, and scheduling against it would run work
+nobody approved.
 """
 
 from __future__ import annotations
 
 import argparse
 import logging
-import re
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import TYPE_CHECKING
 
-import yaml
+from agentloop import common, models
+from agentloop import repo as repo_mod
 
 logger = logging.getLogger(__name__)
 
-# The possible values of status. Only done is considered dependency-satisfied.
-STATUS_VALUES = frozenset({"todo", "in_progress", "blocked", "needs-revision", "done"})
-# The display order of STATUS_VALUES (shared by count display and Mermaid color-coding).
-STATUS_ORDER = ("todo", "in_progress", "blocked", "needs-revision", "done")
-KIND_VALUES = frozenset({"foundation", "parallel", "integration"})
-# The lifecycle phase a task originates from (see .agentloop/prompts/commands/tasks.md). Validated because a
-# typo (e.g. "biuld") would otherwise silently drop the task from --trace's build-coverage check.
-# (Distinct from common.PHASE_ORDER, the current_phase lifecycle: a task never originates in brief/tasks/done.)
-PHASE_ORDER = ("requirements", "design", "build", "verify")
-PHASE_VALUES = frozenset(PHASE_ORDER)
-
-# Requirement IDs are `R-<number>` for functional and `NFR-<number>` for non-functional requirements
-# (R-1, NFR-2, …). Shared vocabulary across requirements/design documents and task `req`. A task's req is
-# validated at load time to ensure the whole token has this form (rejecting typos like R1 / Req-1 / nfr-1).
-_REQ_ID_EXACT_RE = re.compile(r"^(?:R|NFR)-\d+$")
-
-
-def is_nfr(req_id: str) -> bool:
-    """True for a non-functional requirement ID (NFR-N). NFRs trace with softer rules than R-N:
-    a missing design section or covering task is a WARN (many NFRs are cross-cutting and are
-    verified at /verify), while a dangling reference stays an ERROR like any other."""
-    return req_id.startswith("NFR-")
-
-
-def _split_req(req: str) -> list[str]:
-    """Split the req field ("R-1" / "R-1,R-3" / "R-1 R-3") into a token list (comma or whitespace)."""
-    return [tok for tok in re.split(r"[,\s]+", req.strip()) if tok]
+KIND_ORDER = models.TASK_KIND_ORDER
+KIND_VALUES = models.TASK_KIND_VALUES
+STATUS_ORDER = models.TASK_STATUS_ORDER
+STATUS_VALUES = models.TASK_STATUS_VALUES
 
 
 class DagError(ValueError):
-    """An inconsistency in tasks.yaml (cycle, unknown dependency, duplicate ID, invalid value)."""
+    """An inconsistency in the graph (cycle, unknown dependency, duplicate id, invalid value)."""
 
 
 @dataclass(frozen=True)
 class Task:
-    """One task from tasks.yaml. Holds no derived values (fan-out, etc.)."""
+    """One schedulable task: its plan-side structure joined with its state-side status."""
 
     id: str
     title: str
     kind: str
     blocked_by: tuple[str, ...] = ()
     status: str = "todo"
-    test: str = ""
-    # Display/label-only metadata (not used for DAG derivation). req=covered requirement
-    # (e.g. "R-1" / "R-1,R-3" / "NFR-2"), phase=lifecycle phase (requirements|design|build|verify; default build).
-    req: str = ""
-    phase: str = "build"
+    risk: str = "low"
+    claim_ids: tuple[str, ...] = ()
+    oracle_ids: tuple[str, ...] = ()
+    domains: tuple[str, ...] = ()
+    attempts: int = 0
 
     @property
     def is_done(self) -> bool:
         return self.status == "done"
 
+    @property
+    def needs_human(self) -> bool:
+        """Blocked or awaiting a revision — the scheduler cannot move these on its own."""
+        return self.status in {"blocked", "needs-revision"}
+
 
 @dataclass(frozen=True)
 class Graph:
-    """A validated task DAG. Created only via `load`/`from_tasks`."""
+    """A validated task DAG. Created only via :meth:`from_tasks` or :func:`load`."""
 
     tasks: tuple[Task, ...]
     _by_id: dict[str, Task] = field(default_factory=dict)
@@ -90,11 +81,8 @@ class Graph:
                 raise DagError(f"{t.id}: invalid kind '{t.kind}' (one of {sorted(KIND_VALUES)})")
             if t.status not in STATUS_VALUES:
                 raise DagError(f"{t.id}: invalid status '{t.status}' (one of {sorted(STATUS_VALUES)})")
-            if t.phase not in PHASE_VALUES:
-                raise DagError(f"{t.id}: invalid phase '{t.phase}' (one of {sorted(PHASE_VALUES)})")
-            for tok in _split_req(t.req):
-                if not _REQ_ID_EXACT_RE.match(tok):
-                    raise DagError(f"{t.id}: invalid req token '{tok}' (must be in R-<number> form)")
+            if t.risk not in models.RISK_VALUES:
+                raise DagError(f"{t.id}: invalid risk '{t.risk}' (one of {sorted(models.RISK_VALUES)})")
             by_id[t.id] = t
         for t in tasks:
             for dep in t.blocked_by:
@@ -115,7 +103,7 @@ class Graph:
             raise DagError("the dependency graph has a cycle (it is not a DAG)")
 
     def _topo_order(self) -> list[str]:
-        """A deterministic topological order (ties by ascending id). On a cycle, returns only what was extracted."""
+        """A deterministic topological order (ties by ascending id). On a cycle, only what was extracted."""
         indegree = {t.id: len(t.blocked_by) for t in self.tasks}
         dependents = self._dependents_map()
         ready = sorted(tid for tid, d in indegree.items() if d == 0)
@@ -128,12 +116,11 @@ class Graph:
                 indegree[child] -= 1
                 if indegree[child] == 0:
                     newly.append(child)
-            # Re-sort each time for determinism.
-            ready = sorted(ready + newly)
+            ready = sorted(ready + newly)  # re-sort each time for determinism
         return order
 
     def _dependents_map(self) -> dict[str, list[str]]:
-        """Each task -> the list of task IDs that directly depend on it (its dependents)."""
+        """Each task -> the ids that directly depend on it."""
         dependents: dict[str, list[str]] = {t.id: [] for t in self.tasks}
         for t in self.tasks:
             for dep in t.blocked_by:
@@ -143,17 +130,14 @@ class Graph:
     # ---- derivation -------------------------------------------------------
 
     def fan_out(self) -> dict[str, int]:
-        """The dependent count of each task (how many tasks are directly waiting on it)."""
+        """How many tasks are directly waiting on each task."""
         return {tid: len(children) for tid, children in self._dependents_map().items()}
 
     def dependents_closure(self, seed_ids: list[str]) -> set[str]:
-        """Return the **transitive dependents** of the seed tasks (those depending on them, directly or indirectly).
+        """The **transitive dependents** of the seeds — the ripple a roll back has to reclassify.
 
-        Used for task impact analysis in a roll back (/revise). Give the directly-affected tasks of an upstream
-        change as seeds, and the downstream tasks chained to them are surfaced for re-review exhaustively.
-        **The seeds themselves are excluded from the result** (a seed is excluded even if it ends up downstream
-        of another seed via mutual dependency; seed=direct impact, return value=ripple beyond, a disjoint set).
-        Unknown seed IDs are ignored (assume the caller has validated).
+        The seeds themselves are excluded (seed = direct impact, result = ripple beyond, a
+        disjoint pair). Unknown seed ids are ignored; the caller validates.
         """
         dependents = self._dependents_map()
         result: set[str] = set()
@@ -167,12 +151,12 @@ class Graph:
         return result - set(seed_ids)
 
     def frontier(self) -> list[Task]:
-        """todo startable right now (status==todo and all blockedBy are done). Ascending id."""
+        """todo tasks startable right now (every blocker done). Ascending id."""
         result = [t for t in self.tasks if t.status == "todo" and all(self.get(dep).is_done for dep in t.blocked_by)]
         return sorted(result, key=lambda t: t.id)
 
     def layers(self) -> list[list[str]]:
-        """Structural execution layers. Layer depth = longest dependency chain length. Within a layer, ascending id."""
+        """Structural execution layers; depth = longest dependency chain. Within a layer, ascending id."""
         depth: dict[str, int] = {}
         for tid in self._topo_order():
             deps = self.get(tid).blocked_by
@@ -181,7 +165,7 @@ class Graph:
         return [sorted(tid for tid, d in depth.items() if d == level) for level in range(max_depth + 1)]
 
     def critical_path(self) -> list[str]:
-        """The longest chain (dependency path with the most nodes). Ties pick one deterministically by ascending id."""
+        """The longest chain. Ties resolved deterministically by ascending id."""
         length: dict[str, int] = {}
         pred: dict[str, str | None] = {}
         for tid in self._topo_order():
@@ -203,9 +187,10 @@ class Graph:
         return list(reversed(path))
 
     def order_frontier(self) -> list[Task]:
-        """The frontier ordered by optimal consumption.
+        """The frontier in optimal consumption order.
 
-        Priority: ① foundation / high fan-out → ② on the critical path → ③ the rest. Ties deterministic by ascending id.
+        Priority: ① foundation / high fan-out → ② on the critical path → ③ the rest, ties by
+        ascending id. In code rather than by agent choice, so two runs schedule identically.
         """
         fan = self.fan_out()
         on_critical = set(self.critical_path())
@@ -220,192 +205,151 @@ class Graph:
         )
 
     def counts(self) -> dict[str, int]:
-        """Counts by status."""
-        result = {s: 0 for s in STATUS_VALUES}
+        """Counts by status, in vocabulary order."""
+        result = {s: 0 for s in STATUS_ORDER}
         for t in self.tasks:
             result[t.status] += 1
         return result
 
+    def claims_without_a_task(self, plan: models.Plan) -> list[str]:
+        """Claims no task is answerable for — a gate ③ readiness failure (plan §16.4).
 
-def _task_from_raw(raw: dict[str, object]) -> Task:
-    if not isinstance(raw, dict):
-        raise DagError(f"a task must be a mapping (an element with id/title/...): {raw!r}")
-    if "id" not in raw:
-        raise DagError(f"there is a task with no id: {raw!r}")
-    blocked = raw.get("blockedBy", []) or []
-    if not isinstance(blocked, list):
-        raise DagError(f"{raw['id']}: blockedBy must be a list")
-    return Task(
-        id=str(raw["id"]),
-        title=str(raw.get("title", "")),
-        kind=str(raw.get("kind", "parallel")),
-        blocked_by=tuple(str(d) for d in blocked),
-        status=str(raw.get("status", "todo")),
-        test=str(raw.get("test", "")),
-        req=str(raw.get("req") or ""),
-        phase=str(raw.get("phase") or "build"),
+        A claim with no owning task is a promise the build cannot keep, and it would surface at
+        gate ④ as an unexplained `missing` verdict rather than as the planning gap it is.
+        """
+        covered = {cid for t in self.tasks for cid in t.claim_ids}
+        return sorted(c.id for c in plan.claims if c.id not in covered)
+
+
+def join(plan: models.Plan, state: models.State | None) -> Graph:
+    """Build the graph from the plan's structure and the state's status.
+
+    A status entry for a task the plan does not declare is an error: the plan was rewound and
+    the state did not follow, and scheduling against that mismatch would run unapproved work.
+    """
+    status_map = state.task_status if state is not None else {}
+    attempts_map: dict[str, int] = {}
+    if state is not None:
+        raw_tasks = state.raw.get("tasks")
+        if isinstance(raw_tasks, dict):
+            for tid, body in raw_tasks.items():
+                if isinstance(body, dict) and isinstance(body.get("attempts"), int):
+                    attempts_map[tid] = body["attempts"]
+
+    known = {t.id for t in plan.tasks}
+    orphans = sorted(tid for tid in status_map if tid not in known)
+    if orphans:
+        raise DagError(
+            f"state.yaml holds status for task(s) the plan does not declare: {', '.join(orphans)} — "
+            "the plan was rewound without the state following. Run `agentloop revise` to reconcile."
+        )
+
+    return Graph.from_tasks(
+        [
+            Task(
+                id=t.id,
+                title=t.title,
+                kind=t.kind,
+                blocked_by=t.blocked_by,
+                status=status_map.get(t.id, "todo"),
+                risk=t.risk,
+                claim_ids=t.claim_ids,
+                oracle_ids=t.oracle_ids,
+                domains=t.domains,
+                attempts=attempts_map.get(t.id, 0),
+            )
+            for t in plan.tasks
+        ]
     )
 
 
-# The tasks.yaml schema version this parser understands (see data/schema/tasks.schema.json).
-SCHEMA_VERSION = 1
+def load(repo: repo_mod.Repo) -> Graph:
+    """The graph for `repo`. Raises :class:`DagError` when the plan is missing or inconsistent."""
+    from agentloop import store as store_mod
 
-
-def load(path: str | Path = ".agentloop/tasks.yaml") -> Graph:
-    """Load tasks.yaml and return a validated Graph.
-
-    A file declaring a `schema_version` newer than this parser knows is refused — guessing at
-    unknown semantics is how a newer repo gets silently mis-parsed by an older tool. A missing
-    schema_version stays accepted (pre-versioning repos).
-    """
-    text = Path(path).read_text(encoding="utf-8")
-    data = yaml.safe_load(text) or {}
-    declared = data.get("schema_version")
-    if isinstance(declared, int) and declared > SCHEMA_VERSION:
-        raise DagError(
-            f"tasks.yaml declares schema_version {declared} but this agentloop understands {SCHEMA_VERSION} — "
-            "upgrade the tool (`uv tool upgrade agentloop`)"
-        )
-    raw_tasks = data.get("tasks") or []
-    if not isinstance(raw_tasks, list):
-        raise DagError("'tasks' in tasks.yaml must be a list")
-    return Graph.from_tasks([_task_from_raw(r) for r in raw_tasks])
+    store = store_mod.Store(repo)
+    plan = store.read_plan()
+    if plan is None:
+        raise DagError(f"no plan at {repo.plan} — run `/req` and `/design` first, or `agentloop init`")
+    return join(plan, store.read_state())
 
 
 # The render (dag_render.py) and trace (dag_trace.py) halves split out; consumers keep
 # addressing everything through `dag.` — re-exported lazily below (PEP 562 __getattr__),
 # because a module-level import back from the split halves would be circular.
 if TYPE_CHECKING:
-    # The `x as x` form marks these as re-exports (so the linter keeps them and mypy types
-    # `dag.render` etc.); at runtime the same names resolve through __getattr__ below.
     from agentloop.dag_render import mermaid as mermaid
     from agentloop.dag_render import render as render
-    from agentloop.dag_trace import _CODE_FENCE_RE as _CODE_FENCE_RE
-    from agentloop.dag_trace import _HEADING_RE as _HEADING_RE
-    from agentloop.dag_trace import _REQ_ID_RE as _REQ_ID_RE
     from agentloop.dag_trace import TraceReport as TraceReport
-    from agentloop.dag_trace import parse_requirement_ids as parse_requirement_ids
     from agentloop.dag_trace import render_trace as render_trace
-    from agentloop.dag_trace import task_req_ids as task_req_ids
     from agentloop.dag_trace import trace as trace
 
 _SPLIT_HOMES = {
     "render": "dag_render",
     "mermaid": "dag_render",
-    "parse_requirement_ids": "dag_trace",
-    "task_req_ids": "dag_trace",
     "TraceReport": "dag_trace",
     "trace": "dag_trace",
     "render_trace": "dag_trace",
-    "_run_trace": "dag_trace",
-    "_read_optional": "dag_trace",
-    "_HEADING_RE": "dag_trace",
-    "_REQ_ID_RE": "dag_trace",
-    "_CODE_FENCE_RE": "dag_trace",
 }
 
 
 def __getattr__(name: str) -> object:
-    """Lazy re-exports of the split render/trace halves (PEP 562)."""
-    if home := _SPLIT_HOMES.get(name):
-        import importlib
+    home = _SPLIT_HOMES.get(name)
+    if home is None:
+        raise AttributeError(f"module 'agentloop.dag' has no attribute {name!r}")
+    import importlib
 
-        return getattr(importlib.import_module(f"agentloop.{home}"), name)
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    return getattr(importlib.import_module(f"agentloop.{home}"), name)
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="deterministically derive the DAG from tasks.yaml")
-    parser.add_argument("path", nargs="?", default="", help="path to tasks.yaml (default: the discovered repo's)")
-    parser.add_argument("--repo", default=None, help="repository root (default: discovered from cwd)")
+    parser = argparse.ArgumentParser(description="derive and inspect the task DAG (read-only)")
     group = parser.add_mutually_exclusive_group()
-    group.add_argument("--render", action="store_true", help="output the summary for /status")
-    group.add_argument("--mermaid", action="store_true", help="output the dependency graph as Mermaid (graph TD)")
-    group.add_argument("--frontier", action="store_true", help="output optimal-order frontier IDs, newline-separated")
-    group.add_argument("--validate", action="store_true", help="validate DAG consistency only (non-zero on error)")
-    group.add_argument(
-        "--impacted",
-        metavar="IDS",
-        help="roll-back impact: transitive dependents of the given tasks (comma-separated), newline-separated",
-    )
-    group.add_argument(
-        "--trace",
-        action="store_true",
-        help="check requirements → design → tasks consistency (exit code 0=OK / 1=missing / 2=cannot check)",
-    )
-    parser.add_argument(
-        "--requirements",
-        default=None,
-        help="path to the requirements document (for --trace; default docs/10-requirements.md)",
-    )
-    parser.add_argument(
-        "--design",
-        default=None,
-        help="design document path (for --trace; default docs/20-design.md; skipped if absent)",
-    )
-    parser.add_argument(
-        "--require-design",
-        action="store_true",
-        help="with --trace, do not allow a missing design document and exit 2 (for the design-approved phase gate)",
-    )
-    parser.add_argument(
-        "--test-plan",
-        default=None,
-        metavar="PATH",
-        help="with --trace, also require every R/NFR to appear in this test plan (for /verify;"
-        " typically docs/test/test-plan.md)",
-    )
+    group.add_argument("--render", action="store_true", help="the human-facing view (default)")
+    group.add_argument("--mermaid", action="store_true", help="the dependency graph as Mermaid")
+    group.add_argument("--frontier", action="store_true", help="the startable tasks, in consumption order")
+    group.add_argument("--validate", action="store_true", help="structural consistency only; print nothing on success")
+    group.add_argument("--trace", action="store_true", help="the requirement → claim → task/oracle thread")
+    group.add_argument("--impacted", metavar="T-NNN", help="the transitive dependents of a task (roll-back ripple)")
+    parser.add_argument("--repo", default=None, help="repository root (default: discovered from cwd)")
     args = parser.parse_args(argv)
-    # Lazy: keep the pure-graph module importable alone (and the split halves import this module).
-    from agentloop import common, dag_render, dag_trace
-
     common.configure_logging()
 
-    if not args.trace and (
-        args.requirements is not None or args.design is not None or args.require_design or args.test_plan is not None
-    ):
-        logger.warning(
-            "warning: --requirements/--design/--require-design/--test-plan are valid only with --trace (ignoring)"
-        )
+    try:
+        repo = repo_mod.get(args.repo)
+        repo.require_supported_layout()
+    except (repo_mod.RepoNotFoundError, repo_mod.UnsupportedLayoutError) as exc:
+        logger.error(str(exc))
+        return 1
 
-    if not args.path or args.trace:
-        from agentloop import repo as repo_mod  # lazy: keep the pure-graph module importable alone
+    if args.trace:
+        from agentloop import dag_trace
 
-        try:
-            repo = repo_mod.get(args.repo)
-        except repo_mod.RepoNotFoundError as exc:
-            logger.error(str(exc))
-            return 2 if args.trace else 1
-        args.path = args.path or str(repo.tasks)
-        args.requirements = args.requirements or str(repo.path(dag_trace._DEFAULT_REQUIREMENTS))
-        args.design = args.design or str(repo.path(dag_trace._DEFAULT_DESIGN))
+        return dag_trace.run(repo)
 
     try:
-        graph = load(args.path)
-    except (OSError, DagError, yaml.YAMLError) as exc:
-        logger.error(f"error: cannot load {args.path}: {exc} — fix it (or run `agentloop doctor` to diagnose)")
-        # With --trace, represent "cannot check" with 2 (tasks.yaml unreadable = trace not established).
-        return 2 if args.trace else 1
+        graph = load(repo)
+    except (DagError, models.DocumentError) as exc:
+        logger.error(str(exc))
+        return 1
 
+    if args.validate:
+        return 0
+    if args.impacted:
+        if args.impacted not in {t.id for t in graph.tasks}:
+            logger.error(f"unknown task {args.impacted}")
+            return 2
+        impacted = sorted(graph.dependents_closure([args.impacted]))
+        print("\n".join(impacted) if impacted else "(no downstream tasks)")
+        return 0
     if args.frontier:
-        print("\n".join(t.id for t in graph.order_frontier()))
-    elif args.validate:
-        pass  # load success = validation OK
-    elif args.mermaid:
-        print(dag_render.mermaid(graph))
-    elif args.impacted is not None:
-        seeds = [s.strip() for s in args.impacted.split(",") if s.strip()]
-        print("\n".join(sorted(graph.dependents_closure(seeds))))
-    elif args.trace:
-        return dag_trace._run_trace(
-            graph,
-            requirements_path=args.requirements or dag_trace._DEFAULT_REQUIREMENTS,
-            design_path=args.design or dag_trace._DEFAULT_DESIGN,
-            require_design=args.require_design,
-            test_plan_path=args.test_plan,
-        )
-    else:  # --render (default)
-        print(dag_render.render(graph))
+        ordered = graph.order_frontier()
+        print("\n".join(f"{t.id} [{t.kind}] {t.title}" for t in ordered) if ordered else "(no startable todo)")
+        return 0
+
+    from agentloop import dag_render
+
+    print(dag_render.mermaid(graph) if args.mermaid else dag_render.render(graph))
     return 0
 
 

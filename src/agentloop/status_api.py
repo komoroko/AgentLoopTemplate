@@ -1,16 +1,17 @@
-"""Deterministic status aggregation for the AgentLoop SSOT — one JSON object, one next action.
+"""Status aggregation: one JSON object, and one deterministic "what should I do next".
 
-Composes the existing derivation pieces (common.read_frontmatter, dag.Graph, events.open_escalations,
-revise.GATE_ORDER) into a single machine-readable status object, and — the part that previously lived only
-as natural language in .agentloop/prompts/commands/status.md — computes the **next recommended command**
-deterministically from the phase/gate/task state (first-match decision table in `next_action`).
-Consumed by src/agentloop/ui.py (the local dashboard) and runnable standalone:
+`/status`, `agentloop next`, and the dashboard all read this, so the answer to "where am I"
+is computed once rather than narrated three times by three agents. :func:`next_action` is a
+first-match decision table — the same state always yields the same recommendation, which is
+what lets a human predict the tool instead of interviewing it.
 
-  agentloop status --json
+Read-only, and **tolerant on purpose**: a missing plan (normal before `/tasks`), a half-edited
+config, or a damaged audit chain must degrade to a warning rather than a crash. The dashboard
+has to stay up precisely when the state is odd — that is when a human most needs to look at it.
 
-Read-only: this module never writes to the SSOT. Reads are tolerant — a missing tasks.yaml (normal before
-/tasks) or a half-edited config must degrade to a warning, never a crash (the dashboard has to stay up
-precisely when the state is odd).
+The one thing tolerance never extends to is *reporting a problem as fine*. A damaged chain, a
+broken gate ladder, and an unreadable state each get their own row near the top of the table,
+so the recommendation is "diagnose this", never a phase command that would build on top of it.
 """
 
 from __future__ import annotations
@@ -18,36 +19,46 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
+import logging
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
-from datetime import datetime
 from pathlib import Path
 
-import yaml
-
-from agentloop import common, dag, revise
+from agentloop import common, dag, dag_trace, event_chain, models, strict_yaml
 from agentloop import events as events_mod
 from agentloop import lock as lock_mod
+from agentloop import repo as repo_mod
+from agentloop import store as store_mod
 
-GATE_ORDER = common.GATE_ORDER
-PHASE_ORDER = common.PHASE_ORDER
-# Phase -> the gate its command's approval-presentation targets (revise._PHASE_GATE stops at build
-# because verify is not a roll-back target; for status purposes verify presents the release gate).
-_PHASE_GATE = {**revise._PHASE_GATE, "verify": "release"}
-_PHASE_COMMAND = {
+logger = logging.getLogger(__name__)
+
+GATE_ORDER = models.GATE_ORDER
+PHASE_ORDER = models.PHASE_ORDER
+
+#: Phase → the gate its command presents for approval.
+PHASE_GATE: dict[str, str] = {
+    "requirements": "requirements",
+    "design": "design",
+    "tasks": "tasks",
+    "build": "build",
+    "verify": "release",
+}
+PHASE_COMMAND: dict[str, str] = {
     "requirements": "/req",
     "design": "/design",
     "tasks": "/tasks",
     "build": "/build",
     "verify": "/verify",
 }
-# The phase each gate belongs to on the stepper (release is approved from /verify).
-_GATE_PHASE = {**{g: g for g in GATE_ORDER[:-1]}, "release": "verify"}
+#: The phase each gate belongs to on the stepper (release is presented from /verify).
+GATE_PHASE: dict[str, str] = {**{g: g for g in GATE_ORDER[:-1]}, "release": "verify"}
+
+_PLACEHOLDER_HINTS = ("<enter", "product", "build/product")
 
 
 @dataclass(frozen=True)
 class Recommendation:
-    """The next recommended action, as a copy-able command plus a one-sentence why."""
+    """The next action, as a copy-able command plus a one-sentence why."""
 
     command: str
     kind: str  # run_phase | approve_gate | reconcile | resolve | setup | close | fix
@@ -55,29 +66,17 @@ class Recommendation:
     also: tuple[str, ...] = ()
 
 
-def _no_agent_surface(root: Path) -> bool:
-    """True when the lock is readable and records no installed integration (agent surface).
+def _is_placeholder(value: object) -> bool:
+    return isinstance(value, str) and any(hint in value for hint in _PLACEHOLDER_HINTS)
 
-    A missing or broken lock stays False — pre-lock repos are legitimate, and this hint must
-    never turn a readable status into an error.
-    """
+
+def _no_agent_surface(repo: repo_mod.Repo) -> bool:
+    """True when the lock is readable and records no installed agent surface."""
     try:
-        data = lock_mod.read(root / lock_mod.LOCK_NAME)
+        data = lock_mod.read(repo.lock)
     except lock_mod.LockError:
         return False
-    if data is None:
-        return False
-    return not (data.get("integrations") or {})
-
-
-def _is_placeholder(value: object) -> bool:
-    """True for an unfilled scaffold value (`<enter the product name>` style) or a non-string."""
-    return not isinstance(value, str) or not value or value.startswith("<")
-
-
-def _gate_chain_broken(gates: dict[str, str]) -> bool:
-    """True when a downstream gate is approved while an upstream one is pending (the invariant /revise keeps)."""
-    return bool(common.gate_chain_violations(gates))
+    return data is not None and not (data.get("integrations") or {})
 
 
 def next_action(
@@ -85,73 +84,100 @@ def next_action(
     current_phase: str,
     gates: dict[str, str],
     counts: dict[str, int] | None,
-    open_escalation_count: int,
+    attention_count: int,
+    chain_defects: int,
     template_mode: bool,
     placeholders: bool,
-    has_adopt_manifest: bool,
+    gate_chain_broken: bool,
+    plan_missing: bool,
+    unsandboxed_profiles: list[str],
 ) -> Recommendation:
-    """The deterministic decision table (first match wins) for "what should the human do next"."""
-    # 1. Not a product yet: the template must be initialized (or was adopted brownfield → survey first).
+    """The deterministic decision table (first match wins)."""
+    # 1. The audit chain is the substrate every receipt binds. Nothing else matters until it is intact.
+    if chain_defects:
+        return Recommendation(
+            command="agentloop events --verify",
+            kind="fix",
+            reason=f"The audit chain has {chain_defects} defect(s). No gate receipt can be issued against a "
+            "damaged log — restore events.ndjson from git rather than rewriting it to agree.",
+        )
+    # 2. Not a product yet: the template must be initialized.
     if template_mode or placeholders:
         return Recommendation(
             command="agentloop init --name <product>",
             kind="setup",
-            reason="This checkout is still the raw template (template_mode / placeholder state.md); "
+            reason="This checkout is still the raw template (template_mode / placeholder state); "
             "initialize it into a product first.",
-            also=("/onboard",) if has_adopt_manifest else (),
         )
-    # 2. A corrupt gate chain means the SSOT itself needs repair — do not guess a phase from it.
-    if _gate_chain_broken(gates):
+    # 3. A broken gate ladder means an approval survived a roll back — repair, do not infer a phase from it.
+    if gate_chain_broken:
         return Recommendation(
             command="agentloop doctor",
             kind="fix",
-            reason="Gate chain invariant is broken (a downstream gate is approved while an upstream one is "
-            "pending); diagnose before continuing.",
+            reason="A downstream gate is approved while an upstream one is pending: an approval survived a "
+            "roll back, so downstream work is standing on a decision that was withdrawn.",
         )
-    # 3. needs-revision tasks park everything until the /tasks reconcile reclassifies them at gate ③.
+    # 4. needs-revision tasks park everything until the /tasks reconcile reclassifies them.
     if counts is not None and counts.get("needs-revision", 0) > 0:
         return Recommendation(
             command="/tasks",
             kind="reconcile",
-            reason="needs-revision tasks exist; reconcile them (keep/modify/obsolete/new) and re-approve gate ③.",
-            also=("agentloop revise",),
+            reason="needs-revision tasks exist; reconcile them (keep / modify / obsolete / new) and re-approve gate 3.",
+            also=("agentloop dag --render",),
         )
-    # 4. /verify must close every open escalation before presenting gate ⑤.
-    if current_phase == "verify" and open_escalation_count > 0:
+    # 5. Sandboxing is a precondition for running anything, so it precedes the phase rows.
+    if unsandboxed_profiles:
         return Recommendation(
-            command='agentloop events --resolve <ID> --note "..."',
-            kind="resolve",
-            reason=f"{open_escalation_count} open escalation(s) must be closed before the gate ⑤ release decision.",
+            command="agentloop oci build --profile " + unsandboxed_profiles[0],
+            kind="fix",
+            reason="Profile(s) " + ", ".join(unsandboxed_profiles) + " run repository-derived code on the host. "
+            "Build the packaged sandbox image and pin its digest in config.yaml.",
         )
-    # 5. Before the lifecycle starts, the human writes the brief.
+    # 6. Events awaiting a human decision block the release gate.
+    if current_phase == "verify" and attention_count:
+        return Recommendation(
+            command="agentloop events --summary",
+            kind="resolve",
+            reason=f"{attention_count} event(s) await a human decision; record a disposition for each before "
+            "the gate 5 release decision.",
+        )
+    # 7. Before the lifecycle starts, the human writes the brief.
     if current_phase == "brief":
         return Recommendation(
             command="/req",
             kind="run_phase",
-            reason="Fill docs/00-product-brief.md, then run /req to start the requirements phase (gate ①).",
+            reason="Fill docs/00-product-brief.md, then run /req to start the requirements phase (gate 1).",
         )
-    # 6. Everything approved: the cycle is over.
+    # 8. Everything approved: the cycle is over.
     if current_phase == "done" or all(gates.get(g) == "approved" for g in GATE_ORDER):
         return Recommendation(
             command="agentloop cycle-close --name <slug>",
             kind="close",
-            reason="All gates are approved; archive this delta cycle's deliverables and reset for the next one.",
+            reason="All gates are approved; archive this cycle's deliverables and reset for the next one.",
         )
-    # 7. Inside a phase: pending gate → run (or finish) that phase's command; approved → advance.
-    gate = _PHASE_GATE.get(current_phase)
+    if plan_missing and current_phase not in {"brief", "requirements"}:
+        return Recommendation(
+            command="agentloop doctor",
+            kind="fix",
+            reason=f"current_phase is '{current_phase}' but there is no .agentloop/plan.yaml to work from.",
+        )
+    # 9. Inside a phase: pending gate → finish that phase; approved → advance.
+    gate = PHASE_GATE.get(current_phase)
     if gate is not None:
         index = GATE_ORDER.index(gate) + 1
         if gates.get(gate) != "approved":
-            also = ("agentloop build",) if current_phase == "build" else ()
+            also: tuple[str, ...] = (f"agentloop approve {gate} --check",)
+            if current_phase == "build":
+                also = ("agentloop build", *also)
             return Recommendation(
-                command=_PHASE_COMMAND[current_phase],
+                command=PHASE_COMMAND[current_phase],
                 kind="run_phase",
-                reason=f"Phase '{current_phase}' is in progress; its command ends with the gate {index} "
-                "approval presentation.",
+                reason=f"Phase '{current_phase}' is in progress; it ends by presenting gate {index} for a "
+                "signed approval.",
                 also=also,
             )
         next_phase = PHASE_ORDER[PHASE_ORDER.index(current_phase) + 1]
-        if next_phase == "done":  # release approved but phase not yet flipped — same as row 6
+        if next_phase == "done":
             return Recommendation(
                 command="agentloop cycle-close --name <slug>",
                 kind="close",
@@ -159,12 +185,11 @@ def next_action(
             )
         also = ("agentloop build",) if next_phase == "build" else ()
         return Recommendation(
-            command=_PHASE_COMMAND[next_phase],
+            command=PHASE_COMMAND[next_phase],
             kind="run_phase",
             reason=f"Gate {index} ({gate}) is approved; advance to the {next_phase} phase.",
             also=also,
         )
-    # Unknown phase value — the SSOT is off-vocabulary; diagnose instead of guessing.
     return Recommendation(
         command="agentloop doctor",
         kind="fix",
@@ -173,224 +198,214 @@ def next_action(
 
 
 def _tasks_block(graph: dag.Graph) -> dict[str, object]:
-    """The task-graph slice of the status object (all values derived, nothing stored)."""
+    """The task-graph slice of the status object — every value derived, nothing stored."""
     fan = graph.fan_out()
+    counts = graph.counts()
     return {
-        "counts": {s: graph.counts()[s] for s in dag.STATUS_ORDER},
+        "counts": {s: counts[s] for s in dag.STATUS_ORDER},
         "total": len(graph.tasks),
-        "frontier": [
-            {"id": t.id, "title": t.title, "kind": t.kind, "fan_out": fan[t.id]} for t in graph.order_frontier()
-        ],
         "layers": graph.layers(),
         "critical_path": graph.critical_path(),
-        "needs_revision": sorted(t.id for t in graph.tasks if t.status == "needs-revision"),
-        "blocked": sorted(t.id for t in graph.tasks if t.status == "blocked"),
-        "tasks": [
+        "frontier": [
+            {"id": t.id, "title": t.title, "kind": t.kind, "risk": t.risk, "fan_out": fan[t.id]}
+            for t in graph.order_frontier()
+        ],
+        "rows": [
             {
                 "id": t.id,
                 "title": t.title,
-                "status": t.status,
                 "kind": t.kind,
+                "status": t.status,
+                "risk": t.risk,
                 "blocked_by": list(t.blocked_by),
-                "req": t.req,
-                "test": t.test,
+                "claim_ids": list(t.claim_ids),
+                "oracle_ids": list(t.oracle_ids),
+                "fan_out": fan[t.id],
             }
-            for t in sorted(graph.tasks, key=lambda t: t.id)
+            for t in graph.tasks
         ],
     }
 
 
-def _read_optional(path: Path) -> str | None:
-    """Return the file text, or None for any unreadable case (absent/dir/permission) — used to skip a panel."""
-    try:
-        return path.read_text(encoding="utf-8")
-    except OSError:
-        return None
-
-
-def _trace_block(root: Path, graph: dag.Graph) -> dict[str, object] | None:
-    """Requirement → design → task coverage for the dashboard, reusing dag.trace (no new logic).
-
-    Reads docs/10-requirements.md (and docs/20-design.md when present) tolerantly. Returns None when the
-    requirements document is absent or carries no R-N/NFR-N ids (nothing to show yet). The compact shape
-    keeps the deterministic TraceReport but drops what a glance doesn't need.
-    """
-    req_text = _read_optional(root / "docs" / "10-requirements.md")
-    if req_text is None:
-        return None
-    requirement_ids = dag.parse_requirement_ids(req_text)
-    if not requirement_ids:
-        return None
-    design_text = _read_optional(root / "docs" / "20-design.md")
-    design_ids = dag.parse_requirement_ids(design_text) if design_text is not None else None
-    report = dag.trace(graph, requirement_ids, design_ids, None)
-
-    missing_design = set(report.requirements_missing_design) | set(report.nfrs_missing_design)
-    coverage = {**report.req_to_tasks, **report.nfr_to_tasks}
-    requirements = [
-        {
-            "id": rid,
-            "nfr": dag.is_nfr(rid),
-            "design": (None if not report.design_checked else (rid not in missing_design)),
-            "tasks": coverage.get(rid, []),
-        }
-        for rid in requirement_ids
-    ]
-    findings = [f"{r}: no task covering it" for r in report.uncovered_requirements]
-    findings += [f"{r}: no design section" for r in report.requirements_missing_design]
-    findings += [f"design references unknown {d}" for d in report.unknown_in_design]
-    findings += [f"{tid}: references unknown {r}" for tid, r in report.unknown_in_tasks]
+def _plan_block(plan: models.Plan) -> dict[str, object]:
+    """The evidence slice: how much of the plan is grounded, and what is still owed."""
+    ungrounded = plan.ungrounded(floor="low")
     return {
-        "requirements": requirements,
-        "design_checked": report.design_checked,
-        "findings": findings,
-        "ok": report.ok,
+        "cycle_id": plan.cycle_id,
+        "digest": plan.digest(),
+        "claims": len(plan.claims),
+        "technical_facts": len(plan.technical_facts),
+        "oracles": len(plan.oracles),
+        "obligations": {
+            "total": len(plan.obligations),
+            "satisfied": sum(1 for o in plan.obligations if o.satisfied),
+            "unsatisfied_high": [o.id for o in plan.unsatisfied_obligations(floor="high")],
+        },
+        "ungrounded": [{"id": e.id, "risk": getattr(e, "risk", "low")} for e in ungrounded],
+        "unavailable_providers": sorted({p for s in plan.searches for p in s.unavailable_providers}),
     }
 
 
-def _section_table(text: str, heading: str) -> list[list[str]]:
-    """Extract the data rows of the first Markdown table under `## <heading>` (tolerant, best-effort).
-
-    Drops the header row, the `|---|` separator, and placeholder rows (`_(…)_`). Cells are trimmed.
-    Any structural surprise yields fewer rows, never an exception — the dashboard tolerates a hand-edited
-    state.md the same way the escalation view does.
-    """
-    lines = text.splitlines()
-    try:
-        start = next(i for i, ln in enumerate(lines) if ln.strip().startswith("## ") and heading in ln)
-    except StopIteration:
-        return []
-    rows: list[list[str]] = []
-    seen_header = False
-    for ln in lines[start + 1 :]:
-        stripped = ln.strip()
-        if stripped.startswith("## "):
-            break  # next section
-        if not (stripped.startswith("|") and stripped.endswith("|")):
-            continue
-        cells = [c.strip() for c in stripped.strip("|").split("|")]
-        if not seen_header:  # the first table row is the column header
-            seen_header = True
-            continue
-        if all(set(c) <= {"-", ":"} for c in cells):
-            continue  # the |---|---| separator
-        if any("_(" in c for c in cells):
-            continue  # scaffold placeholder row
-        rows.append(cells)
-    return rows
-
-
-def _state_body_logs(text: str | None) -> dict[str, list[list[str]]]:
-    """The two hand-maintained state.md tables the dashboard mirrors: speculative work + roll-back history."""
-    if text is None:
-        return {"speculative": [], "rollback": []}
+def _review_block(review: models.Review | None) -> dict[str, object]:
+    """The review slice. Deliberately reports the three axes separately — never one `verified`."""
+    if review is None or not review.is_generated:
+        return {"status": "not_generated"}
+    verdicts: dict[str, int] = {}
+    for result in review.claim_results:
+        verdict = str(result.get("verdict", "unknown"))
+        verdicts[verdict] = verdicts.get(verdict, 0) + 1
     return {
-        "speculative": _section_table(text, "Speculative work log"),
-        "rollback": _section_table(text, "Roll-back (revision) log"),
+        "status": "generated",
+        "machine_digest": review.machine_digest(),
+        "human_status": review.human_status,
+        "verdicts": verdicts,
+        # "sufficient" or "undeterminable" — never a count that reads as "we checked and found none".
+        "coverage": "sufficient" if review.coverage_sufficient else "undeterminable",
+        "extra_behaviors": len(review.extra_behaviors) if review.coverage_sufficient else None,
+        "blocking_security": len(review.blocking_security_findings),
     }
 
 
 def collect_status(
-    root: str | Path = ".",
+    root: str | Path | repo_mod.Repo = ".",
     *,
-    events_loader: Callable[[str], list[events_mod.Event]] = events_mod.load_events,
+    events_scanner: Callable[[Path], tuple[list[models.Event], list[event_chain.ChainDefect]]] | None = None,
 ) -> dict[str, object]:
-    """Assemble the whole status object from the SSOT under `root`. Never raises for a readable repo.
+    """The whole status object for the repository at `root`. Never raises for a readable repo.
 
-    `events_loader` is a seam for callers that already cache the parsed log: the dashboard polls this
-    function every few seconds and would otherwise re-parse the whole events.ndjson each time.
+    `events_scanner` is a seam for the dashboard: /api/status is the always-on poll, and
+    answering it means reading the *whole* chain (a root is a digest over every record).
+    Without the seam that reparse happens every few seconds for a file that rarely changes.
     """
-    root = Path(root)
+    repo = root if isinstance(root, repo_mod.Repo) else repo_mod.Repo(Path(root).resolve())
     warnings: list[str] = []
+    store = store_mod.Store(repo)
 
-    # state.md feeds both the front matter and the two body log tables — read it once for both.
-    state_text = _read_optional(root / ".agentloop" / "state.md")
-    front: dict[str, object] = {}
-    if state_text is None:
-        warnings.append("cannot read state.md front-matter: file is unreadable or absent")
-    else:
-        try:
-            front = common.parse_frontmatter(state_text) or {}
-        except yaml.YAMLError as exc:
-            warnings.append(f"cannot read state.md front-matter: {exc}")
-    gates = common.gates_of(front) or {}
-    current_phase = str(front.get("current_phase", ""))
+    legacy = repo.legacy_markers()
+    if legacy:
+        return {
+            "unsupported_layout": True,
+            "legacy_markers": list(legacy),
+            "next": asdict(
+                Recommendation(
+                    command="agentloop doctor --unsupported-layout",
+                    kind="fix",
+                    reason=repo_mod.UNSUPPORTED_LAYOUT_MESSAGE.replace("\n", " "),
+                )
+            ),
+            "warnings": [repo_mod.UNSUPPORTED_LAYOUT_MESSAGE],
+            "generated_at": event_chain.now_iso(),
+        }
 
-    template_mode = False
-    github_enabled = False
+    state: models.State | None = None
     try:
-        config = yaml.safe_load((root / ".agentloop" / "config.yaml").read_text(encoding="utf-8")) or {}
-        template_mode = bool((config.get("gates") or {}).get("template_mode", False))
-        github_enabled = bool((config.get("github") or {}).get("enabled", False))
-    except (OSError, yaml.YAMLError) as exc:
+        state = store.read_state()
+    except (models.DocumentError, strict_yaml.StrictParseError, store_mod.StoreError) as exc:
+        warnings.append(f"cannot read state.yaml: {exc}")
+    if state is None and not warnings:
+        warnings.append("no .agentloop/state.yaml yet")
+
+    plan: models.Plan | None = None
+    try:
+        plan = store.read_plan()
+    except (models.DocumentError, strict_yaml.StrictParseError, store_mod.StoreError) as exc:
+        warnings.append(f"cannot read plan.yaml: {exc}")
+
+    review: models.Review | None = None
+    try:
+        review = store.read_review()
+    except (models.DocumentError, strict_yaml.StrictParseError, store_mod.StoreError) as exc:
+        warnings.append(f"cannot read review.yaml: {exc}")
+
+    config: models.Config | None = None
+    try:
+        config = store.read_config()
+    except (models.DocumentError, strict_yaml.StrictParseError, store_mod.StoreError) as exc:
         warnings.append(f"cannot read config.yaml: {exc}")
 
-    tasks: dict[str, object] | None = None
-    counts: dict[str, int] | None = None
-    trace: dict[str, object] | None = None
-    try:
-        graph = dag.load(root / ".agentloop" / "tasks.yaml")
-        tasks = _tasks_block(graph)
-        counts = graph.counts()
-        trace = _trace_block(root, graph)
-    except OSError:
-        pass  # no tasks.yaml yet (normal before /tasks)
-    except (dag.DagError, yaml.YAMLError) as exc:
-        warnings.append(f"tasks.yaml is inconsistent: {exc}")
+    gates = {g: state.gate_status(g) for g in GATE_ORDER} if state else dict.fromkeys(GATE_ORDER, "pending")
+    current_phase = state.current_phase if state else "brief"
 
-    all_events = events_loader(str(root / ".agentloop" / "events.ndjson"))
-    opened = events_mod.open_escalations(all_events)
+    tasks_block: dict[str, object] | None = None
+    counts: dict[str, int] | None = None
+    trace_block: dict[str, object] | None = None
+    if plan is not None:
+        try:
+            graph = dag.join(plan, state)
+            tasks_block = _tasks_block(graph)
+            counts = graph.counts()
+            report = dag_trace.trace(plan, graph)
+            trace_block = {"ok": report.ok, "errors": report.errors, "warnings": report.warnings}
+        except dag.DagError as exc:
+            warnings.append(f"the task graph is inconsistent: {exc}")
+
+    events, defects = (events_scanner or event_chain.scan)(repo.events)
+    if defects:
+        warnings.append(f"the audit chain has {len(defects)} defect(s)")
+    attention = [e for e in events if e.event in events_mod.ATTENTION_EVENTS]
 
     recommendation = next_action(
         current_phase=current_phase,
         gates=gates,
         counts=counts,
-        open_escalation_count=len(opened),
-        template_mode=template_mode,
-        placeholders=_is_placeholder(front.get("project")) or _is_placeholder(front.get("branch")),
-        has_adopt_manifest=(root / ".agentloop" / "adopt-manifest.yaml").exists(),
+        attention_count=len(attention),
+        chain_defects=len(defects),
+        template_mode=config.template_mode if config else False,
+        placeholders=_is_placeholder(state.project) if state else True,
+        gate_chain_broken=bool(state.gate_chain_violations()) if state else False,
+        plan_missing=plan is None,
+        unsandboxed_profiles=config.unsandboxed_code_profiles() if config else [],
     )
-    # A /-command only exists inside an agent whose surface was installed; recommending one
-    # in a repo with no integration would send the user to a command their agent has never
-    # heard of (the exact Troubleshooting item), so close the chain here.
-    if recommendation.command.startswith("/") and _no_agent_surface(root):
+    # A /-command only exists inside an agent whose surface was installed; recommending one in a
+    # repo with no integration would send the user to a command their agent has never heard of.
+    if recommendation.command.startswith("/") and _no_agent_surface(repo):
         recommendation = dataclasses.replace(
             recommendation,
             reason=recommendation.reason
-            + " (No agent surface is installed — run `agentloop install claude|copilot` first, then open a"
-            " new session so the /-commands exist in your agent.)",
+            + " (No agent surface is installed — run `agentloop install claude|copilot`, then open a new"
+            " session so the /-commands exist in your agent.)",
         )
 
     return {
-        "project": front.get("project"),
-        "branch": front.get("branch"),
+        "project": state.project if state else None,
+        "cycle_id": state.cycle_id if state else None,
+        "branch": config.work_branch if config else None,
         "current_phase": current_phase,
-        "updated_at": front.get("updated_at"),
+        "updated_at": state.raw.get("updated_at") if state else None,
         "phase_order": list(PHASE_ORDER),
         "gates": [
-            {"name": g, "status": gates.get(g, "pending"), "index": i + 1, "phase": _GATE_PHASE[g]}
+            {
+                "name": g,
+                "status": gates[g],
+                "index": i + 1,
+                "phase": GATE_PHASE[g],
+                "attestation_id": (state.gate_receipt(g) or {}).get("attestation_id") if state else None,
+            }
             for i, g in enumerate(GATE_ORDER)
         ],
-        "template_mode": template_mode,
-        "github_enabled": github_enabled,
-        "tasks": tasks,
-        "trace": trace,
-        "logs": _state_body_logs(state_text),
-        "escalations": {
-            "open": [
-                {"id": e.id, "date": e.date, "event": e.event, "task": e.task, "step": e.step, "detail": e.detail}
-                for e in opened
-            ],
-            "total_open": len(opened),
+        "plan": _plan_block(plan) if plan is not None else None,
+        "plan_status": state.plan_status if state else "draft",
+        "review": _review_block(review),
+        "tasks": tasks_block,
+        "trace": trace_block,
+        "template_mode": config.template_mode if config else False,
+        "github_enabled": bool(config.github.get("enabled")) if config else False,
+        "chain": {
+            "root": event_chain.chain_root(events),
+            "events": len(events),
+            "defects": [str(d) for d in defects],
         },
+        "attention": [
+            {"seq": e.seq, "ts": e.ts, "event": e.event, "subject_ids": list(e.subject_ids)} for e in attention
+        ],
         "next": asdict(recommendation),
         "warnings": warnings,
-        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "generated_at": event_chain.now_iso(),
     }
 
 
 def render_next(next_obj: dict[str, object]) -> str:
-    """The recommendation as 2–3 human lines (`agentloop next`): command, why, and the also row if any."""
+    """The recommendation as 2–3 human lines (`agentloop next`)."""
     lines = [f"next: {next_obj.get('command', '')}", f"  why: {next_obj.get('reason', '')}"]
     also = next_obj.get("also") or ()
     if isinstance(also, (list, tuple)) and also:
@@ -398,31 +413,101 @@ def render_next(next_obj: dict[str, object]) -> str:
     return "\n".join(lines)
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="aggregate the SSOT into one JSON status object")
-    parser.add_argument("--root", "--repo", dest="root", default="", help="repository root (default: discovered)")
-    parser.add_argument("--json", action="store_true", help="compact one-line JSON (default: indented)")
-    parser.add_argument(
-        "--next",
-        action="store_true",
-        dest="next_only",
-        help="print only the next recommended command (with --json: the recommendation object alone)",
-    )
-    args = parser.parse_args(argv)
-    if not args.root:
-        from agentloop import repo as repo_mod  # lazy: collect_status stays callable with a bare root
+def render(status: dict[str, object]) -> str:
+    """The human-facing board: where you are, what is approved, what is grounded, what is next."""
+    if status.get("unsupported_layout"):
+        return repo_mod.UNSUPPORTED_LAYOUT_MESSAGE
 
-        try:
-            args.root = str(repo_mod.get().root)
-        except repo_mod.RepoNotFoundError:
-            args.root = "."  # a repo with no .agentloop/ yet: collect_status reports setup guidance
-    status = collect_status(args.root)
-    if args.next_only:
-        next_obj = status["next"]
-        assert isinstance(next_obj, dict)  # asdict(Recommendation) — always a dict
-        print(json.dumps(next_obj, ensure_ascii=False) if args.json else render_next(next_obj))
+    lines = [
+        f"project: {status.get('project')}   cycle: {status.get('cycle_id')}   "
+        f"phase: {status.get('current_phase')}   plan: {status.get('plan_status')}",
+        "",
+        "### Gates",
+    ]
+    gates = status.get("gates")
+    if isinstance(gates, list):
+        for gate in gates:
+            attestation = gate.get("attestation_id") or "-"
+            lines.append(f"- {gate['index']}. {gate['name']}: {gate['status']}  (attestation: {attestation})")
+
+    plan = status.get("plan")
+    if isinstance(plan, dict):
+        obligations = plan["obligations"]
+        assert isinstance(obligations, dict)
+        lines += [
+            "",
+            "### Evidence",
+            f"- claims: {plan['claims']}   technical facts: {plan['technical_facts']}   oracles: {plan['oracles']}",
+            f"- obligations satisfied: {obligations['satisfied']}/{obligations['total']}",
+        ]
+        ungrounded = plan["ungrounded"]
+        assert isinstance(ungrounded, list)
+        if ungrounded:
+            lines.append("- ungrounded: " + ", ".join(f"{u['id']}({u['risk']})" for u in ungrounded))
+        unavailable = plan["unavailable_providers"]
+        assert isinstance(unavailable, list)
+        if unavailable:
+            lines.append("- providers unavailable during search: " + ", ".join(unavailable))
+
+    review = status.get("review")
+    if isinstance(review, dict) and review.get("status") == "generated":
+        extras = review.get("extra_behaviors")
+        extras_text = "undeterminable (coverage gap)" if extras is None else str(extras)
+        lines += [
+            "",
+            "### Review",
+            f"- coverage: {review['coverage']}   extra behaviours: {extras_text}",
+            f"- verdicts: {review.get('verdicts')}   human review: {review.get('human_status')}",
+        ]
+
+    tasks = status.get("tasks")
+    if isinstance(tasks, dict):
+        counts = tasks["counts"]
+        assert isinstance(counts, dict)
+        lines += ["", "### Tasks", "- " + " / ".join(f"{k}={v}" for k, v in counts.items())]
+
+    chain = status.get("chain")
+    if isinstance(chain, dict):
+        defects = chain["defects"]
+        assert isinstance(defects, list)
+        lines += ["", f"### Audit chain\n- {chain['events']} event(s), {len(defects)} defect(s)"]
+
+    warnings = status.get("warnings")
+    if isinstance(warnings, list) and warnings:
+        lines += ["", "### Warnings"] + [f"- {w}" for w in warnings]
+
+    next_obj = status.get("next")
+    if isinstance(next_obj, dict):
+        lines += ["", render_next(next_obj)]
+    return "\n".join(lines)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="the deterministic status object and next action")
+    parser.add_argument("--json", action="store_true", help="print the whole status object as JSON")
+    parser.add_argument("--next", action="store_true", help="print only the next recommended command")
+    parser.add_argument("--repo", default=None, help="repository root (default: discovered from cwd)")
+    args = parser.parse_args(argv)
+    common.configure_logging()
+
+    try:
+        repo = repo_mod.get(args.repo)
+    except repo_mod.RepoNotFoundError as exc:
+        logger.error(str(exc))
+        return 1
+
+    status = collect_status(repo)
+    if args.next:
+        # --next is the narrower request, so it wins when both are given: `agentloop next
+        # --json` is what an integration calls for one machine-readable recommendation.
+        next_obj = status.get("next")
+        next_obj = next_obj if isinstance(next_obj, dict) else {}
+        print(json.dumps(next_obj, ensure_ascii=False, default=str) if args.json else render_next(next_obj))
         return 0
-    print(json.dumps(status, ensure_ascii=False) if args.json else json.dumps(status, ensure_ascii=False, indent=2))
+    if args.json:
+        print(json.dumps(status, indent=2, ensure_ascii=False, default=str))
+        return 0
+    print(render(status))
     return 0
 
 

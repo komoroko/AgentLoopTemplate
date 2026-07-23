@@ -1,126 +1,210 @@
-"""Switch the headless agent CLI (`agentloop agent <cli>`) without hand-editing config.yaml.
+"""`agentloop agent <cli>` — point the AI roles at an adapter, without hand-editing config.
 
-`build.headless.cmd` in .agentloop/config.yaml is the command mode A launches for every
-headless run (implementer / review step / integration fixer / post-build security review).
-Editing one YAML line is easy to get wrong (quoting, list syntax) and hard to discover, so
-this small operation rewrites exactly that line: pass a known preset name (the same table the
-config comment shows) or any custom command string, which is shlex-split into the argv list.
+0.8.x had one knob, `build.headless.cmd`, naming the single CLI every headless run used. 0.9.0
+has seven roles, and two of them must **not** be the same thing: the actual extractor and the
+comparator need distinct independence groups for a critical change, because an extractor and a
+comparator sharing a model share its blind spots (plan §12.4).
 
-The rewrite is surgical line surgery (never a YAML round-trip), so every comment and the file
-layout survive. The prompt is appended by build_loop.py as the last
-argument — a CLI that cannot take it that way is a deliberately unbuilt (YAGNI) extension
-point: extend _parse_headless in build_loop.py at that point, not this tool.
+So this command sets the adapter for one role, or for all of them, and then says out loud
+whether the independence requirement is currently satisfiable. Saying so is the point — a
+setup that silently violates it would fail much later, at gate ④, as an unexplained block.
 
-Usage:
-  agentloop agent codex
-  agentloop agent "mytool run --flag"
+  agentloop agent --show
+  agentloop agent claude                          # every role
+  agentloop agent claude --role implementer
+  agentloop agent claude --role comparator --group claude/sonnet
+
+The rewrite is surgical: only the touched keys change, and every comment in config.yaml
+survives, because a YAML round-trip would silently delete the comments that explain the file.
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import re
-import shlex
 
-from agentloop import common
+from agentloop import common, models, strict_yaml
 from agentloop import repo as repo_mod
 
 logger = logging.getLogger(__name__)
 
-CONFIG_PATH = common.CONFIG_PATH
-# The known headless CLIs — kept in lockstep with the comment table in .agentloop/config.yaml.
-PRESETS: dict[str, list[str]] = {
-    "claude": ["claude", "-p"],
-    "codex": ["codex", "exec"],
-    "gemini": ["gemini", "-p"],
-}
+#: The roles a human may point at an adapter, in config order.
+ROLES: tuple[str, ...] = (
+    "implementer",
+    "code_reviewer",
+    "plan_reviewer",
+    "actual_extractor",
+    "comparator",
+    "security_reviewer",
+    "cold_maintainer",
+)
+
+#: The two roles a critical change requires to differ (plan §12.4).
+INDEPENDENT_PAIR = ("actual_extractor", "comparator")
 
 
 class AgentCliError(Exception):
     """A refused switch, with a message that already names the next step."""
 
 
-def resolve_argv(cli: str) -> list[str]:
-    """A preset name becomes its argv; anything else is shlex-split as a custom command."""
-    if cli in PRESETS:
-        return list(PRESETS[cli])
-    argv = shlex.split(cli)
-    if not argv:
-        raise AgentCliError(
-            f"empty command — pass a preset ({', '.join(PRESETS)}) or a custom command string,"
-            ' e.g. agentloop agent "mytool run"'
-        )
-    return argv
+def _section(text: str, name: str) -> tuple[int, int] | None:
+    """(start, end) of a top-level block's body, or None when the block is absent.
 
-
-def current_cmd(text: str) -> list[str] | None:
-    """The argv currently on the `cmd:` line under `headless:` (None when the line is absent)."""
-    m = _cmd_line(text)
-    if m is None:
+    Scoping the surgery to one section is not a nicety. `executor_profiles` and `agents` both
+    hold two-space-indented keys called `implementer` and `reviewer`, so a search anchored on
+    the role name alone silently rewrote the wrong section.
+    """
+    header = re.search(rf"^{re.escape(name)}:\s*(?:#.*)?$", text, re.MULTILINE)
+    if header is None:
         return None
-    try:
-        parsed = json.loads(m.group("value"))
-    except json.JSONDecodeError:
-        return None
-    return [str(item) for item in parsed] if isinstance(parsed, list) else None
+    start = header.end()
+    following = re.search(r"^\S", text[start:], re.MULTILINE)
+    return start, (start + following.start()) if following else len(text)
 
 
-def set_headless_cmd(text: str, argv: list[str]) -> str:
-    """Rewrite only the `cmd: [...]` line under `headless:` (pure; comments/layout survive)."""
-    m = _cmd_line(text)
-    if m is None:
-        raise AgentCliError(
-            f"no `cmd:` line under `headless:` found in {CONFIG_PATH} — restore the"
-            " `build.headless.cmd` key (see the template's config.yaml), then retry"
-        )
-    return text[: m.start("value")] + json.dumps(argv) + text[m.end("value") :]
+def _set_role_key(text: str, role: str, key: str, value: str) -> tuple[str, bool]:
+    """Set `agents.<role>.<key>` by line surgery. Returns (new text, **role found**).
+
+    The flag reports whether the role block exists, not whether the text moved: setting an
+    adapter to the value it already has is a successful no-op, and reporting it as "role not
+    declared" would send the human off to fix a file that is already correct.
+    """
+    bounds = _section(text, "agents")
+    if bounds is None:
+        return text, False
+    section_start, section_end = bounds
+    section = text[section_start:section_end]
+
+    role_re = re.compile(rf"^(  {re.escape(role)}:\s*(?:#.*)?)$", re.MULTILINE)
+    match = role_re.search(section)
+    if match is None:
+        return text, False
+    start = match.end()
+    # The role's block runs until the next line indented two spaces or less that is not blank.
+    rest = section[start:]
+    block_end = len(rest)
+    for candidate in re.finditer(r"^(?! {4})(?=\S| {2}\S)", rest, re.MULTILINE):
+        if candidate.start() > 0:
+            block_end = candidate.start()
+            break
+    block = rest[:block_end]
+    key_re = re.compile(rf"^(    {re.escape(key)}:\s*)(\S+)(.*)$", re.MULTILINE)
+    if key_re.search(block):
+        new_block = key_re.sub(rf"\g<1>{value}\3", block, count=1)
+    else:
+        new_block = block.rstrip("\n") + f"\n    {key}: {value}\n"
+    new_section = section[:start] + new_block + rest[block_end:]
+    return text[:section_start] + new_section + text[section_end:], True
 
 
-def _cmd_line(text: str) -> re.Match[str] | None:
-    """Match the first `cmd: [...]` line inside the `headless:` block (comments in between are fine)."""
-    return re.search(
-        r"^\s*headless:\s*(?:#.*)?\n(?:\s*(?:#.*)?\n)*?^\s*cmd:\s*(?P<value>\[[^\]\n]*\])",
-        text,
-        re.MULTILINE,
-    )
+def apply_switch(text: str, adapter: str, roles: tuple[str, ...], group: str = "", *, strict: bool = True) -> str:
+    """The config text with `adapter` (and optionally `independence_group`) set for `roles`.
+
+    `strict=False` skips roles this config does not declare, which is what a bulk set needs: a
+    config may legitimately omit a role it does not use, and refusing the whole operation over
+    one absent block would just push the human into editing YAML by hand.
+    """
+    for role in roles:
+        text, found = _set_role_key(text, role, "adapter", adapter)
+        if not found:
+            if not strict:
+                continue
+            raise AgentCliError(
+                f"agents.{role} is not declared in .agentloop/config.yaml — add the role block first "
+                "(the scaffold declares all seven)"
+            )
+        if group:
+            text, _ = _set_role_key(text, role, "independence_group", group)
+    return text
+
+
+def independence_report(config: models.Config) -> list[str]:
+    """Warnings about the actual-extractor / comparator pair. Empty means the pair is distinct.
+
+    A same-provider pair with distinct models passes the mechanical check but is weaker than
+    two providers, and the honest thing is to say so rather than let a green check imply more
+    independence than exists.
+    """
+    left, right = (config.independence_group(role) for role in INDEPENDENT_PAIR)
+    if not left or not right:
+        missing = [r for r in INDEPENDENT_PAIR if not config.independence_group(r)]
+        return [
+            f"no independence_group set for: {', '.join(missing)} — a critical change cannot satisfy "
+            "the independence requirement without them"
+        ]
+    if left == right:
+        return [
+            f"{INDEPENDENT_PAIR[0]} and {INDEPENDENT_PAIR[1]} share the independence group '{left}'. "
+            "A critical change will be blocked: an extractor and a comparator on one model share its "
+            "blind spots. Give them distinct groups, or plan to use a signed expert attestation instead."
+        ]
+    if left.split("/")[0] == right.split("/")[0]:
+        return [
+            f"{INDEPENDENT_PAIR[0]} ('{left}') and {INDEPENDENT_PAIR[1]} ('{right}') are distinct models of "
+            "the same provider. This passes the mechanical check but is weaker than two providers — "
+            "they still share a training lineage and a failure mode."
+        ]
+    return []
+
+
+def render_show(config: models.Config) -> str:
+    lines = ["| role | adapter | independence group |", "|------|---------|--------------------|"]
+    for role in ROLES:
+        lines.append(f"| {role} | {config.adapter(role) or '-'} | {config.independence_group(role) or '-'} |")
+    warnings = independence_report(config)
+    if warnings:
+        lines += ["", "### Independence"] + [f"- {w}" for w in warnings]
+    return "\n".join(lines)
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        description="switch the headless agent CLI mode A launches (build.headless.cmd)",
-        epilog=f"presets: {', '.join(f'{k} = {json.dumps(v)}' for k, v in PRESETS.items())};"
-        " anything else is used as a custom command string",
-    )
-    parser.add_argument("cli", help="a preset name (claude | codex | gemini) or a custom command string")
+    parser = argparse.ArgumentParser(description="point the AI roles at an adapter")
+    parser.add_argument("adapter", nargs="?", default="", help="the adapter name to set")
+    parser.add_argument("--role", default="", help=f"one role (default: all). One of: {', '.join(ROLES)}")
+    parser.add_argument("--group", default="", help="independence_group to set alongside (provider/model)")
+    parser.add_argument("--show", action="store_true", help="print the current roles and stop")
     parser.add_argument("--repo", default=None, help="repository root (default: discovered from cwd)")
     args = parser.parse_args(argv)
     common.configure_logging()
 
     try:
-        config_path = repo_mod.get(args.repo).config
-    except repo_mod.RepoNotFoundError as exc:
+        repo = repo_mod.get(args.repo)
+        repo.require_supported_layout()
+    except (repo_mod.RepoNotFoundError, repo_mod.UnsupportedLayoutError) as exc:
         logger.error(str(exc))
         return 1
+
     try:
-        wanted = resolve_argv(args.cli)
-        try:
-            text = config_path.read_text(encoding="utf-8")
-        except OSError as exc:
-            raise AgentCliError(f"cannot read {config_path}: {exc}") from None
-        before = current_cmd(text)
-        if before == wanted:
-            print(f"headless.cmd is already {json.dumps(wanted)} (nothing to do)")
-            return 0
-        config_path.write_text(set_headless_cmd(text, wanted), encoding="utf-8")
-    except AgentCliError as exc:
-        logger.error(f"error: {exc}")
+        text = repo.config.read_text(encoding="utf-8")
+        config = models.Config.parse(text)
+    except (OSError, models.DocumentError, strict_yaml.StrictParseError) as exc:
+        logger.error(f"cannot read .agentloop/config.yaml: {exc}")
         return 1
-    shown_before = json.dumps(before) if before is not None else "(unreadable)"
-    print(f"headless.cmd: {shown_before} → {json.dumps(wanted)}")
-    print("  used by mode A (`agentloop build`) for implementer/review/security-review launches;")
-    print("  the prompt is appended as the last argument.")
+
+    if args.show or not args.adapter:
+        print(render_show(config))
+        return 0
+
+    if args.role and args.role not in ROLES:
+        logger.error(f"unknown role {args.role!r} (one of {', '.join(ROLES)})")
+        return 2
+    if args.group and not args.role:
+        logger.error("--group applies to one role — pass --role too, or the whole pair would share a group")
+        return 2
+
+    roles = (args.role,) if args.role else ROLES
+    try:
+        updated = apply_switch(text, args.adapter, roles, args.group, strict=bool(args.role))
+        new_config = models.Config.parse(updated)
+    except (AgentCliError, models.DocumentError, strict_yaml.StrictParseError) as exc:
+        logger.error(str(exc))
+        return 1
+
+    repo.config.write_text(updated, encoding="utf-8")
+    print(f"adapter '{args.adapter}' set for: {', '.join(roles)}")
+    for warning in independence_report(new_config):
+        logger.warning(warning)
     return 0
 
 

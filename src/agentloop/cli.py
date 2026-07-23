@@ -5,13 +5,13 @@ the owning module's entry function, so nothing is implemented twice. The daily v
 memorable four (start / next / ui / agent); the rest are the setup and operational commands
 that used to hide behind make targets in the copy-distribution era.
 
-`approve` is deliberately here (products have no makefile anymore) but must NEVER be
-pre-authorized in an agent's permission settings: its permission prompt is the human's
-approval confirmation (AGENTS.md gate rule 2 — the single spelling to guard is
-`agentloop approve`).
+`approve` no longer opens a gate — it checks readiness and emits an attestation request. A
+gate opens only when `attestation import` verifies a signature from a key the external Trust
+Manifest authorizes, so there is nothing here that pre-authorization could turn into an
+approval (AGENTS.md "Gate rules").
 
-Every invocation runs the cheap lock check (lock.startup_warning): a lock written by a newer
-tool warns toward `uv tool upgrade agentloop`; a newer lock *format* is a hard error.
+Every invocation runs the cheap lock check (lock.startup_warning), except `guard` and `doctor`
+— see main() for why a hook must never be silenced by a version check.
 """
 
 from __future__ import annotations
@@ -77,19 +77,19 @@ daily verbs:
   start                   first run: interactive setup wizard; afterwards: where you are + what's next
   next [--json]           only the next recommended command (deterministic; --json for integrations)
   ui [args]               local dashboard — approve gates, run doctor/revise/cycle-close from the page
-  agent <cli>             switch the headless agent CLI (claude | codex | gemini | a custom command)
+  agent <adapter>         point the AI roles at an adapter (--show lists them and their groups)
   project [add|use|...]   the named repos the ui switches between (add/list/remove/use)
   status [--json]         the full status object (/status reads this)
 
 operations:
-  approve <gate> [--by NAME]   record a human gate approval (NEVER pre-authorize this verb)
+  approve <gate> [--check]     readiness check + an attestation request (does NOT open the gate)
   revise --to <phase> ...      roll back upstream (gates reset in a chain)
-  build [--dry-run]            the deterministic /build orchestrator (mode A)
+  build [--dry-run]            the deterministic /build orchestrator
   dag [--render|--trace|...]   derive/inspect the task DAG (read-only; /tasks & /status use it)
-  doctor                       read-only environment + SSOT diagnosis
-  events [args]                view/record/resolve orchestration events
+  doctor [--unsupported-layout]  read-only diagnosis: format, trust, sandbox, evidence, review
+  events [--summary|--verify]  read the hash-chained audit log (read-only)
   cycle-close --name <slug>    archive the finished delta cycle and reset
-  issue-sync [--dry-run]       one-way mirror tasks.yaml -> GitHub Issues (opt-in)
+  issue-sync [--dry-run]       one-way mirror of plan.yaml's tasks -> GitHub Issues (opt-in)
   pr-draft [args]              assemble a PR body from the SSOT (read-only)
   guard [--check-diff]         the gate-guard hook / commit-stage check
   template-lint                drift canaries (template repo only; products exit 0)
@@ -171,9 +171,18 @@ def main(argv: list[str] | None = None) -> int:
         print(agentloop.__version__)
         return 0
 
-    rc = _lock_check(repo_flag)
-    if rc != 0:
-        return rc
+    # `guard` and `doctor` are exempt from the startup lock check on purpose.
+    #
+    # guard is a PreToolUse hook. If it exits on a lock problem it prints no decision, and every
+    # host reads "no decision" as allow — so a version-skew check would silently turn the gate
+    # guard off. It resolves its own repository from the hook payload's cwd anyway.
+    #
+    # doctor exists to diagnose exactly the states that make the lock unreadable; refusing to run
+    # it there would leave the human with an error and no way to look into it.
+    if verb not in ("guard", "doctor"):
+        rc = _lock_check(repo_flag)
+        if rc != 0:
+            return rc
 
     if verb == "start":
         return _start(args[1:])

@@ -7,7 +7,7 @@ marker-guarded pointer block in AGENTS.md. Nothing else is touched: no pyproject
 makefile, no agent surfaces (those are opt-in: `agentloop install claude|copilot`).
 
 Brownfield is auto-detected (any existing code layout / build manifest at the root): the
-seeded config scopes `gates.guard_paths` to the docs deliverables only — pending gates must
+seeded config scopes `guard.paths` to the docs deliverables only — pending gates must
 not freeze development on existing code — fills the quality-gate test/check commands from the
 repo's own tooling when recognizable (overridable with --test-cmd/--check-cmd), and the brief
 carries the adopted-note pointing at /onboard. --greenfield/--brownfield override the
@@ -29,6 +29,7 @@ import argparse
 import datetime
 import logging
 import re
+import shlex
 import sys
 from pathlib import Path
 
@@ -70,34 +71,63 @@ _CODE_MARKERS = (
 # --- pure text surgery (under test) --------------------------------------------
 
 
-def fill_state(text: str, project: str, branch: str, today: str) -> str:
-    """Fill the state.md front-matter placeholders, keeping trailing comments intact."""
-    text = re.sub(r'^(project: ")[^"]*(")', rf"\g<1>{project}\g<2>", text, count=1, flags=re.MULTILINE)
-    text = re.sub(r'^(branch: ")[^"]*(")', rf"\g<1>{branch}\g<2>", text, count=1, flags=re.MULTILINE)
-    return re.sub(r'^(updated_at: ")[^"]*(")', rf"\g<1>{today}\g<2>", text, count=1, flags=re.MULTILINE)
+def _cycle_slug(name: str) -> str:
+    """A lowercase slug for the first cycle id (the schema pattern is `^[a-z0-9][a-z0-9-]*$`)."""
+    slug = re.sub(r"[^a-z0-9-]+", "-", name.lower()).strip("-")
+    return slug or "cycle-1"
+
+
+def fill_state(text: str, project: str, cycle_id: str, today: str) -> str:
+    """Fill state.yaml's placeholders by line surgery, keeping every explanatory comment."""
+    text = re.sub(r'^(project: ").*(")', rf"\g<1>{project}\g<2>", text, count=1, flags=re.MULTILINE)
+    text = re.sub(r"^(cycle_id: )\S+", rf"\g<1>{cycle_id}", text, count=1, flags=re.MULTILINE)
+    return re.sub(r"^(updated_at: ).*$", rf'\g<1>"{today}"', text, count=1, flags=re.MULTILINE)
+
+
+def fill_plan(text: str, cycle_id: str, branch: str) -> str:
+    """Fill plan.yaml's cycle block. Everything else stays empty — the phases fill it."""
+    text = re.sub(r"^(  id: )\S+", rf"\g<1>{cycle_id}", text, count=1, flags=re.MULTILINE)
+    return re.sub(r"^(  branch: )\S+", rf"\g<1>{branch}", text, count=1, flags=re.MULTILINE)
+
+
+def fill_config(text: str, project: str, branch: str) -> str:
+    """Fill config.yaml's project block."""
+    text = re.sub(r"^(  name: )\S+", rf"\g<1>{project}", text, count=1, flags=re.MULTILINE)
+    return re.sub(r"^(  work_branch: )\S+", rf"\g<1>{branch}", text, count=1, flags=re.MULTILINE)
 
 
 def disable_template_mode(text: str) -> str:
     return re.sub(r"^(\s*template_mode:\s*)true\b", r"\g<1>false", text, count=1, flags=re.MULTILINE)
 
 
+def _argv_yaml(command: str) -> str:
+    """A shell-ish command string rendered as a YAML argv list.
+
+    0.9.0's quality gate takes an argv array, never a shell string. Splitting here (rather
+    than at run time) means the human sees exactly what will be executed, and a pipe they
+    typed becomes visibly wrong in the config instead of silently mis-executed later.
+    """
+    parts = shlex.split(command)
+    return "[" + ", ".join(f'"{part}"' for part in parts) + "]"
+
+
 def brownfield_config(text: str, test_cmd: str, check_cmd: str) -> str:
     """Adapt the scaffold config.yaml for an existing repo (pure text surgery, comments survive)."""
     text = disable_template_mode(text)
-    # Scope the guard to the docs deliverables only: pending gates must not freeze normal
-    # development on the existing code. The commented lines document how to re-enable them.
+    # Scope the guard to the docs deliverables only: a pending gate must not freeze normal
+    # development on code that already exists. The commented lines show how to re-enable them.
     for key in ("src/", "lib/", "app/", "backend/", "frontend/", "scripts/"):
         text = re.sub(
-            rf"^    ({re.escape(key)}: tasks.*)$",
+            rf"^(    - \{{ path: {re.escape(key)}, requires_gate: tasks \}})$",
             r"    # \1   # re-enable (or map your layout) when ready",
             text,
             count=1,
             flags=re.MULTILINE,
         )
     if test_cmd:
-        text = text.replace('run: "make test"', f'run: "{test_cmd}"', 1)
+        text = text.replace("command: [make, test]", f"command: {_argv_yaml(test_cmd)}", 1)
     if check_cmd:
-        text = text.replace('run: "make check"', f'run: "{check_cmd}"', 1)
+        text = text.replace("command: [make, check]", f"command: {_argv_yaml(check_cmd)}", 1)
     return text
 
 
@@ -288,17 +318,20 @@ def run_init(
         if source:
             print(f"  detected      source: {source}")
 
-    # 1) the SSOT trio, placeholder-filled (never overwriting an existing file).
-    state_text = fill_state(data_mod.read_text("scaffold/agentloop/state.md"), name, branch, today)
-    config_text = data_mod.read_text("scaffold/agentloop/config.yaml")
+    # 1) the four SSOT documents, placeholder-filled (never overwriting an existing file).
+    cycle_id = _cycle_slug(name)
+    state_text = fill_state(data_mod.read_text("scaffold/agentloop/state.yaml"), name, cycle_id, today)
+    plan_text = fill_plan(data_mod.read_text("scaffold/agentloop/plan.yaml"), cycle_id, branch)
+    config_text = fill_config(data_mod.read_text("scaffold/agentloop/config.yaml"), name, branch)
     if brownfield:
         config_text = brownfield_config(config_text, test_cmd, check_cmd)
     else:
         config_text = disable_template_mode(config_text)
     seeds: list[tuple[str, bytes]] = [
-        (".agentloop/state.md", state_text.encode()),
+        (".agentloop/state.yaml", state_text.encode()),
+        (".agentloop/plan.yaml", plan_text.encode()),
+        (".agentloop/review.yaml", data_mod.read_bytes("scaffold/agentloop/review.yaml")),
         (".agentloop/config.yaml", config_text.encode()),
-        (".agentloop/tasks.yaml", data_mod.read_bytes("scaffold/agentloop/tasks.yaml")),
     ]
     # 2) the docs scaffolds (with the brownfield note on the brief).
     for rel, blob in data_mod.iter_files("scaffold/docs"):
@@ -326,8 +359,8 @@ def run_init(
     if rc != 0:
         return rc
     # 4) the pristine scaffold snapshot cycle-close restores from.
-    if cycle.snapshot_scaffold(docs_dir=str(repo.docs), scaffold_dir=str(repo.path(cycle.SCAFFOLD_DIR))):
-        print(f"  snapshot      docs scaffolds → {cycle.SCAFFOLD_DIR}")
+    if cycle.snapshot_scaffold(repo):
+        print(f"  snapshot      pristine docs + SSOT → {cycle.SCAFFOLD_DOCS}")
     # 5) the agent-neutral rules pointer (AGENTS.md), appended at most once.
     agents_md = root / "AGENTS.md"
     text = agents_md.read_text(encoding="utf-8") if agents_md.is_file() else "# Repository rules\n"

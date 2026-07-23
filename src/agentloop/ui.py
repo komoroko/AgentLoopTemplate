@@ -60,7 +60,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from agentloop import approve, common, review_api, revise, status_api
+from agentloop import approve, common, event_chain, models, review_api, revise, status_api
 from agentloop import events as events_mod
 from agentloop import registry as registry_mod
 from agentloop import repo as repo_mod
@@ -93,24 +93,33 @@ _LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
 # /api/status (every poll, always) and the Activity feed (every poll while open) share this one
 # parse. Keyed on the file's identity, so an append is picked up on the next poll and a stale entry
 # cannot be served. One slot: the dashboard reads one project at a time, and a switch just re-reads.
-_events_cache: tuple[tuple[str, int, int], list[events_mod.Event]] | None = None
+_events_cache: tuple[tuple[str, int, int], list[models.Event]] | None = None
 _events_lock = threading.Lock()
+#: Defects found alongside the cached parse, so a damaged chain is reported by the same
+#: poll that reads it rather than needing a second pass over the file.
+_defects_cache: dict[str, list[event_chain.ChainDefect]] = {}
 
 
-def _load_events_cached(path: str | Path) -> list[events_mod.Event]:
+def _scan_cached(path: str | Path) -> tuple[list[models.Event], list[event_chain.ChainDefect]]:
+    """The cached scan: (events, defects). One slot, keyed on the file's identity."""
+    return _load_events_cached(path), _defects_cache.get(str(Path(path)), [])
+
+
+def _load_events_cached(path: str | Path) -> list[models.Event]:
     global _events_cache
     path = Path(path)
     try:
         stat = path.stat()
         key = (str(path), stat.st_mtime_ns, stat.st_size)
     except OSError:
-        return []  # same tolerance as load_events: an unreadable log is an empty log
+        return []  # an absent log is empty; a DAMAGED one is reported by /api/status, not here
     with _events_lock:
         if _events_cache is not None and _events_cache[0] == key:
             return _events_cache[1]
-    loaded = events_mod.load_events(str(path))
+    loaded, defects = event_chain.scan(path)
     with _events_lock:
         _events_cache = (key, loaded)
+        _defects_cache[str(path)] = defects
     return loaded
 
 
@@ -151,9 +160,9 @@ def action_argv(action: str, params: dict[str, object]) -> list[str]:
         return ["make", "events", f"ARGS=--resolve {event_id} --note {shlex.quote(note)}"]
     if action == "revise":
         phase = str(params.get("phase") or "")
-        if phase not in revise._PHASE_GATE:
+        if phase not in revise.PHASE_GATE:
             raise UiActionError(
-                HTTPStatus.BAD_REQUEST, f"revise 'phase' must be one of {', '.join(sorted(revise._PHASE_GATE))}"
+                HTTPStatus.BAD_REQUEST, f"revise 'phase' must be one of {', '.join(sorted(revise.PHASE_GATE))}"
             )
         reason = str(params.get("reason") or "").strip()
         if not reason:
@@ -287,7 +296,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         """
         status: dict[str, object]
         try:
-            status = status_api.collect_status(self.server.active_root(), events_loader=_load_events_cached)
+            status = status_api.collect_status(self.server.active_root(), events_scanner=_scan_cached)
         except Exception as exc:  # the dashboard must stay up even over a broken SSOT
             status = {"error": f"{type(exc).__name__}: {exc}"}
         etag = _status_etag(status)
@@ -315,25 +324,28 @@ class DashboardHandler(BaseHTTPRequestHandler):
         limit = max(1, min(limit, 200))
         root = self.server.active_root()
         events = _load_events_cached(root / ".agentloop" / "events.ndjson")
-        open_ids = {e.id for e in events_mod.open_escalations(events)}
+        open_ids = {e.id for e in events if e.event in events_mod.ATTENTION_EVENTS}
         self._send_json(
             HTTPStatus.OK,
             {
                 "events": [
                     {
                         "id": e.id,
-                        "date": e.date,
+                        "seq": e.seq,
+                        "date": e.ts[:10],
                         "ts": e.ts,
                         "event": e.event,
-                        "task": e.task,
-                        "step": e.step,
+                        "actor": e.actor,
+                        "subject_ids": list(e.subject_ids),
                         "detail": e.detail,
-                        "ref": e.ref,
-                        "open": e.id in open_ids,
+                        "needs_decision": e.id in open_ids,
                     }
                     for e in reversed(events[-limit:])
                 ],
                 "total": len(events),
+                # The chain root the feed was rendered from: a viewer can check it against the
+                # root a gate receipt bound, which is how a regenerated log stops looking normal.
+                "chain_root": event_chain.chain_root(events),
             },
         )
 
@@ -367,21 +379,32 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_json(exc.status, {"error": exc.message})
 
     def _approve_gate(self, body: dict[str, object]) -> None:
-        # Delegates to approve.py — the single sanctioned pending→approved write path — so the
-        # UI click stamps the gate line, advances current_phase, and records the gate_approved
-        # event exactly as `agentloop approve` does. ApproveError already carries the HTTP status.
+        # A button cannot open a gate any more, so this endpoint reports readiness and hands
+        # back the attestation request instead. Clicking in a localhost UI is not authentication:
+        # the browser proves nothing about who is at the keyboard, which is exactly why the
+        # authority moved to a signature from a key the external Trust Manifest names (plan §7.1).
         gate = str(body.get("gate") or "")
         root = self.server.active_root()
         try:
-            today = approve.record_approval(
-                gate,
-                "(via ui)",
-                state_path=str(root / ".agentloop" / "state.md"),
-                events_path=str(root / ".agentloop" / "events.ndjson"),
-            )
-        except approve.ApproveError as exc:
-            raise UiActionError(exc.status, exc.message) from None
-        self._send_json(HTTPStatus.OK, {"ok": True, "gate": gate, "date": today})
+            repo = repo_mod.Repo(root)
+            blockers = approve.readiness(repo, gate)
+            envelope = approve.request_envelope(repo, gate) if not blockers else None
+        except (approve.ApprovalError, models.DocumentError) as exc:
+            raise UiActionError(HTTPStatus.BAD_REQUEST, str(exc)) from None
+        self._send_json(
+            HTTPStatus.OK,
+            {
+                "ok": not blockers,
+                "gate": gate,
+                "blockers": blockers,
+                "attestation_request": envelope,
+                "next": [
+                    f"agentloop approve {gate}",
+                    "agentloop attestation sign <request.json>",
+                    "agentloop attestation import <request.signed.json>",
+                ],
+            },
+        )
 
     def _select_project(self, body: dict[str, object]) -> None:
         # The client sends only a registered *name*; the server maps it to a root through the

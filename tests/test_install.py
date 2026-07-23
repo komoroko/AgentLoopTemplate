@@ -8,9 +8,10 @@ from pathlib import Path
 
 import pytest
 
-from agentloop import gate_guard, init_cmd, install
+from agentloop import gate_guard, init_cmd, install, store
 from agentloop import lock as lock_mod
 from agentloop import repo as repo_mod
+from tests._support import make_config
 
 # --- pure settings logic (semantics preserved from adopt.py) ---------------------------
 
@@ -183,7 +184,7 @@ def test_install_claude_skips_claude_md_when_rules_already_referenced(repo: repo
 def test_install_claude_skips_claude_md_in_template_mode(
     repo: repo_mod.Repo, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    repo.path(".agentloop/config.yaml").write_text("gates:\n  template_mode: true\n", encoding="utf-8")
+    repo.path(".agentloop/config.yaml").write_bytes(store.dump_yaml(make_config(template_mode=True)))
     mapping = "# Capability mapping\n@AGENTS.md\n"
     repo.path("CLAUDE.md").write_text(mapping, encoding="utf-8")
     assert install.install_integration(repo, "claude") == 0
@@ -259,7 +260,7 @@ def test_uninstall_all_leaves_only_repo_state(repo: repo_mod.Repo) -> None:
     assert not repo.path(".agentloop/AGENTS.agentloop.md").exists()
     assert not repo.lock.exists()
     # The repo's own state survives untouched.
-    assert repo.state.is_file() and repo.config.is_file() and repo.tasks.is_file()
+    assert repo.state.is_file() and repo.config.is_file() and repo.plan.is_file()
     assert repo.path("docs/00-product-brief.md").is_file()
     agents = repo.path("AGENTS.md")
     assert not agents.exists() or "agentloop-rules" not in agents.read_text(encoding="utf-8")
@@ -269,7 +270,7 @@ def test_upgrade_refreshes_and_reports(repo: repo_mod.Repo, capsys: pytest.Captu
     assert install.install_integration(repo, "claude") == 0
     data = lock_mod.read(repo.lock)
     assert data is not None
-    data["agentloop"]["version"] = "0.1.0"  # simulate a repo written by an older tool
+    data["tool_version"] = "0.1.0"  # simulate a repo written by an older tool
     lock_mod.write(repo.lock, data)
     capsys.readouterr()
     assert install.upgrade(repo) == 0

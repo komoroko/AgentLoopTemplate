@@ -1,7 +1,7 @@
 [project]
 name = "agentloop"
-version = "0.8.4"
-description = "Human-on-the-Loop development harness: phase gates, task DAG orchestration, and agent integrations as an installable CLI"
+version = "0.9.0"
+description = "Human-on-the-Loop development harness: evidence-bound phase gates, frozen acceptance oracles, blind actual-behaviour review, and signed human attestation as an installable CLI"
 readme = "README.md"
 license = { file = "LICENSE" }
 # The floor, not a recommendation: the agentloop tooling runs on 3.10+ (verified by
@@ -10,12 +10,11 @@ requires-python = ">=3.10"
 dependencies = [
     "packaging>=21.0",
     "pyyaml>=6.0",
+    # Strict schema validation is a core boundary in 0.9.0, not a nicety: plan 15.4 makes
+    # schema conformance an absolute block, and a check that can silently turn itself off
+    # (0.8.x's soft-import, degrading to WARN) is not a boundary. Hence a hard dependency.
+    "jsonschema>=4.0",
 ]
-
-[project.optional-dependencies]
-# `agentloop doctor` validates config/tasks against the JSON schemas when jsonschema is
-# importable; without it the schema checks degrade to a WARN (soft-import in doctor.py).
-doctor = ["jsonschema>=4.0"]
 
 [project.scripts]
 agentloop = "agentloop.cli:main"
