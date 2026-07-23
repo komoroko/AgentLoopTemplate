@@ -150,44 +150,50 @@ def check_materialized(repo: repo_mod.Repo) -> list[Finding]:
 
 def trust_manifest_path() -> Path:
     """Where the external Trust Manifest is expected. Deliberately outside the repository."""
-    override = os.environ.get(TRUST_MANIFEST_ENV, "").strip()
-    if override:
-        return Path(override)
-    return store_mod.config_home() / "agentloop" / "trust.yaml"
+    from agentloop import trust
+
+    return trust.manifest_path()
 
 
 def check_trust() -> list[Finding]:
-    """The Trust Manifest and the signing toolchain.
+    """The Trust Manifest, its allowed-signers file, and the signing toolchain.
 
     Its absence is a FAIL, not a warning: without it there is no authorized principal, so no
     gate can open. Saying "PASS: no manifest configured" would describe a repository in which
     nothing can ever be approved as healthy.
     """
+    from agentloop import trust
+
     findings: list[Finding] = []
     path = trust_manifest_path()
-    if not path.exists():
+    try:
+        manifest = trust.load(path)
+    except trust.TrustError as exc:
+        findings.append(Finding("FAIL", "trust", str(exc)))
+    else:
         findings.append(
             Finding(
-                "FAIL",
+                "PASS",
                 "trust",
-                f"no Trust Manifest at {path} — no principal is authorized, so no gate can open. "
-                f"Create it (or point {TRUST_MANIFEST_ENV} at it); it stays OUTSIDE the repository so a "
-                "pull request cannot add its own approvers.",
+                f"Trust Manifest readable at {path} ({len(manifest.identities)} identity/identities)",
             )
         )
-    else:
-        try:
-            manifest = strict_yaml.load_mapping(path.read_text(encoding="utf-8"), what=str(path))
-        except (OSError, strict_yaml.StrictParseError) as exc:
-            return [Finding("FAIL", "trust", f"{path}: {exc}")]
-        identities = manifest.get("identities")
-        count = len(identities) if isinstance(identities, list) else 0
-        level = "PASS" if count else "FAIL"
-        findings.append(Finding(level, "trust", f"Trust Manifest readable at {path} ({count} identity/identities)"))
-        if path.exists() and hasattr(os, "getuid"):
-            mode = path.stat().st_mode & 0o077
-            if mode:
-                findings.append(Finding("WARN", "trust", f"{path} is group/world accessible (mode {oct(mode)})"))
+        if hasattr(os, "getuid") and (path.stat().st_mode & 0o077):
+            findings.append(
+                Finding("WARN", "trust", f"{path} is group/world accessible (mode {oct(path.stat().st_mode & 0o777)})")
+            )
+        # A manifest that names an allowed-signers file that is not there is worse than a
+        # missing manifest: it looks configured, and every signature verification fails.
+        if not manifest.allowed_signers_file:
+            findings.append(
+                Finding("FAIL", "trust", "the manifest names no allowed_signers_file — signatures cannot be verified")
+            )
+        elif not Path(manifest.allowed_signers_file).exists():
+            findings.append(
+                Finding("FAIL", "trust", f"allowed_signers_file {manifest.allowed_signers_file} does not exist")
+            )
+        else:
+            findings.append(Finding("PASS", "trust", f"allowed-signers file present ({manifest.allowed_signers_file})"))
 
     if shutil.which("ssh-keygen"):
         findings.append(Finding("PASS", "trust", "ssh-keygen found (attestation signing/verification)"))

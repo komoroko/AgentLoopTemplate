@@ -51,6 +51,8 @@ VERBS: dict[str, str] = {
     "cycle-close": "cycle",
     "issue-sync": "issue_sync",
     "pr-draft": "pr_draft",
+    "attestation": "attestations",
+    "evidence": "evidence",
     "guard": "gate_guard",
     "decision": "control_plane",
     "knowledge-gap": "control_plane:knowledge_gap_main",
@@ -85,6 +87,8 @@ daily verbs:
 
 operations:
   approve <gate> [--check]     readiness check + an attestation request (does NOT open the gate)
+  attestation sign|import|…    sign an approval, or import a signed one to open its gate
+  evidence obligations|coverage  inspect what each claim owes, and whether it is met
   revise --to <phase> ...      roll back upstream (gates reset in a chain)
   build [--dry-run]            the deterministic /build orchestrator
   dag [--render|--trace|...]   derive/inspect the task DAG (read-only; /tasks & /status use it)

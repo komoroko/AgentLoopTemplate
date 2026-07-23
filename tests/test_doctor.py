@@ -36,10 +36,20 @@ def levels(items: list[doctor.Finding], substring: str) -> list[str]:
 def trust_manifest(tmp_path: Path, *, identities: int = 1) -> Path:
     path = tmp_path / "config" / "agentloop" / "trust.yaml"
     path.parent.mkdir(parents=True, exist_ok=True)
-    body = "identities:\n" + "".join(
-        f"  - principal: p{i}@example.com\n    key_fingerprint: SHA256:abc\n" for i in range(identities)
+    signers = tmp_path / "config" / "agentloop" / "allowed_signers"
+    signers.write_text("p0@example.com ssh-ed25519 AAAA\n", encoding="utf-8")
+    header = f"attestation: {{namespace: agentloop, allowed_signers_file: {signers}}}\n"
+    body = (
+        header
+        + "identities:\n"
+        + "".join(
+            f"  - principal: p{i}@example.com\n"
+            f"    key_fingerprint: SHA256:{chr(65 + i)}{'a' * 42}\n"
+            f"    roles: [gate_reviewer]\n"
+            for i in range(identities)
+        )
     )
-    path.write_text(body if identities else "identities: []\n", encoding="utf-8")
+    path.write_text(body if identities else header + "identities: []\n", encoding="utf-8")
     return path
 
 
@@ -110,7 +120,7 @@ def test_a_missing_trust_manifest_is_a_fail_not_a_shrug(tmp_path: Path) -> None:
 
 def test_a_manifest_with_no_identities_still_fails(tmp_path: Path) -> None:
     trust_manifest(tmp_path, identities=0)
-    assert any(f.level == "FAIL" for f in doctor.check_trust() if "identity" in f.message)
+    assert any(f.level == "FAIL" and "no identities" in f.message for f in doctor.check_trust())
 
 
 def test_a_readable_manifest_passes(tmp_path: Path) -> None:
