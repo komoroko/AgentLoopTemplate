@@ -52,6 +52,8 @@ VERBS: dict[str, str] = {
     "issue-sync": "issue_sync",
     "pr-draft": "pr_draft",
     "guard": "gate_guard",
+    "decision": "control_plane",
+    "knowledge-gap": "control_plane:knowledge_gap_main",
     "dag": "dag",
     "template-lint": "template_lint",
 }
@@ -91,6 +93,8 @@ operations:
   cycle-close --name <slug>    archive the finished delta cycle and reset
   issue-sync [--dry-run]       one-way mirror of plan.yaml's tasks -> GitHub Issues (opt-in)
   pr-draft [args]              assemble a PR body from the SSOT (read-only)
+  decision add --statement …   record an implementation decision (routes via the control plane)
+  knowledge-gap add …          record what could not be found out
   guard [--check-diff]         the gate-guard hook / commit-stage check
   template-lint                drift canaries (template repo only; products exit 0)
   version                      print the tool version

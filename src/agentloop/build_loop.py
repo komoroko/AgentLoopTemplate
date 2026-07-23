@@ -41,12 +41,23 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from typing import Any
 
-from agentloop import build_git, build_prompts, common, dag, event_chain, gate_guard, models, strict_yaml
+from agentloop import (
+    build_git,
+    build_prompts,
+    common,
+    control_plane,
+    dag,
+    event_chain,
+    gate_guard,
+    models,
+    strict_yaml,
+)
 from agentloop import repo as repo_mod
 from agentloop import store as store_mod
 
@@ -267,6 +278,12 @@ class Orchestrator:
             run=_late_run,
             on_event=lambda event, subject, detail: self._event(event, subject, detail),
         )
+        # The control plane, once `run()` starts serving. A leaf reaches the Store only through
+        # it, so there is nothing to hand out before the socket exists.
+        self.control: control_plane.ControlServer | None = None
+        # Names this run in every token and every event a leaf records, so a decision can be
+        # traced back to the build that produced it.
+        self.run_id = f"RUN-{event_chain.now_iso().replace(':', '').replace('-', '')[:15]}"
         # Dry-run status overlay: the simulated statuses live here instead of tasks.yaml, so the
         # loop can progress to completion while the run stays strictly read-only.
         self._sim_status: dict[str, str] = {}
@@ -340,16 +357,52 @@ class Orchestrator:
             return
         prompt = self._implementer_prompt(task, failure_log)
         flags = (["--resume", session] if resume else ["--session-id", session]) if session else []
+        env = self._leaf_env(task)
         rc, out = _run(
             [*self.config.adapter_argv, *flags, prompt],
             cwd=cwd,
             timeout=self.config.timeout_agent,
+            env=env,
         )
         if rc != 0 and resume:
             print(f"    [resume] {task.id}: resuming session failed (rc={rc}); relaunching fresh")
-            rc, out = _run([*self.config.adapter_argv, prompt], cwd=cwd, timeout=self.config.timeout_agent)
+            # A fresh token: the first one was spent on the launch that failed, and the server
+            # accepts each nonce once.
+            rc, out = _run(
+                [*self.config.adapter_argv, prompt],
+                cwd=cwd,
+                timeout=self.config.timeout_agent,
+                env=self._leaf_env(task),
+            )
         if rc != 0:
             raise StopLoop(f"{task.id}: failed to launch implementer (rc={rc})\n{out[-1000:]}")
+
+    def _leaf_env(self, task: dag.Task) -> dict[str, str] | None:
+        """The environment an implementer runs with: the control socket and a scoped token.
+
+        Scoped to this run and this task, granting only what a leaf legitimately needs
+        (declare a decision, record a knowledge gap, report status, append an event). It can
+        never carry `gate.approve` or its siblings — `mint` refuses to sign those, and the
+        server refuses to serve them even if a token somehow claimed them.
+
+        None when there is no control plane (a dry run), which means the leaf inherits this
+        process's environment and its `agentloop decision add` will refuse rather than write
+        into a worktree that is about to be deleted.
+        """
+        if self.control is None:
+            return None
+        token = control_plane.mint(
+            self.control.secret,
+            run_id=self.run_id,
+            task_id=task.id,
+            capabilities=sorted(control_plane.LEAF_CAPABILITIES),
+            ttl_sec=int(self.config.timeout_agent or control_plane.DEFAULT_TTL_SEC),
+        )
+        return {
+            **os.environ,
+            control_plane.SOCKET_ENV: str(self.control.socket_path),
+            control_plane.TOKEN_ENV: token,
+        }
 
     @property
     def _steps_effective(self) -> tuple[GateStep, ...]:
@@ -642,7 +695,11 @@ class Orchestrator:
         if self.dry_run:
             return self._run_loop()  # read-only: no lock either, and no contention to guard against
         try:
-            with build_lock(self.repo):
+            # Lock order is build.lock -> store.lock, always; the control plane takes the store
+            # lock per request inside it. The socket lives for exactly this run: a leaf that
+            # outlives the orchestrator has nothing to talk to, which is the correct answer.
+            with build_lock(self.repo), control_plane.serving(self.repo) as server:
+                self.control = server
                 return self._run_loop()
         except store_mod.LockUnavailableError as exc:
             logger.error(f"another build run holds the lock: {exc}")

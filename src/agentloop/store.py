@@ -37,6 +37,7 @@ import contextlib
 import os
 import stat
 import tempfile
+import time
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -190,26 +191,47 @@ def dump_yaml(mapping: Mapping[str, Any]) -> bytes:
 # --- file locking ---------------------------------------------------------------
 
 
+#: How long a caller waits for the store lock before giving up. The store lock is held for one
+#: short transaction, so contention resolves in milliseconds; this ceiling exists only so a
+#: process that died holding it cannot hang the next one forever.
+STORE_LOCK_WAIT_SEC = 30.0
+
+
 @dataclass
 class FileLock:
-    """An advisory exclusive lock on one path, held for the duration of a `with` block."""
+    """An advisory exclusive lock on one path, held for the duration of a `with` block.
+
+    `wait_sec` distinguishes the two locks, and the distinction matters. The **build lock** is
+    a mutual-exclusion claim — "only one run at a time" — so it fails immediately: queueing a
+    second build behind the first is never what anyone wanted. The **store lock** is a short
+    critical section that several legitimate writers (the orchestrator, each leaf's control
+    plane request) contend for constantly, so it waits: refusing a leaf's decision because
+    another leaf happened to be writing at that instant would lose exactly the record this
+    whole layer exists to keep.
+    """
 
     path: Path
+    wait_sec: float = 0.0
     _fd: int | None = field(default=None, repr=False)
 
     def __enter__(self) -> FileLock:
         ensure_private_dir(self.path.parent)
         self._fd = os.open(str(self.path), os.O_CREAT | os.O_RDWR, _FILE_MODE)
-        try:
-            _lock_fd(self._fd)
-        except OSError as exc:
-            os.close(self._fd)
-            self._fd = None
-            raise LockUnavailableError(
-                f"another agentloop process holds {self.path.name} — wait for it to finish, "
-                "or run `agentloop doctor` if you believe it is stale"
-            ) from exc
-        return self
+        deadline = time.monotonic() + self.wait_sec
+        while True:
+            try:
+                _lock_fd(self._fd)
+                return self
+            except OSError as exc:
+                if time.monotonic() >= deadline:
+                    os.close(self._fd)
+                    self._fd = None
+                    waited = f" after waiting {self.wait_sec:g}s" if self.wait_sec else ""
+                    raise LockUnavailableError(
+                        f"another agentloop process holds {self.path.name}{waited} — wait for it to "
+                        "finish, or run `agentloop doctor` if you believe it is stale"
+                    ) from exc
+                time.sleep(0.01)
 
     def __exit__(
         self, exc_type: type[BaseException] | None, exc: BaseException | None, tb: TracebackType | None
@@ -358,7 +380,7 @@ class Store:
         An exception inside the block aborts: nothing is written, no event is appended.
         """
         ensure_private_dir(self.runtime)
-        with FileLock(self.store_lock):
+        with FileLock(self.store_lock, wait_sec=STORE_LOCK_WAIT_SEC):
             if recover:
                 self._recover()
             tx = Transaction(store=self)
