@@ -26,7 +26,7 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
-from agentloop import event_chain, mdlite, models, strict_yaml
+from agentloop import event_chain, human_review, mdlite, models, strict_yaml
 from agentloop import events as events_mod
 
 _MAX_DELIVERABLE = 300_000  # bytes of one deliverable the pane will render
@@ -279,3 +279,128 @@ def collect_review(root: str | Path, gate: str) -> dict[str, object]:
         events, _ = event_chain.scan(root / ".agentloop" / "events.ndjson")
         result["open_escalations"] = sum(1 for e in events if e.event in events_mod.ATTENTION_EVENTS)
     return result
+
+
+# -- gate ④ Challenge-first session (plan §14.1, §21.1, §21.2) --
+
+# The deliverable review above answers "what do I read"; the Challenge-first session answers the
+# harder question gate ④ asks — "did *you* think about this before you saw the answer". The sequence
+# is mechanical: `stage_data` refuses a priming stage (expected/actual, scenarios, the decision card)
+# until the unprimed challenge is complete, so a reviewer using the UI cannot skip to the reveal. The
+# rules live in human_review; this layer only shapes them into JSON. Every payload is machine-review
+# content plus the reviewer's own progress — never raw agent HTML (the client renders via textContent).
+
+
+def _load_review(root: Path) -> models.Review | None:
+    """review.yaml as a Review, or None when absent/unreadable — tolerant like the rest of the pane."""
+    try:
+        raw = strict_yaml.load_mapping((root / ".agentloop" / "review.yaml").read_text(encoding="utf-8"))
+    except (OSError, strict_yaml.StrictParseError):
+        return None
+    return models.Review(raw)
+
+
+def _not_generated(stage: str | None = None) -> dict[str, object]:
+    payload: dict[str, object] = {"generated": False, "reason": "no machine review has been generated"}
+    if stage is not None:
+        payload["stage"] = stage
+    return payload
+
+
+def review_session(root: str | Path) -> dict[str, object]:
+    """The whole state of the human review: stage progress, the challenge front, and every blocker.
+
+    This is the one call the review pane polls: it carries the next challenge (reveal stripped),
+    which stages are locked behind it, the expertise and budget verdicts, and the machine digest a
+    subsequent write must echo back (a stale one is refused — plan §17.5).
+    """
+    root = Path(root)
+    review = _load_review(root)
+    if review is None or not review.is_generated:
+        return _not_generated()
+    human = dict(review.human)
+    completed = set(_completed_stages(human))
+    stages = [
+        {"name": stage, "locked": human_review.stage_locked(review, human, stage), "complete": stage in completed}
+        for stage in models.REVIEW_STAGE_ORDER
+    ]
+    return {
+        "generated": True,
+        "human_status": review.human_status,
+        "machine_digest": review.machine_digest(),
+        "next_challenge": human_review.next_challenge(review, human),
+        "unanswered_challenges": human_review.unanswered_challenges(review, human),
+        "open_counterfactuals": human_review.open_counterfactuals(review, human),
+        "expertise_gaps": human_review.expertise_gaps(review, human),
+        "budget": human_review.budget_report(review, human),
+        "scope_split_required": human_review.scope_split_required(review, human),
+        "completion_blockers": human_review.completion_blockers(review, human),
+        "can_freeze": human_review.can_freeze(review, human),
+        "stages": stages,
+    }
+
+
+def _completed_stages(human: dict[str, object]) -> list[str]:
+    session = human.get("session")
+    completed = session.get("completed_stages") if isinstance(session, dict) else None
+    return [str(s) for s in completed] if isinstance(completed, list) else []
+
+
+def stage_data(root: str | Path, stage: str) -> dict[str, object]:
+    """The content of one review stage — or a `locked` refusal when a priming stage is reached early.
+
+    Raises ReviewError for an unknown stage (the HTTP layer's 404); a locked stage is a normal 200
+    with `locked: true`, because "you must answer the challenge first" is information the pane shows,
+    not an error (plan §21.2).
+    """
+    if stage not in models.REVIEW_STAGE_VALUES:
+        raise ReviewError(f"unknown review stage '{stage}' (one of {', '.join(models.REVIEW_STAGE_ORDER)})")
+    root = Path(root)
+    review = _load_review(root)
+    if review is None or not review.is_generated:
+        return _not_generated(stage)
+    human = dict(review.human)
+    if human_review.stage_locked(review, human, stage):
+        return {"stage": stage, "locked": True, "reason": "complete the unprimed challenge stage first"}
+
+    machine = review.machine
+    payload: dict[str, object] = {"stage": stage, "locked": False, "generated": True}
+    if stage == "challenge":
+        payload["challenge"] = human_review.next_challenge(review, human)
+        payload["remaining"] = human_review.unanswered_challenges(review, human)
+    elif stage == "overview":
+        payload["summary"] = machine.get("summary", {})
+    elif stage == "risk_brief":
+        payload["gaps"] = list(machine.get("gaps", []) or [])
+        payload["extra_behaviors"] = list(review.extra_behaviors)
+        payload["statements"] = list(machine.get("statements", []) or [])
+    elif stage == "expected_actual":
+        payload["claims"] = list(review.claim_results)
+        payload["actual_extraction"] = list(review.actual_statements)
+    elif stage == "scenarios":
+        payload["scenarios"] = list(machine.get("scenarios", []) or [])
+    elif stage == "evidence_matrix":
+        payload["evidence_matrix"] = list(machine.get("evidence_matrix", []) or [])
+    elif stage == "module_delta":
+        payload["module_deltas"] = list(machine.get("module_deltas", []) or [])
+    elif stage == "decision":
+        payload["decision_cards"] = list(machine.get("decision_cards", []) or [])
+    elif stage == "security":
+        payload["findings"] = list(review.security_findings)
+    elif stage == "raw_diff":
+        payload["diff"] = _diff_block(root)
+    elif stage == "attestation":
+        payload["can_freeze"] = human_review.can_freeze(review, human)
+        payload["completion_blockers"] = human_review.completion_blockers(review, human)
+    return payload
+
+
+def challenge_reveal(root: str | Path, challenge_id: str) -> dict[str, object]:
+    """The reveal for an answered challenge — served only after the answer is recorded (plan §14.2)."""
+    root = Path(root)
+    review = _load_review(root)
+    if review is None or not review.is_generated:
+        return _not_generated()
+    if challenge_id not in human_review.answered_challenge_ids(review.human):
+        return {"challenge_id": challenge_id, "answered": False, "reveal": None}
+    return {"challenge_id": challenge_id, "answered": True, "reveal": human_review.reveal_for(review, challenge_id)}

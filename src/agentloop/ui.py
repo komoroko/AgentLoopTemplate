@@ -56,14 +56,16 @@ import subprocess
 import threading
 import urllib.parse
 import webbrowser
+from collections.abc import Callable
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from agentloop import approve, common, event_chain, models, review_api, revise, status_api
+from agentloop import approve, common, event_chain, human_review, models, review_api, revise, status_api
 from agentloop import events as events_mod
 from agentloop import registry as registry_mod
 from agentloop import repo as repo_mod
+from agentloop import store as store_mod
 
 logger = logging.getLogger(__name__)
 
@@ -217,6 +219,15 @@ def _tail(text: str) -> str:
     return text if len(text) <= _OUTPUT_LIMIT else "…(truncated)…\n" + text[-_OUTPUT_LIMIT:]
 
 
+def _review_subjects(body: dict[str, object]) -> list[str]:
+    """The id a human-review write is about, for the audit event's subject_ids (best-effort)."""
+    for key in ("challenge_id", "subject_id", "card_id", "domain"):
+        value = body.get(key)
+        if isinstance(value, str) and value:
+            return [value]
+    return []
+
+
 class DashboardHandler(BaseHTTPRequestHandler):
     server: DashboardServer  # narrowed: only DashboardServer constructs this handler
 
@@ -268,17 +279,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         elif self.path == "/api/events" or self.path.startswith("/api/events?"):
             self._send_events()
         elif self.path.startswith("/api/review/"):
-            # The path carries only a gate *name*; review_api maps it to a fixed set of repo files
-            # server-side, so a traversal-shaped suffix is just an unknown gate (404).
-            gate = self.path[len("/api/review/") :]
-            try:
-                payload = review_api.collect_review(self.server.active_root(), gate)
-            except review_api.ReviewError as exc:
-                self._send_json(HTTPStatus.NOT_FOUND, {"error": str(exc)})
-                return
-            except Exception as exc:  # same posture as /api/status: a broken repo must not 500 the pane
-                payload = {"error": f"{type(exc).__name__}: {exc}"}
-            self._send_json(HTTPStatus.OK, payload)
+            self._send_review_get(self.path[len("/api/review/") :])
         else:
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
 
@@ -349,6 +350,31 @@ class DashboardHandler(BaseHTTPRequestHandler):
             },
         )
 
+    def _send_review_get(self, suffix: str) -> None:
+        """Route a /api/review/ GET: the Challenge-first session, one stage, a reveal, or a gate.
+
+        The Challenge-first paths are matched first and by exact shape; anything else is handed to
+        review_api as a gate *name*, so a traversal-shaped suffix is just an unknown gate (404). The
+        broad `except` keeps a damaged SSOT from 500-ing the pane, the same posture as /api/status.
+        """
+        root = self.server.active_root()
+        try:
+            if suffix == "session":
+                self._send_json(HTTPStatus.OK, review_api.review_session(root))
+                return
+            if suffix.startswith("stage/"):
+                self._send_json(HTTPStatus.OK, review_api.stage_data(root, suffix[len("stage/") :]))
+                return
+            if suffix.startswith("challenge/") and suffix.endswith("/reveal"):
+                cid = suffix[len("challenge/") : -len("/reveal")]
+                self._send_json(HTTPStatus.OK, review_api.challenge_reveal(root, cid))
+                return
+            self._send_json(HTTPStatus.OK, review_api.collect_review(root, suffix))
+        except review_api.ReviewError as exc:
+            self._send_json(HTTPStatus.NOT_FOUND, {"error": str(exc)})
+        except Exception as exc:  # a broken repo must not take the pane down
+            self._send_json(HTTPStatus.OK, {"error": f"{type(exc).__name__}: {exc}"})
+
     def _post_body(self) -> dict[str, object]:
         try:
             length = int(self.headers.get("Content-Length") or 0)
@@ -373,6 +399,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._run_action(self._post_body())
             elif self.path == "/api/project/select":
                 self._select_project(self._post_body())
+            elif self.path.startswith("/api/review/"):
+                self._review_post(self.path[len("/api/review/") :], self._post_body())
             else:
                 self._send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
         except UiActionError as exc:
@@ -405,6 +433,113 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 ],
             },
         )
+
+    # -- Challenge-first human-review writes (plan §21.1) --
+    #
+    # Every write is one Store transaction that refuses a stale machine digest (409) and records an
+    # audit event beside the change — a human answering a challenge cannot make the machine review
+    # stale (E2E-09), and a machine review regenerated under the reviewer's feet refuses their next
+    # write (E2E-08). The machine half is copied through byte-for-byte, so only `human` moves.
+
+    def _review_post(self, action: str, body: dict[str, object]) -> None:
+        handlers = {
+            "challenge": self._review_challenge,
+            "counterfactual": self._review_counterfactual,
+            "expertise": self._review_expertise,
+            "disposition": self._review_disposition,
+            "expert": self._review_expert,
+            "complete": self._review_complete,
+        }
+        handler = handlers.get(action)
+        if handler is None:
+            self._send_json(HTTPStatus.NOT_FOUND, {"error": f"unknown review action '{action}'"})
+            return
+        handler(body)
+
+    def _review_mutate(
+        self,
+        body: dict[str, object],
+        event: str,
+        apply: Callable[[models.Review, dict[str, object]], dict[str, object]],
+    ) -> None:
+        """Persist one human-half change through the Store, guarding staleness and recording why."""
+        expected = str(body.get("machine_digest") or "")
+        store = store_mod.Store(repo_mod.Repo(self.server.active_root()))
+        try:
+            with store.transaction() as tx:
+                review = tx.store.read_review()
+                if review is None or not review.is_generated:
+                    raise UiActionError(HTTPStatus.BAD_REQUEST, "no machine review to answer")
+                human_review.assert_machine_current(review, expected)
+                new_human = apply(review, dict(review.human))
+                state = tx.store.read_state()
+                tx.write(
+                    "review",
+                    {**review.raw, "human": new_human},
+                    expect_digest=tx.store.document_digest("review"),
+                )
+                tx.append(event, cycle_id=state.cycle_id if state else "", subject_ids=_review_subjects(body))
+            fresh = store.read_review()
+            self._send_json(
+                HTTPStatus.OK,
+                {
+                    "ok": True,
+                    "machine_digest": fresh.machine_digest() if fresh else "",
+                    "session": review_api.review_session(self.server.active_root()),
+                },
+            )
+        except human_review.StaleReview as exc:
+            raise UiActionError(HTTPStatus.CONFLICT, str(exc)) from None
+        except (store_mod.StoreError, models.DocumentError, ValueError) as exc:
+            raise UiActionError(HTTPStatus.BAD_REQUEST, str(exc)) from None
+
+    def _review_challenge(self, body: dict[str, object]) -> None:
+        cid, choice = str(body.get("challenge_id") or ""), str(body.get("choice") or "")
+        confidence, rationale = str(body.get("confidence") or "low"), str(body.get("rationale") or "")
+        self._review_mutate(
+            body,
+            "challenge_answered",
+            lambda review, human: human_review.record_challenge_answer(
+                review, human, cid, choice, confidence=confidence, rationale=rationale
+            ),
+        )
+
+    def _review_counterfactual(self, body: dict[str, object]) -> None:
+        cid, model = str(body.get("challenge_id") or ""), str(body.get("corrected_model") or "")
+        answer = str(body.get("answer") or "")
+        self._review_mutate(
+            body,
+            "counterfactual_answered",
+            lambda _review, human: human_review.record_counterfactual(human, cid, model, answer=answer),
+        )
+
+    def _review_expertise(self, body: dict[str, object]) -> None:
+        domain, level = str(body.get("domain") or ""), str(body.get("level") or "")
+        self._review_mutate(
+            body, "expertise_declared", lambda _review, human: human_review.record_expertise(human, domain, level)
+        )
+
+    def _review_disposition(self, body: dict[str, object]) -> None:
+        subject, action = str(body.get("subject_id") or ""), str(body.get("action") or "")
+        note = str(body.get("note") or "")
+        self._review_mutate(
+            body,
+            "disposition_recorded",
+            lambda _review, human: human_review.record_disposition(human, subject, action, note=note),
+        )
+
+    def _review_expert(self, body: dict[str, object]) -> None:
+        domain, reason = str(body.get("domain") or ""), str(body.get("reason") or "")
+        subjects = body.get("subject_ids")
+        subject_ids = [str(s) for s in subjects] if isinstance(subjects, list) else []
+        self._review_mutate(
+            body,
+            "expert_requested",
+            lambda _review, human: human_review.request_expert(human, domain, subject_ids, reason=reason),
+        )
+
+    def _review_complete(self, body: dict[str, object]) -> None:
+        self._review_mutate(body, "human_review_frozen", lambda review, human: human_review.freeze(review, human))
 
     def _select_project(self, body: dict[str, object]) -> None:
         # The client sends only a registered *name*; the server maps it to a root through the

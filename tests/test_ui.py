@@ -390,6 +390,109 @@ def test_get_review_unknown_gate_is_404(server: ui.DashboardServer, path: str) -
     assert _request(server, "GET", path)[0] == 404
 
 
+# --- Challenge-first human review (plan §21.1, §21.2) ---------------------------
+
+
+def _generated_review_with_challenge() -> dict[str, object]:
+    """A minimal generated machine review carrying one unanswered challenge (expected 'B')."""
+    return {
+        "machine": {
+            "status": "generated",
+            "binding": {
+                "change_digest": "sha256:" + "a" * 64,
+                "plan_digest": "sha256:" + "b" * 64,
+                "toolchain_digest": "sha256:" + "c" * 64,
+            },
+            "coverage": [
+                {
+                    "diff_digest": "sha256:" + "d" * 64,
+                    "analyzed_files": 1,
+                    "truncated": False,
+                    "coverage_status": "sufficient",
+                }
+            ],
+            "actual_extraction": [],
+            "claims": [],
+            "challenges": [
+                {
+                    "id": "CH-001",
+                    "risk": "high",
+                    "scenario": "the remote committed, the response was lost, the client retried",
+                    "choices": [{"id": "A", "text": "double-charges"}, {"id": "B", "text": "one logical request"}],
+                    "reveal": {"expected_choice": "B", "counterfactual": "trace the retry key"},
+                }
+            ],
+        },
+        "human": {"status": "not_started"},
+    }
+
+
+@pytest.fixture
+def review_server(tmp_path: Path) -> Iterator[ui.DashboardServer]:
+    root = tmp_path / "rv"
+    root.mkdir()
+    seed_repo(
+        root,
+        state=make_state(project="rv", gates=dict.fromkeys(models.GATE_ORDER, "pending"), phase="build"),
+        config=make_config(profiles=SANDBOXED_PROFILES),
+        review=_generated_review_with_challenge(),
+    )
+    srv = ui.DashboardServer(("127.0.0.1", 0), root=root, read_only=False)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        yield srv
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+def test_session_carries_the_next_challenge_without_its_reveal(review_server: ui.DashboardServer) -> None:
+    status, data = _request(review_server, "GET", "/api/review/session")
+    assert status == 200
+    session = json.loads(data)
+    assert session["generated"] is True
+    assert session["next_challenge"]["id"] == "CH-001"
+    assert "reveal" not in session["next_challenge"]  # the expected choice must not leak with the question
+    assert session["machine_digest"].startswith("sha256:")
+
+
+def test_priming_stage_is_locked_until_the_challenge_is_answered(review_server: ui.DashboardServer) -> None:
+    locked = json.loads(_request(review_server, "GET", "/api/review/stage/expected_actual")[1])
+    assert locked["locked"] is True
+    # A pre-reveal stage is open from the start.
+    assert json.loads(_request(review_server, "GET", "/api/review/stage/risk_brief")[1])["locked"] is False
+
+
+def test_answering_the_challenge_unlocks_the_priming_stage(review_server: ui.DashboardServer) -> None:
+    digest = json.loads(_request(review_server, "GET", "/api/review/session")[1])["machine_digest"]
+    body = {"challenge_id": "CH-001", "choice": "B", "confidence": "high", "machine_digest": digest}
+    status, data = _request(review_server, "POST", "/api/review/challenge", body, token=review_server.token)
+    assert status == 200 and json.loads(data)["ok"] is True
+    after = json.loads(_request(review_server, "GET", "/api/review/stage/expected_actual")[1])
+    assert after["locked"] is False
+
+
+def test_a_human_answer_leaves_the_machine_digest_unchanged(review_server: ui.DashboardServer) -> None:
+    # E2E-09: answering a challenge moves the human half, never the machine half.
+    before = json.loads(_request(review_server, "GET", "/api/review/session")[1])["machine_digest"]
+    body = {"challenge_id": "CH-001", "choice": "B", "confidence": "low", "machine_digest": before}
+    data = json.loads(_request(review_server, "POST", "/api/review/challenge", body, token=review_server.token)[1])
+    assert data["machine_digest"] == before
+
+
+def test_a_stale_machine_digest_is_refused_with_409(review_server: ui.DashboardServer) -> None:
+    # E2E-08: an answer written against a machine review that has since changed is a conflict.
+    stale = "sha256:" + "0" * 64
+    body: dict[str, object] = {"challenge_id": "CH-001", "choice": "B", "confidence": "low", "machine_digest": stale}
+    status, _ = _request(review_server, "POST", "/api/review/challenge", body, token=review_server.token)
+    assert status == 409
+
+
+def test_review_post_without_token_is_403(review_server: ui.DashboardServer) -> None:
+    status, _ = _request(review_server, "POST", "/api/review/challenge", {"challenge_id": "CH-001", "choice": "B"})
+    assert status == 403
+
+
 def test_review_is_readable_on_a_read_only_server(repo: Path) -> None:
     srv = ui.DashboardServer(("127.0.0.1", 0), root=repo, read_only=True)
     threading.Thread(target=srv.serve_forever, daemon=True).start()

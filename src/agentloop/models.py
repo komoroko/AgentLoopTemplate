@@ -374,6 +374,7 @@ EVENT_ORDER: tuple[str, ...] = (
     "review_failed",
     "challenge_answered",
     "counterfactual_answered",
+    "expertise_declared",
     "expert_requested",
     "expert_attested",
     "disposition_recorded",
