@@ -4,7 +4,7 @@ status_api.py answers "where does the lifecycle stand"; this module answers the 
 "what do I read to approve the gate in front of me". `collect_review(root, gate)` returns one JSON
 object per gate: the phase deliverables rendered through mdlite (escape-first — see its threat
 model), each deliverable's Self-assessment section split out so the pane can pin it, and for gate
-④ the work-branch diff plus the security-review report's freshness.
+④ the work-branch diff plus the generated review's freshness.
 
 Reach is fixed server-side, the same way ui.action_argv fixes command lines: the client sends only
 a gate name; which files are read comes from the `_GATE_SPEC` constant plus a template-excluding
@@ -26,7 +26,7 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
-from agentloop import common, mdlite
+from agentloop import event_chain, human_review, mdlite, models, strict_yaml
 from agentloop import events as events_mod
 
 _MAX_DELIVERABLE = 300_000  # bytes of one deliverable the pane will render
@@ -34,7 +34,6 @@ _MAX_PATCH = 200_000  # bytes of unified diff for gate ④
 _GIT_TIMEOUT_SEC = 10
 _GLOB_NAME_RE = re.compile(r"^(T|ADR)-[A-Za-z0-9_.-]+\.md$")
 _TEMPLATE_NAMES = frozenset({"T-template.md", "ADR-template.md"})
-_REVIEWED_HEAD_RE = re.compile(r"^Reviewed-HEAD:\s*([0-9a-fA-F]+)", re.MULTILINE)
 # The *labelled* confidence line ("- **Confidence**: …"), not any prose mentioning the word: the
 # label must be what precedes the colon, so a sentence like "we have high confidence in X" is not
 # mistaken for the assessment. The value is everything after that colon.
@@ -57,8 +56,10 @@ _GATE_SPEC: dict[str, dict[str, list[_SpecItem]]] = {
         "main": ["docs/20-design.md", ("glob", "docs/decisions", "ADR-*.md")],
         "context": ["docs/10-requirements.md"],
     },
-    "tasks": {"main": [("glob", "docs/tasks", "T-*.md"), ("code", ".agentloop/tasks.yaml")], "context": []},
-    "build": {"main": [".agentloop/security-review.md"], "context": []},
+    "tasks": {"main": [("glob", "docs/tasks", "T-*.md"), ("code", ".agentloop/plan.yaml")], "context": []},
+    # Gate 4 reviews the generated review, not a security-review markdown file: green tests
+    # plus an AI's summary was never the evidence this gate is supposed to weigh.
+    "build": {"main": [("code", ".agentloop/review.yaml")], "context": []},
     "release": {"main": ["docs/test/test-plan.md", "docs/retrospective.md"], "context": []},
 }
 
@@ -152,7 +153,7 @@ def _expand(root: Path, spec: list[_SpecItem]) -> list[dict[str, object]]:
     return out
 
 
-# -- gate ④: the work-branch diff and the security-review freshness --
+# -- gate ④: the work-branch diff and the generated-review freshness --
 
 
 def _git(root: Path, *args: str) -> tuple[int, str]:
@@ -215,32 +216,50 @@ def _diff_block(root: Path) -> dict[str, object]:
 
 
 def _review_meta(root: Path, head: str | None) -> dict[str, object]:
-    """Whether .agentloop/security-review.md speaks for the commit actually under review."""
+    """Whether the generated machine review speaks for the commit actually under review.
+
+    0.9.0 has no `security-review.md`: gate ④ approves the generated *review.yaml*, whose
+    machine binding records the `subject_head_sha` it was produced against. Freshness is that
+    sha against the current HEAD — a commit made after the review was generated leaves the
+    review stale (plan §17.5, E2E-08), and the pane must show it rather than imply currency.
+    """
     try:
-        text = (root / ".agentloop" / "security-review.md").read_text(encoding="utf-8")
-    except OSError:
+        raw = strict_yaml.load_mapping((root / ".agentloop" / "review.yaml").read_text(encoding="utf-8"))
+    except (OSError, strict_yaml.StrictParseError):
         return {"reviewed_head": None, "head": head, "fresh": False}
-    m = _REVIEWED_HEAD_RE.search(text)
-    reviewed = m.group(1) if m else None
-    return {"reviewed_head": reviewed, "head": head, "fresh": bool(reviewed and head and reviewed == head)}
+    machine = raw.get("machine")
+    binding = machine.get("binding") if isinstance(machine, dict) else None
+    reviewed = str(binding.get("subject_head_sha", "")) if isinstance(binding, dict) else ""
+    reviewed_or_none = reviewed or None
+    return {"reviewed_head": reviewed_or_none, "head": head, "fresh": bool(reviewed and head and reviewed == head)}
+
+
+def _gate_statuses(root: Path) -> dict[str, str]:
+    """Gate statuses from state.yaml; {} when it cannot be read.
+
+    A broken SSOT must not take the review pane down — but an unreadable gate reads as
+    `pending`, never as approved, so the pane can only ever understate what has been decided.
+    """
+    try:
+        raw = strict_yaml.load_mapping((root / ".agentloop" / "state.yaml").read_text(encoding="utf-8"))
+    except (OSError, strict_yaml.StrictParseError):
+        return {}
+    state = models.State(raw)
+    return {gate: state.gate_status(gate) for gate in models.GATE_ORDER}
 
 
 def collect_review(root: str | Path, gate: str) -> dict[str, object]:
     """Everything the review pane shows for `gate`. Raises ReviewError only for an unknown gate."""
     if gate not in _GATE_SPEC:
-        raise ReviewError(f"unknown gate '{gate}' (expected one of {', '.join(common.GATE_ORDER)})")
+        raise ReviewError(f"unknown gate '{gate}' (expected one of {', '.join(models.GATE_ORDER)})")
     root = Path(root)
 
-    gates: dict[str, str] = {}
-    try:
-        gates = common.gates_of(common.read_frontmatter(str(root / ".agentloop" / "state.md"))) or {}
-    except Exception:  # noqa: BLE001 - a broken SSOT must not take the review pane down
-        pass
-    awaiting = next((g for g in common.GATE_ORDER if gates.get(g) != "approved"), None)
+    gates = _gate_statuses(root)
+    awaiting = next((g for g in models.GATE_ORDER if gates.get(g) != "approved"), None)
 
     result: dict[str, object] = {
         "gate": gate,
-        "index": common.GATE_ORDER.index(gate) + 1,
+        "index": models.GATE_ORDER.index(gate) + 1,
         "status": gates.get(gate, "pending"),
         "awaiting": awaiting,
         "is_awaiting": gate == awaiting,
@@ -257,6 +276,131 @@ def collect_review(root: str | Path, gate: str) -> dict[str, object]:
         head_value = diff.get("head")
         result["review_meta"] = _review_meta(root, head_value if isinstance(head_value, str) else None)
     if gate == "release":
-        opened = events_mod.open_escalations(events_mod.load_events(str(root / ".agentloop" / "events.ndjson")))
-        result["open_escalations"] = len(opened)
+        events, _ = event_chain.scan(root / ".agentloop" / "events.ndjson")
+        result["open_escalations"] = sum(1 for e in events if e.event in events_mod.ATTENTION_EVENTS)
     return result
+
+
+# -- gate ④ Challenge-first session (plan §14.1, §21.1, §21.2) --
+
+# The deliverable review above answers "what do I read"; the Challenge-first session answers the
+# harder question gate ④ asks — "did *you* think about this before you saw the answer". The sequence
+# is mechanical: `stage_data` refuses a priming stage (expected/actual, scenarios, the decision card)
+# until the unprimed challenge is complete, so a reviewer using the UI cannot skip to the reveal. The
+# rules live in human_review; this layer only shapes them into JSON. Every payload is machine-review
+# content plus the reviewer's own progress — never raw agent HTML (the client renders via textContent).
+
+
+def _load_review(root: Path) -> models.Review | None:
+    """review.yaml as a Review, or None when absent/unreadable — tolerant like the rest of the pane."""
+    try:
+        raw = strict_yaml.load_mapping((root / ".agentloop" / "review.yaml").read_text(encoding="utf-8"))
+    except (OSError, strict_yaml.StrictParseError):
+        return None
+    return models.Review(raw)
+
+
+def _not_generated(stage: str | None = None) -> dict[str, object]:
+    payload: dict[str, object] = {"generated": False, "reason": "no machine review has been generated"}
+    if stage is not None:
+        payload["stage"] = stage
+    return payload
+
+
+def review_session(root: str | Path) -> dict[str, object]:
+    """The whole state of the human review: stage progress, the challenge front, and every blocker.
+
+    This is the one call the review pane polls: it carries the next challenge (reveal stripped),
+    which stages are locked behind it, the expertise and budget verdicts, and the machine digest a
+    subsequent write must echo back (a stale one is refused — plan §17.5).
+    """
+    root = Path(root)
+    review = _load_review(root)
+    if review is None or not review.is_generated:
+        return _not_generated()
+    human = dict(review.human)
+    completed = set(_completed_stages(human))
+    stages = [
+        {"name": stage, "locked": human_review.stage_locked(review, human, stage), "complete": stage in completed}
+        for stage in models.REVIEW_STAGE_ORDER
+    ]
+    return {
+        "generated": True,
+        "human_status": review.human_status,
+        "machine_digest": review.machine_digest(),
+        "next_challenge": human_review.next_challenge(review, human),
+        "unanswered_challenges": human_review.unanswered_challenges(review, human),
+        "open_counterfactuals": human_review.open_counterfactuals(review, human),
+        "expertise_gaps": human_review.expertise_gaps(review, human),
+        "budget": human_review.budget_report(review, human),
+        "scope_split_required": human_review.scope_split_required(review, human),
+        "completion_blockers": human_review.completion_blockers(review, human),
+        "can_freeze": human_review.can_freeze(review, human),
+        "stages": stages,
+    }
+
+
+def _completed_stages(human: dict[str, object]) -> list[str]:
+    session = human.get("session")
+    completed = session.get("completed_stages") if isinstance(session, dict) else None
+    return [str(s) for s in completed] if isinstance(completed, list) else []
+
+
+def stage_data(root: str | Path, stage: str) -> dict[str, object]:
+    """The content of one review stage — or a `locked` refusal when a priming stage is reached early.
+
+    Raises ReviewError for an unknown stage (the HTTP layer's 404); a locked stage is a normal 200
+    with `locked: true`, because "you must answer the challenge first" is information the pane shows,
+    not an error (plan §21.2).
+    """
+    if stage not in models.REVIEW_STAGE_VALUES:
+        raise ReviewError(f"unknown review stage '{stage}' (one of {', '.join(models.REVIEW_STAGE_ORDER)})")
+    root = Path(root)
+    review = _load_review(root)
+    if review is None or not review.is_generated:
+        return _not_generated(stage)
+    human = dict(review.human)
+    if human_review.stage_locked(review, human, stage):
+        return {"stage": stage, "locked": True, "reason": "complete the unprimed challenge stage first"}
+
+    machine = review.machine
+    payload: dict[str, object] = {"stage": stage, "locked": False, "generated": True}
+    if stage == "challenge":
+        payload["challenge"] = human_review.next_challenge(review, human)
+        payload["remaining"] = human_review.unanswered_challenges(review, human)
+    elif stage == "overview":
+        payload["summary"] = machine.get("summary", {})
+    elif stage == "risk_brief":
+        payload["gaps"] = list(machine.get("gaps", []) or [])
+        payload["extra_behaviors"] = list(review.extra_behaviors)
+        payload["statements"] = list(machine.get("statements", []) or [])
+    elif stage == "expected_actual":
+        payload["claims"] = list(review.claim_results)
+        payload["actual_extraction"] = list(review.actual_statements)
+    elif stage == "scenarios":
+        payload["scenarios"] = list(machine.get("scenarios", []) or [])
+    elif stage == "evidence_matrix":
+        payload["evidence_matrix"] = list(machine.get("evidence_matrix", []) or [])
+    elif stage == "module_delta":
+        payload["module_deltas"] = list(machine.get("module_deltas", []) or [])
+    elif stage == "decision":
+        payload["decision_cards"] = list(machine.get("decision_cards", []) or [])
+    elif stage == "security":
+        payload["findings"] = list(review.security_findings)
+    elif stage == "raw_diff":
+        payload["diff"] = _diff_block(root)
+    elif stage == "attestation":
+        payload["can_freeze"] = human_review.can_freeze(review, human)
+        payload["completion_blockers"] = human_review.completion_blockers(review, human)
+    return payload
+
+
+def challenge_reveal(root: str | Path, challenge_id: str) -> dict[str, object]:
+    """The reveal for an answered challenge — served only after the answer is recorded (plan §14.2)."""
+    root = Path(root)
+    review = _load_review(root)
+    if review is None or not review.is_generated:
+        return _not_generated()
+    if challenge_id not in human_review.answered_challenge_ids(review.human):
+        return {"challenge_id": challenge_id, "answered": False, "reveal": None}
+    return {"challenge_id": challenge_id, "answered": True, "reveal": human_review.reveal_for(review, challenge_id)}

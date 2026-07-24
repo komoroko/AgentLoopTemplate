@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/komoroko/AgentLoopTemplate/schema/attestation.schema.json",
+  "title": "AgentLoop attestation envelope (agentloop-grounded-v1)",
+  "description": "A signed human or expert action. `subject` binds it to exact digests, which is what stops a signature being replayed onto a later review, a different cycle, or another repository. Authority comes from the EXTERNAL Trust Manifest — no field here, and nothing in this repository, can add an authorized signer (plan 7).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "type", "subject", "actor", "issued_at"],
+  "properties": {
+    "id": { "type": "string", "minLength": 5, "maxLength": 128, "pattern": "^ATT-[A-Z0-9-]+$" },
+    "type": {
+      "enum": [
+        "requirements_approval",
+        "design_approval",
+        "tasks_approval",
+        "human_review_approval",
+        "release_approval",
+        "expert_confirmation",
+        "human_decision"
+      ]
+    },
+
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository_id", "cycle_id"],
+      "properties": {
+        "repository_id": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "cycle_id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-z0-9][a-z0-9-]*$" },
+        "subject_ids": {
+          "description": "For an expert_confirmation or human_decision: the claims / technical facts the signature is about.",
+          "type": "array",
+          "maxItems": 64,
+          "items": { "type": "string", "maxLength": 64 }
+        },
+        "domains": { "type": "array", "maxItems": 16, "items": { "type": "string", "maxLength": 64, "pattern": "^[a-z0-9][a-z0-9_-]*$" } },
+        "artifact_digest": { "$ref": "#/$defs/digest" },
+        "validation_digest": { "$ref": "#/$defs/digest" },
+        "change_digest": { "$ref": "#/$defs/digest" },
+        "plan_digest": { "$ref": "#/$defs/digest" },
+        "config_digest": { "$ref": "#/$defs/digest" },
+        "toolchain_digest": { "$ref": "#/$defs/digest" },
+        "oracle_bundle_set_digest": { "$ref": "#/$defs/digest" },
+        "coverage_digest": { "$ref": "#/$defs/digest" },
+        "actual_digest": { "$ref": "#/$defs/digest" },
+        "machine_digest": { "$ref": "#/$defs/digest" },
+        "human_digest": { "$ref": "#/$defs/digest" },
+        "event_chain_root_before": { "$ref": "#/$defs/digest" }
+      }
+    },
+
+    "actor": {
+      "description": "Display metadata only. The binding identity is the signing key's fingerprint, resolved against the Trust Manifest — a principal written here that the manifest does not list carries no authority (plan 7.5).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["principal", "role"],
+      "properties": {
+        "principal": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "role": { "enum": ["gate_reviewer", "release_approver", "expert", "security_approver"] },
+        "domains": { "type": "array", "maxItems": 16, "items": { "type": "string", "maxLength": 64, "pattern": "^[a-z0-9][a-z0-9_-]*$" } }
+      }
+    },
+
+    "issued_at": { "type": "string", "minLength": 10, "maxLength": 64 },
+
+    "signature": {
+      "description": "Absent on a request envelope, present on a signed one. `payload_digest` must equal the digest of the envelope with this block removed.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method", "namespace", "key_fingerprint", "payload_digest", "value"],
+      "properties": {
+        "method": { "const": "ssh-signature" },
+        "namespace": { "const": "agentloop" },
+        "key_fingerprint": { "type": "string", "maxLength": 200, "pattern": "^SHA256:[A-Za-z0-9+/=]{20,}$" },
+        "payload_digest": { "$ref": "#/$defs/digest" },
+        "value": { "type": "string", "minLength": 1, "maxLength": 100000 }
+      }
+    }
+  },
+
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+  }
+}

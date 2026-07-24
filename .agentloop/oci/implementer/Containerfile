@@ -1,0 +1,34 @@
+# The implementer sandbox: where a task's code is written.
+#
+# Built with `agentloop oci build --profile implementer`.
+#
+# Unlike the reviewer this one gets a WRITABLE worktree — it has to, it is writing code — plus
+# a bind mount of the control socket. That socket is the only way a leaf worktree may record a
+# decision or a knowledge gap: writing to a leaf-local .agentloop/ is how a judgement recorded
+# during a parallel build disappeared when the worktree was removed (plan §11.1).
+#
+# The capability token the leaf receives is scoped to `decision.declare`, `knowledge_gap.create`,
+# `task.status`, and `event.append`. It can never carry `gate.approve`, `expert.confirm`,
+# `human.review.complete`, `review.machine.replace`, `state.replace`, or `attestation.import`:
+# an agent that can approve its own work has not been reviewed by anyone.
+
+FROM docker.io/library/python:3.13-slim-bookworm
+
+RUN groupadd --gid 1000 implementer \
+ && useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash implementer
+
+RUN apt-get update \
+ && apt-get install --no-install-recommends -y git make ca-certificates curl \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY --from=ghcr.io/astral-sh/uv:0.9.7 /uv /usr/local/bin/uv
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    HOME=/home/implementer \
+    GIT_CONFIG_SYSTEM=/dev/null
+
+USER 1000:1000
+WORKDIR /worktree
+ENTRYPOINT []
+CMD ["bash", "-lc", "echo 'agentloop implementer sandbox'"]

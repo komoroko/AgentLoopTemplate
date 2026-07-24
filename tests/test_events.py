@@ -1,4 +1,9 @@
-"""Verify events.py — the structured escalation log (NDJSON truth + generated state.md view)."""
+"""Tests for events.py — the read-only view over the hash-chained audit log.
+
+The behaviour under test is mostly about what the command *refuses* to do. 0.8.x let a human
+append and resolve escalations by hand; an audit log an operator can hand-write is not
+evidence, so those verbs are gone and their absence is asserted here.
+"""
 
 from __future__ import annotations
 
@@ -6,213 +11,120 @@ from pathlib import Path
 
 import pytest
 
-from agentloop import events
+from agentloop import event_chain, events
+from tests._support import chain, seed_repo
 
 
-def _log(tmp_path: Path) -> str:
-    return str(tmp_path / "events.ndjson")
+def _seed(tmp_path: Path, *names: str) -> Path:
+    seed_repo(tmp_path, events=chain(*names) if names else None)
+    return tmp_path
 
 
-def test_append_assigns_monotonic_ids_and_roundtrips(tmp_path: Path) -> None:
-    path = _log(tmp_path)
-    first = events.append_event("blocked", task="T-003", step="test", detail="red", path=path)
-    second = events.append_event("task_done", task="T-002", commit="abc123", path=path)
-    assert (first.id, second.id) == (1, 2)
-    loaded = events.load_events(path)
-    assert [(e.id, e.event, e.task) for e in loaded] == [(1, "blocked", "T-003"), (2, "task_done", "T-002")]
-    assert loaded[1].commit == "abc123"
+# --- what the CLI no longer offers --------------------------------------------
 
 
-def test_append_rejects_unknown_event_kind(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="unknown event"):
-        events.append_event("typo_kind", path=_log(tmp_path))
+def test_there_is_no_way_to_append_or_resolve_by_hand() -> None:
+    # An audit log a human can write into is not an audit log. Dispositions live in
+    # review.yaml and are signed; "resolve" implied a record could be ticked off.
+    for gone in ("append_event", "log_escalation", "open_escalations", "rotate_if_large", "refresh_state_view"):
+        assert not hasattr(events, gone), f"events.{gone} should not exist in 0.9.0"
 
 
-def test_load_skips_corrupt_lines(tmp_path: Path) -> None:
-    # A corrupt line (partial write, hand edit) must be skipped, never take the orchestrator down —
-    # and the next append must still produce a valid, monotonically increasing id.
-    path = _log(tmp_path)
-    events.append_event("blocked", task="T-001", path=path)
-    with Path(path).open("a", encoding="utf-8") as fh:
-        fh.write("{not json\n")
-        fh.write('{"event": "blocked"}\n')  # missing id
-    events.append_event("resolve", ref=1, path=path)
-    loaded = events.load_events(path)
-    assert [e.id for e in loaded] == [1, 2]
+def test_the_cli_exposes_only_read_verbs(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        events.main(["--help"])
+    helptext = capsys.readouterr().out
+    for verb in ("--render", "--summary", "--verify", "--root"):
+        assert verb in helptext
+    for gone in ("--add", "--resolve", "--refresh-state"):
+        assert gone not in helptext
 
 
-def test_load_missing_file_is_empty(tmp_path: Path) -> None:
-    assert events.load_events(_log(tmp_path)) == []
+# --- rendering ----------------------------------------------------------------
 
 
-def test_open_escalations_closed_by_resolve_ref(tmp_path: Path) -> None:
-    path = _log(tmp_path)
-    events.append_event("blocked", task="T-003", path=path)  # id 1
-    events.append_event("merge_conflict", task="T-004", path=path)  # id 2
-    events.append_event("step_fail", task="T-003", step="test", path=path)  # not an escalation
-    events.append_event("resolve", ref=1, detail="fixed", path=path)
-    opened = events.open_escalations(events.load_events(path))
-    assert [(e.id, e.event) for e in opened] == [(2, "merge_conflict")]
+def test_render_of_an_empty_log() -> None:
+    assert events.render([]) == "no events yet"
 
 
-def test_render_view_lists_open_and_counts(tmp_path: Path) -> None:
-    path = _log(tmp_path)
-    events.append_event("blocked", task="T-003", step="check", detail="line one\nline two", path=path)
-    events.append_event("task_done", task="T-002", path=path)
-    view = events.render_view(events.load_events(path))
-    assert "blocked=1" in view and "task_done=1" in view
-    assert "| 1 |" in view and "T-003" in view and "check" in view
-    assert "line one" in view and "line two" not in view  # detail is first-line-only in the table
-
-
-def test_render_view_escapes_pipes_and_truncates(tmp_path: Path) -> None:
-    path = _log(tmp_path)
-    events.append_event("blocked", task="T-001", detail="a | b " + "x" * 200, path=path)
-    view = events.render_view(events.load_events(path))
-    assert "a \\| b" in view  # a raw pipe would break the markdown table
-    assert "…" in view
-
-
-def test_render_view_no_events(tmp_path: Path) -> None:
-    view = events.render_view(events.load_events(_log(tmp_path)))
-    assert "- (none)" in view
-
-
-def test_render_summary_aggregates(tmp_path: Path) -> None:
-    path = _log(tmp_path)
-    for _ in range(2):
-        events.append_event("blocked", task="T-003", path=path)
-    events.append_event("blocked", task="T-005", path=path)
-    events.append_event("step_fail", task="T-003", step="test", path=path)
-    events.append_event("step_fail", task="T-003", step="test", path=path)
-    events.append_event("step_fail", task="T-005", step="check", path=path)
-    events.append_event("task_done", task="T-002", path=path)
-    events.append_event("resolve", ref=1, path=path)
-    summary = events.render_summary(events.load_events(path))
-    assert "escalations: 3 total, 2 open" in summary
-    assert "T-003×2, T-005×1" in summary
-    assert "test×2, check×1" in summary
-    assert "tasks done: 1" in summary
-
-
-# --- state.md generated view -------------------------------------------------
-
-_STATE = (
-    "---\nproject: demo\n---\n# board\n\n## Escalation log\n\n"
-    f"{events.VIEW_BEGIN}\n_(no events yet)_\n{events.VIEW_END}\n"
-)
-
-
-def test_refresh_state_view_replaces_block(tmp_path: Path) -> None:
-    path = _log(tmp_path)
-    state = tmp_path / "state.md"
-    state.write_text(_STATE, encoding="utf-8")
-    events.append_event("blocked", task="T-003", detail="red", path=path)
-    assert events.refresh_state_view(path, str(state)) is True
-    text = state.read_text(encoding="utf-8")
-    assert "_(no events yet)_" not in text
-    assert "T-003" in text
-    assert events.VIEW_BEGIN in text and events.VIEW_END in text  # markers survive re-runs
-    assert events.refresh_state_view(path, str(state)) is True  # idempotent re-render
-
-
-def test_refresh_state_view_noop_without_markers(tmp_path: Path) -> None:
-    state = tmp_path / "state.md"
-    state.write_text("---\nproject: demo\n---\n# board\n", encoding="utf-8")
-    before = state.read_text(encoding="utf-8")
-    assert events.refresh_state_view(_log(tmp_path), str(state)) is False
-    assert state.read_text(encoding="utf-8") == before
-
-
-def test_refresh_state_view_missing_state_is_noop(tmp_path: Path) -> None:
-    assert events.refresh_state_view(_log(tmp_path), str(tmp_path / "absent.md")) is False
-
-
-# --- rotation (context hygiene; open escalations must survive) ---------------
-
-
-def test_rotate_carries_open_escalations_and_preserves_ids(tmp_path: Path) -> None:
-    path = _log(tmp_path)
-    events.append_event("blocked", task="T-003", detail="x" * 100, path=path)  # id 1, stays open
-    events.append_event("blocked", task="T-004", path=path)  # id 2
-    events.append_event("resolve", ref=2, path=path)
-    for _ in range(20):
-        events.append_event("task_done", task="T-001", path=path)
-    assert events.rotate_if_large(path, max_bytes=512) is True
-    assert Path(f"{path}.1").exists()  # the full history moved aside
-    live = events.load_events(path)
-    assert [(e.id, e.event) for e in live] == [(1, "blocked")]  # only the open escalation carried, id preserved
-    nxt = events.append_event("task_done", task="T-005", path=path)
-    assert nxt.id == 2  # ids continue from the carried max, still resolvable
-
-
-def test_rotate_noop_when_small_or_absent(tmp_path: Path) -> None:
-    path = _log(tmp_path)
-    assert events.rotate_if_large(path, max_bytes=512) is False  # absent: nothing to do
-    events.append_event("blocked", path=path)
-    assert events.rotate_if_large(path, max_bytes=512) is False  # under budget: kept
-    assert len(events.load_events(path)) == 1
-
-
-def test_rotate_best_effort_on_replace_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    path = _log(tmp_path)
-    Path(path).write_text('{"id": 1, "ts": "", "event": "blocked"}\n' * 100, encoding="utf-8")
-
-    def boom(self: Path, target: object) -> None:
-        raise OSError("rename failed")
-
-    monkeypatch.setattr(Path, "replace", boom)
-    assert events.rotate_if_large(path, max_bytes=512) is False  # swallowed, never aborts the run
-
-
-# --- CLI ----------------------------------------------------------------------
-
-
-def test_cli_add_and_resolve_roundtrip(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    path = _log(tmp_path)
-    state = tmp_path / "state.md"
-    state.write_text(_STATE, encoding="utf-8")
-    isolate = ["--path", path, "--state", str(state)]
-    assert events.main(["--add", "blocked", "--task", "T-003", "--detail", "red", *isolate]) == 0
-    assert "T-003" in state.read_text(encoding="utf-8")  # --add refreshed the view
-    assert events.main(["--resolve", "1", "--note", "fixed by abc123", *isolate]) == 0
+def test_render_lists_the_chain_in_append_order(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    root = _seed(tmp_path, "cycle_initialized", "task_started", "task_completed")
+    assert events.main(["--repo", str(root)]) == 0
     out = capsys.readouterr().out
-    assert "added #1 blocked (T-003)" in out
-    assert "resolved #1 blocked (T-003)" in out
-    loaded = events.load_events(path)
-    assert loaded[1].event == "resolve" and loaded[1].ref == 1 and loaded[1].detail == "fixed by abc123"
-    assert "resolve=1" in state.read_text(encoding="utf-8")  # --resolve refreshed it too
+    assert out.index("cycle_initialized") < out.index("task_started") < out.index("task_completed")
+    assert "| 1 |" in out and "| 3 |" in out
 
 
-def test_cli_add_rejects_unknown_kind(tmp_path: Path) -> None:
-    assert events.main(["--add", "typo", "--path", _log(tmp_path)]) == 2
-
-
-def test_cli_resolve_rejects_unknown_or_non_escalation_id(tmp_path: Path) -> None:
-    path = _log(tmp_path)
-    events.append_event("task_done", task="T-001", path=path)  # id 1, not an escalation
-    assert events.main(["--resolve", "1", "--path", path]) == 2
-    assert events.main(["--resolve", "99", "--path", path]) == 2
-
-
-def test_cli_resolve_rejects_already_resolved(tmp_path: Path) -> None:
-    path = _log(tmp_path)
-    isolate = ["--path", path, "--state", str(tmp_path / "state.md")]
-    events.append_event("blocked", task="T-003", path=path)
-    assert events.main(["--resolve", "1", *isolate]) == 0
-    assert events.main(["--resolve", "1", *isolate]) == 2  # double-close is a usage error
-
-
-def test_cli_render_default(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    path = _log(tmp_path)
-    events.append_event("blocked", task="T-003", path=path)
-    assert events.main(["--path", path]) == 0
-    assert "Open escalations" in capsys.readouterr().out
-
-
-def test_cli_summary_appends_aggregates(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    path = _log(tmp_path)
-    events.append_event("blocked", task="T-003", path=path)
-    assert events.main(["--summary", "--path", path]) == 0
+def test_summary_counts_kinds_and_reports_the_root(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    root = _seed(tmp_path, "task_completed", "task_completed", "oracle_failed")
+    assert events.main(["--repo", str(root), "--summary"]) == 0
     out = capsys.readouterr().out
-    assert "Open escalations" in out and "Aggregates" in out
+    assert "task_completed×2" in out
+    assert "chain root: sha256:" in out
+
+
+def test_summary_names_the_events_awaiting_a_human_decision(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    root = _seed(tmp_path, "task_completed", "oracle_failed", "knowledge_gap")
+    events.main(["--repo", str(root), "--summary"])
+    out = capsys.readouterr().out
+    assert "needing a human decision: 2" in out
+    assert "oracle_failed" in out and "knowledge_gap" in out
+
+
+def test_root_prints_only_the_digest(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    root = _seed(tmp_path, "cycle_initialized")
+    assert events.main(["--repo", str(root), "--root"]) == 0
+    assert capsys.readouterr().out.strip().startswith("sha256:")
+
+
+def test_the_empty_root_is_a_real_digest_not_a_blank(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    # "no events yet" and "field absent" must not look the same to a receipt that binds a root.
+    root = _seed(tmp_path)
+    events.main(["--repo", str(root), "--root"])
+    assert capsys.readouterr().out.strip() == event_chain.EMPTY_CHAIN_ROOT
+
+
+# --- verification -------------------------------------------------------------
+
+
+def test_verify_passes_on_an_intact_chain(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    root = _seed(tmp_path, "cycle_initialized", "task_completed")
+    assert events.main(["--repo", str(root), "--verify"]) == 0
+    assert "PASS event-chain" in capsys.readouterr().out
+
+
+def test_verify_reports_every_defect_and_exits_nonzero(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    root = _seed(tmp_path, "cycle_initialized", "task_started", "task_completed")
+    log = root / ".agentloop" / "events.ndjson"
+    lines = log.read_text(encoding="utf-8").splitlines()
+    log.write_text("\n".join([lines[0], lines[2]]) + "\n", encoding="utf-8")  # the middle record removed
+
+    assert events.main(["--repo", str(root), "--verify"]) == 1
+    out = capsys.readouterr().out
+    assert "FAIL event-chain" in out
+    assert "seq_gap" in out or "broken_link" in out
+    assert "Restore it from git" in out  # the repair is restore, never rewrite-to-agree
+
+
+def test_a_damaged_chain_is_not_rendered_as_though_it_were_the_record(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A table drawn from a broken log looks exactly like one drawn from a good log."""
+    root = _seed(tmp_path, "cycle_initialized", "task_completed")
+    log = root / ".agentloop" / "events.ndjson"
+    log.write_text(log.read_text(encoding="utf-8").replace("demo-cycle", "other-cycle", 1), encoding="utf-8")
+
+    assert events.main(["--repo", str(root)]) == 1
+    assert capsys.readouterr().out.strip() == ""
+
+
+def test_an_unsupported_layout_stops_the_command(tmp_path: Path) -> None:
+    root = _seed(tmp_path, "cycle_initialized")
+    (root / ".agentloop" / "state.md").write_text("legacy\n", encoding="utf-8")
+    assert events.main(["--repo", str(root)]) == 1
+
+
+def test_attention_events_are_a_subset_of_the_vocabulary() -> None:
+    from agentloop import models
+
+    assert events.ATTENTION_EVENTS < models.EVENT_VALUES

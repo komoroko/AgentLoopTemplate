@@ -117,11 +117,11 @@ AgentLoop is itself a multi-agent orchestration, built on three axes:
 Prerequisites: WSL / Linux / macOS. Install the CLI so its hooks resolve on PATH:
 
 ```bash
-uv tool install git+https://github.com/komoroko/AgentLoopTemplate   # provides `agentloop`
+uv tool install 'git+https://github.com/komoroko/AgentLoopTemplate.git@v0.9.0'   # provides `agentloop`
 ```
 
 Mode A (`agentloop build`) additionally needs a **headless agent CLI** — `claude -p` by default;
-switch with `agentloop agent codex` (rewrites `build.headless.cmd` in `.agentloop/config.yaml`;
+switch with `agentloop agent codex` (sets the role's adapter in `.agentloop/config.yaml`;
 `gemini` and custom commands work too). Without one, use interactive mode B (see "Agent support").
 
 Seed a repository — the same command for a **greenfield** and a **brownfield** repo (brownfield is
@@ -150,8 +150,8 @@ run — see "Usage").
 
 `agentloop init` writes **only state**:
 
-- the SSOT trio (`state.md` / `config.yaml` / `tasks.yaml`, placeholder-filled) and the docs
-  scaffolds;
+- the four SSOT documents (`plan.yaml` / `state.yaml` / `review.yaml` / `config.yaml`,
+  placeholder-filled) and the docs scaffolds;
 - the materialized `.agentloop/prompts` + `.agentloop/schema` + `.agentloop/AGENTS.agentloop.md`,
   a pristine scaffold snapshot, and `.agentloop/agentloop.lock` (the tool version/source + a
   content hash per installed file);
@@ -210,10 +210,11 @@ Existing files are **never overwritten** (idempotent re-runs). Then, inside the 
    | implementation | `/build`  | autonomous loop (test-green condition) | ④ review/approve completion |
    | verification | `/verify` | run functional + non-functional tests | ⑤ decide on release |
 
-3. **Open a gate** with the approval operation `agentloop approve <gate> [--by <name>]` — it stamps
-   the date/approver on the gate line, advances the phase, and logs the `gate_approved` event.
-   The agent may run it after your explicit "approve" but must never pre-authorize it (the
-   permission prompt is your confirmation); editing a gate line by hand is denied by the guard.
+3. **Open a gate** with a **signed attestation**. `agentloop approve <gate>` checks readiness and
+   emits an attestation request; a key the external Trust Manifest names signs it, and
+   `agentloop attestation import <signed>` records the receipt — that is the only path to
+   `approved`. A localhost click is not authentication, there is no `--force`, and editing a gate
+   line by hand is denied by the guard.
 4. **Roll back** on an upstream defect: `/revise <phase>` resets gates from the target onward and
    marks task impact (`agentloop revise --impacted T-00x` sets seeds and their transitive
    dependents to `needs-revision`).
@@ -221,8 +222,9 @@ Existing files are **never overwritten** (idempotent re-runs). Then, inside the 
    - `agentloop next` — just the next recommended command (`--json` for integrations)
    - `/status` — the full picture in chat
    - `agentloop ui` — the dashboard: an Overview board; a **Review tab** where the gate under
-     decision is read and approved in one pane (deliverables with their self-assessment pinned,
-     gate ④'s diff and security-review freshness); a Tasks tab (DAG, layer progress); an Activity
+     decision is read and approved in one pane (the Challenge-first grounded review — the three
+     axes and Coverage Manifest — with gate ④'s diff and its review freshness); a Tasks tab (DAG,
+     layer progress); an Activity
      tab (live event feed, operations). The page can notify you when a gate or escalation starts
      waiting (opt-in bell; the tab title/favicon always show it). Actions stay a fixed whitelist —
      reads, fixed diagnostics (doctor, tests), and decision recording (approve / resolve / revise /
@@ -236,8 +238,8 @@ Existing files are **never overwritten** (idempotent re-runs). Then, inside the 
 
 > **No stalling during approval waits**: a notification fires on reaching a gate, and while
 > waiting the agent pulls forward only **outcome-independent** work (environment setup,
-> investigation, test-harness setup) — throwaway-by-default and logged in the "speculative work
-> log" of `state.md`. It does nothing that pre-empts the approval outcome, so the gate's strictness
+> investigation, test-harness setup) — throwaway-by-default and recorded as speculative-work
+> events. It does nothing that pre-empts the approval outcome, so the gate's strictness
 > is preserved.
 
 ### Running the implementation phase autonomously
@@ -246,7 +248,7 @@ Two modes with identical behavior (DoD, parallelism/merge). Canon: `.agentloop/p
 
 **A. Deterministic (recommended) — `agentloop build`.** The orchestrator decides which tasks, at
 what parallelism, in what merge order, and when to stop — deterministically from `config.yaml` +
-`tasks.yaml`, not by LLM discretion (`--dry-run` checks the control flow without calling the agent
+`plan.yaml` + `state.yaml`, not by LLM discretion (`--dry-run` checks the control flow without calling the agent
 CLI/git).
 
 **B. Interactive** — the lead re-enacts mode A in conversation (the only mode without a headless
@@ -276,29 +278,30 @@ Both share:
 Three layers:
 
 - **gitleaks** at pre-commit (false positives → `.gitleaksignore`)
-- a **security review**, mandatory at implementation completion — mode A auto-runs it headless and
-  binds the report to the reviewed HEAD in `.agentloop/security-review.md`
+- a **structured security review**, folded into the grounded review at gate ④ — `agentloop review
+  generate` runs it bound to the reviewed HEAD, and a blocking finding blocks the gate
 - a **security review + a dependency audit** in `/verify`
 
-An agent without `/security-review` does an equivalent pass, recorded the same way.
+The findings are structured (severity + code anchor + blocking flag), not prose, and a later commit
+leaves the review stale until it is regenerated.
 
 ### GitHub Issues integration (optional)
 
 **Off by default.** Enable with `github.enabled: true` (needs the `gh` CLI + a GitHub remote;
-auto-skips if absent). `agentloop issue-sync` **one-way-mirrors** `tasks.yaml` to Issues — one issue
+auto-skips if absent). `agentloop issue-sync` **one-way-mirrors** the plan's tasks to Issues — one issue
 per T-NNN, matched by a hidden `<!-- agentloop:T-NNN -->` marker, labeled `kind:*` / `status:*` /
-`phase:*` / `req:*` (auto-created). Edits on the Issues side are never read back (`tasks.yaml` stays
+`phase:*` / `req:*` (auto-created). Edits on the Issues side are never read back (`plan.yaml` + `state.yaml` stay
 SSOT). Writing issues is outward-facing, so the opt-in is the consent.
 
 ## Troubleshooting
 
 - **First, `agentloop doctor`** — a read-only diagnosis of the whole setup (PATH binaries,
-  config/state/tasks consistency, gate-chain invariant, hook registration, worktree leftovers, open
-  escalations, security-review↔HEAD binding, lock health, schema validation). Most situations below
+  plan/state/review consistency, gate-chain invariant, hook registration, worktree leftovers, open
+  escalations, review freshness, trust manifest, sandbox pinning, lock health, schema validation). Most situations below
   surface here.
 - **A task went `blocked`** — the quality gate failed within its retry budget. Read the escalation
   (`agentloop events --render`), fix the cause (or the ticket), set `status` back to `todo` in
-  `tasks.yaml`, close the event (`agentloop events --resolve <ID> --note "…"`), re-run `agentloop
+  `state.yaml`, close the event (`agentloop events --resolve <ID> --note "…"`), re-run `agentloop
   build`. If it's an upstream defect, `/revise <phase>` instead.
 - **Loop interrupted** (Ctrl-C, crash) — just re-run `agentloop build`; it resets `in_progress`
   tasks to `todo` and cleans leftover worktrees on startup.
@@ -319,12 +322,14 @@ SSOT). Writing issues is outward-facing, so the opt-in is the consent.
 
 | Path | Role |
 |------|------|
-| `.agentloop/state.md` | SSOT for phase, gates, logs |
-| `.agentloop/tasks.yaml` | machine-readable SSOT of the task graph (DAG) |
-| `.agentloop/events.ndjson` | orchestration events — the escalation log's machine truth (`agentloop events`; created on the first event) |
+| `.agentloop/plan.yaml` | the frozen Expected Model: claims, sources, evidence obligations, oracles, and the task DAG |
+| `.agentloop/state.yaml` | mutable state: phase, gate approvals, task status |
+| `.agentloop/review.yaml` | the machine review and the human review, digested separately |
+| `.agentloop/events.ndjson` | the hash-chained audit log — every state change's machine truth (`agentloop events`; created on the first event) |
 | `.agentloop/config.yaml` | deterministic-execution knobs + the single DoD (`quality_gate.steps`) |
-| `.agentloop/agentloop.lock` | the tool version/source, schema versions, and a content hash per installed file |
-| `.agentloop/schema/` | JSON Schemas for `config.yaml` / `tasks.yaml` (editor validation; `agentloop doctor`) — materialized |
+| `.agentloop/attestations/` · `.agentloop/oracles/` | imported signed attestations · frozen acceptance-oracle bundles |
+| `.agentloop/agentloop.lock` | the document format, tool version/source, and a content hash per installed file |
+| `.agentloop/schema/` | JSON Schemas for the SSOT documents (editor validation; `agentloop doctor`) — materialized |
 | `.agentloop/prompts/` | the shared phase procedures, role definitions, and phase-scoped rules modules (`rules/`) every agent reads — materialized |
 | `.agentloop/AGENTS.agentloop.md` | the operating-rules body, imported by the agent surfaces — materialized |
 | `AGENTS.md` / `CLAUDE.md` | the agent-neutral operating rules / the Claude Code capability mapping (Claude Code reads CLAUDE.md, not AGENTS.md; its `@AGENTS.md` import loads the rules exactly once. `agentloop install claude` writes the mapping block and the `.claude/` wrappers into a product repo) |

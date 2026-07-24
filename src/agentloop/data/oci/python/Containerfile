@@ -1,0 +1,35 @@
+# The oracle / quality-gate sandbox: where repository-derived code and tests are allowed to run.
+#
+# Built locally with `agentloop oci build --profile oracle`, which pins the resulting image
+# digest into .agentloop/config.yaml. The digest — never a tag — is the binding fact: a tag
+# would let the environment a review ran in change after that review was signed.
+#
+# What this image deliberately does NOT have: a shell-accessible host mount, network egress
+# (the runner sets `--network none`), or any credential. An acceptance oracle that needs the
+# internet is not hermetic, and a test that can read your cloud token is not a test.
+
+FROM docker.io/library/python:3.13-slim-bookworm
+
+# A non-root user, and no way to become root: the runner also passes --security-opt
+# no-new-privileges, but defence in depth is cheap here.
+RUN groupadd --gid 1000 oracle \
+ && useradd --uid 1000 --gid 1000 --create-home --shell /usr/sbin/nologin oracle
+
+# uv, so an oracle bundle can install its own pinned dependency closure offline from a lock.
+COPY --from=ghcr.io/astral-sh/uv:0.9.7 /uv /usr/local/bin/uv
+
+# The project's own conftest.py, pytest plugins, and PYTHONPATH must never reach an oracle:
+# an implementer who can edit a fixture the oracle loads can make any oracle pass (E2E-12).
+ENV PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    UV_NO_CACHE=1 \
+    HOME=/home/oracle
+
+RUN python -m pip install --no-cache-dir --root-user-action=ignore "pytest==9.0.3"
+
+USER 1000:1000
+WORKDIR /oracle
+ENTRYPOINT []
+CMD ["python", "-c", "print('agentloop oracle sandbox')"]

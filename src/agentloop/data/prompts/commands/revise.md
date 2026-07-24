@@ -31,4 +31,4 @@ Symmetric with the human opening a gate, **rewinding approval is also the human'
 ## Principles
 - **Rewinding approval is the human's privilege.** `/revise` is run only under the human's explicit judgment.
 - **Do not discard and rebuild tasks.** Reconcile existing tasks against the revised upstream, and pick up the impact exhaustively with deterministic computation (`--impacted`).
-- The truth is `.agentloop/state.md` (gates, roll-back log) and `.agentloop/tasks.yaml` (tasks).
+- The truth is `.agentloop/state.yaml` (gates, task status), `.agentloop/plan.yaml` (the tasks), and `.agentloop/events.ndjson` (the roll-back log). `/revise` also invalidates the attestations and the review built on the reset gates.

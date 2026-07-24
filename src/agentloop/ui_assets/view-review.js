@@ -2,11 +2,12 @@
 // Deliverable HTML arrives pre-rendered from the server (mdlite, escape-first); the diff arrives as
 // raw text and is escaped here line by line. Nothing in this module puts unescaped input in the DOM.
 
-import { READ_ONLY, awaitingGate, esc, post, state } from "/assets/api.js";
+import { READ_ONLY, TOKEN, awaitingGate, esc, post, state, toast } from "/assets/api.js";
 
 const DIFF_ID = "__diff__";  // the synthetic "change set" entry on the build gate's list
 let current = null;    // selected gate name
 let review = null;     // last /api/review payload for `current`
+let session = null;    // last /api/review/session payload (the build gate's Challenge-first state)
 let selected = null;   // selected deliverable id
 let tabVisible = false;
 let fetchSeq = 0;          // newest request wins; older responses are dropped on arrival
@@ -44,7 +45,38 @@ async function fetchReview() {
     if (!items.some(x => x.id === selected)) selected = (items[0] || {}).id || null;
     if (selected) readSet().add(selected);
   }
+  // Gate ④ is Challenge-first: the machine review decides whether the human may even see
+  // Expected/Actual yet, and whether the review can be frozen. Fetch it alongside the deliverables.
+  session = null;
+  if (gate === "build" && !review.error) await fetchSession(seq);
+  if (seq !== fetchSeq) return;
   paint();
+}
+
+async function fetchSession(seq) {
+  try {
+    const res = await fetch("/api/review/session");
+    const payload = await res.json();
+    if (seq === fetchSeq) session = payload;
+  } catch (e) { if (seq === fetchSeq) session = { error: "request failed: " + e }; }
+}
+
+// Answer a challenge, then refetch the session so the panel (and the priming lock) update in place.
+// A 409 means the machine review moved underneath the reviewer — reload rather than merge blind.
+async function answerChallenge(id, choice) {
+  if (!session || !session.machine_digest) return;
+  try {
+    const res = await fetch("/api/review/challenge", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-AgentLoop-Token": TOKEN },
+      body: JSON.stringify({ challenge_id: id, choice: choice, confidence: "medium", machine_digest: session.machine_digest }),
+    });
+    if (res.status === 409) { toast("the machine review changed — reloading", "err"); fetchReview(); return; }
+    const data = await res.json();
+    if (data.error) { toast(data.error, "err"); return; }
+    session = data.session || session;
+    paint();
+  } catch (e) { toast("request failed: " + e, "err"); }
 }
 
 function selectGate(name) {
@@ -108,10 +140,10 @@ function diffHtml(diff, meta) {
   let badge = "";
   if (meta) {
     badge = meta.fresh
-      ? '<div class="okline">✓ security review is bound to this HEAD (' + esc((meta.head || "").slice(0, 12)) + ")</div>"
-      : '<div class="warn">security review is missing or stale (reviewed: ' +
+      ? '<div class="okline">✓ the machine review is bound to this HEAD (' + esc((meta.head || "").slice(0, 12)) + ")</div>"
+      : '<div class="warn">the machine review is missing or stale (reviewed: ' +
         esc(meta.reviewed_head ? meta.reviewed_head.slice(0, 12) : "none") + ", HEAD: " +
-        esc((meta.head || "").slice(0, 12)) + ") — run /security-review before approving</div>";
+        esc((meta.head || "").slice(0, 12)) + ") — regenerate it before approving</div>";
   }
   if (diff.log)
     return badge + '<div class="empty">' + esc(diff.note || "") + '</div><pre class="patch">' +
@@ -132,8 +164,35 @@ function diffHtml(diff, meta) {
     '<div class="subhead" style="margin-top:.6rem">PATCH</div><pre class="patch">' + patch + "</pre>";
 }
 
+// The Challenge-first panel for gate ④: the unprimed challenge comes before anything the reviewer
+// could read the answer off, and the budget / expertise / blocker verdicts sit above the diff so a
+// scope split or an unfamiliar domain is seen before the approve button, not after (plan §14).
+function challengeHtml() {
+  if (!session || session.error || !session.generated) return "";
+  let html = "";
+  const ch = session.next_challenge;
+  if (ch) {
+    const choices = (ch.choices || []).map(c =>
+      '<button class="gatebtn" data-choice="' + esc(c.id) + '" data-ch="' + esc(ch.id) + '">' +
+      esc(c.id) + ". " + esc(c.text) + "</button>").join("");
+    html += '<div class="sa"><div class="subhead">CHALLENGE ' + esc(ch.id) +
+      ' <span class="conf ' + esc(ch.risk) + '">' + esc(ch.risk) + '</span></div>' +
+      '<p>' + esc(ch.scenario) + "</p>" +
+      '<p class="empty">Answer before you see Expected/Actual — this is a forcing function, not a quiz.</p>' +
+      '<div class="gatebar">' + choices + "</div></div>";
+  }
+  const list = (title, items) => items.length
+    ? '<div class="warn"><b>' + esc(title) + "</b><ul>" + items.map(x => "<li>" + esc(x) + "</li>").join("") + "</ul></div>"
+    : "";
+  html += list("Scope split required (budget exceeded)", session.scope_split_required || []);
+  html += list("Domains needing an expert / experiment / smaller scope",
+    (session.expertise_gaps || []).map(g => g.domain + " (" + g.level + ")"));
+  if (!ch) html += list("Blocking before this review can be frozen", session.completion_blockers || []);
+  return html;
+}
+
 function bodyHtml() {
-  if (selected === DIFF_ID) return diffHtml(review.diff, review.review_meta);
+  if (selected === DIFF_ID) return challengeHtml() + diffHtml(review.diff, review.review_meta);
   const e = mainEntries().concat(review.context || []).find(x => x.id === selected);
   if (!e) return '<div class="empty">Select a deliverable.</div>';
   if (e.exists === false)
@@ -154,6 +213,15 @@ function footerHtml() {
   if (review.gate === "release" && review.open_escalations)
     warn = '<span class="warn" style="margin-right:.6rem">' + review.open_escalations +
       " open escalation(s) — resolve before the release decision</span>";
+  // On gate ④ the button is a signature request, and it is disabled until the human review can be
+  // frozen: an unanswered challenge, an expertise gap, a blown budget, or any machine blocker.
+  if (review.gate === "build" && session && !session.error) {
+    if (!session.can_freeze) {
+      const n = (session.completion_blockers || []).length;
+      return warn + '<span class="warn" style="margin-right:.6rem">human review not ready — ' + n +
+        " blocker(s) above</span><button class=\"primary\" disabled>Approve gate " + review.index + "</button>";
+    }
+  }
   return warn + '<button class="primary" onclick="revApprove()">Approve gate ' + review.index +
     " (" + esc(current) + ")</button>";
 }
@@ -211,6 +279,13 @@ document.addEventListener("agentloop:view", e => {
   if (tabVisible) { if (!current) current = defaultGate(); fetchReview(); }
 });
 document.addEventListener("agentloop:refresh", () => { if (tabVisible) fetchReview(); });
+
+// Challenge choices carry their ids as escaped data attributes, read back by this delegated
+// listener — never interpolated into a generated onclick, the same rule as task ids in api.js.
+document.addEventListener("click", e => {
+  const btn = e.target.closest && e.target.closest("[data-choice]");
+  if (btn) answerChallenge(btn.getAttribute("data-ch"), btn.getAttribute("data-choice"));
+});
 
 window.revGate = selectGate;
 window.revSelect = selectDeliverable;

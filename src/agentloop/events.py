@@ -1,355 +1,127 @@
-"""Structured orchestration events (`.agentloop/events.ndjson`) — the machine-readable escalation log.
+"""`agentloop events` — read and query the hash-chained audit log.
 
-Why a structured log: the escalation record used to be split between a hand-edited markdown
-table in state.md and free-text appended to build-loop.log — neither aggregatable ("which task
-blocked how often, at which gate step, and which commit fixed it") and the table was fragile to
-machine-update. Following the same pattern as tasks.yaml → `dag.py --render`, the NDJSON file is
-the truth and state.md embeds only a **generated view** (between the ESCALATION-VIEW markers).
+The log itself lives in :mod:`agentloop.event_chain` and is written only inside a
+:class:`agentloop.store.Transaction`. This module is the human-facing *view* over it, and its
+most important property is what it no longer offers.
 
-One JSON object per line: `{id, ts, event, task, step, detail, commit, ref}` (empty fields are
-omitted). `id` is a monotonically increasing integer; a `resolve` event closes the escalation
-whose id its `ref` names. Escalation kinds (`blocked` / `merge_conflict` / `integration_red` /
-`no_runnable` / `gate_violation`) stay **open** until resolved — /verify closes them before gate ⑤.
+0.8.x let a human append and resolve escalations by hand (``events --add blocked``,
+``events --resolve 3``) and re-render a generated block inside `state.md`. Both are gone.
+An audit log an operator can hand-write is not evidence of anything, and "resolve" implied a
+record could be closed — where 0.9.0 has dispositions in `review.yaml`, which are signed.
 
-Writers: build_loop.py appends automatically; a human or the interactive-mode agent appends via
-`agentloop events --add blocked --task T-003 --detail "..."` and resolves via
-`agentloop events --resolve 3 --note "fixed by abc123"`. Reads are tolerant: a corrupt line is
-skipped, never a crash (the log must not be able to take the orchestrator down).
-
-Usage:
-  agentloop events --render
-  agentloop events --add blocked --task T-003 --detail "..."
-  agentloop events --resolve 3 --note "fixed by abc123"
+What remains is read-only: render the chain, aggregate it, and verify it. Verification is the
+verb that matters — `--verify` is how a human checks that the record they are about to sign
+for has not been edited, reordered, truncated, or regenerated.
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 import logging
-import threading
-from dataclasses import asdict, dataclass
-from datetime import datetime
-from pathlib import Path
 
-from agentloop import common
+from agentloop import common, event_chain, models
 from agentloop import repo as repo_mod
+from agentloop import store as store_mod
 
 logger = logging.getLogger(__name__)
 
-EVENTS_PATH = ".agentloop/events.ndjson"
-STATE_PATH = common.STATE_PATH
-EVENTS_MAX_BYTES = 256 * 1024  # rotate past this (context hygiene; open escalations are carried over)
-
-VIEW_BEGIN = "<!-- ESCALATION-VIEW:BEGIN -->"
-VIEW_END = "<!-- ESCALATION-VIEW:END -->"
-
-# Events that need a human decision; open until a `resolve` event's ref names their id.
-ESCALATION_EVENTS = frozenset({"blocked", "merge_conflict", "integration_red", "no_runnable", "gate_violation"})
-# Display order of the full vocabulary (validated on append so a typo cannot create an
-# unaggregatable kind; the set is this tuple, kept in one place).
-# `gate_approved` is the machine record of a human gate approval (written by approve.py; the
-# commit-stage gate guard cross-checks a state.md flip against it). `branch_salvaged` records
-# a restart preserving a previous run's unmerged leaf branch under a salvage name.
-EVENT_ORDER = (
-    "blocked",
-    "merge_conflict",
-    "integration_red",
-    "no_runnable",
-    "gate_violation",
-    "step_fail",
-    "task_done",
-    "gate_approved",
-    "branch_salvaged",
-    "security_review",
-    "resolve",
+#: Events that mean a human has to decide something. They are not "closed" here — a
+#: disposition is recorded in review.yaml and signed, not ticked off in a log.
+ATTENTION_EVENTS = frozenset(
+    {
+        "evidence_obligation_failed",
+        "knowledge_gap",
+        "task_failed",
+        "oracle_failed",
+        "oracle_negative_control_failed",
+        "actual_extraction_failed",
+        "review_failed",
+        "source_unavailable",
+        "expert_requested",
+        "plan_invalidated",
+    }
 )
-EVENT_VALUES = frozenset(EVENT_ORDER)
-
-# Parallel leaves emit events from worker threads of one process; serialize the read-max-id +
-# append pair so ids stay unique. Cross-process writers exist (a human-run `agentloop events
-# --add/--resolve` during a live loop is a separate process this lock cannot see), which is
-# exactly why next_id is re-read from the file on every append instead of cached in memory:
-# the re-read keeps the duplicate-id window to the read+write instant, while an in-memory
-# counter would widen it to the whole run. Rotation caps the file at EVENTS_MAX_BYTES, so the
-# per-append reparse stays microseconds — do not "optimize" it away.
-_LOCK = threading.Lock()
 
 
-@dataclass(frozen=True)
-class Event:
-    """One structured event. `ref` links a `resolve` to the escalation id it closes (0 = none).
-
-    `gate` names the lifecycle gate a `gate_approved` event records — a first-class field
-    (not free text in `detail`) because gate_guard's commit-stage check matches on it.
-    """
-
-    id: int
-    ts: str  # ISO "YYYY-MM-DDTHH:MM:SS"
-    event: str
-    task: str = ""
-    step: str = ""
-    gate: str = ""
-    detail: str = ""
-    commit: str = ""
-    ref: int = 0
-
-    @property
-    def date(self) -> str:
-        return self.ts[:10]
-
-
-def load_events(path: str = EVENTS_PATH) -> list[Event]:
-    """Read the NDJSON log. Tolerant: unreadable file = empty, a corrupt line is skipped."""
-    try:
-        text = Path(path).read_text(encoding="utf-8")
-    except OSError:
-        return []
-    result: list[Event] = []
-    for line in text.splitlines():
-        if not line.strip():
-            continue
-        try:
-            raw = json.loads(line)
-            if not isinstance(raw, dict):
-                continue
-            result.append(
-                Event(
-                    id=int(raw["id"]),
-                    ts=str(raw.get("ts", "")),
-                    event=str(raw["event"]),
-                    task=str(raw.get("task", "")),
-                    step=str(raw.get("step", "")),
-                    gate=str(raw.get("gate", "")),
-                    detail=str(raw.get("detail", "")),
-                    commit=str(raw.get("commit", "")),
-                    ref=int(raw.get("ref", 0)),
-                )
-            )
-        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
-            continue  # a corrupt line must not take the orchestrator down
-    return result
-
-
-def _dump(event: Event) -> str:
-    """One NDJSON line; empty/zero optional fields are omitted (lean, diff-friendly)."""
-    raw = {k: v for k, v in asdict(event).items() if v or k in ("id", "ts", "event")}
-    return json.dumps(raw, ensure_ascii=False)
-
-
-def append_event(
-    event: str,
-    *,
-    task: str = "",
-    step: str = "",
-    gate: str = "",
-    detail: str = "",
-    commit: str = "",
-    ref: int = 0,
-    path: str = EVENTS_PATH,
-) -> Event:
-    """Append one event with the next id and return it. Unknown kinds are rejected."""
-    if event not in EVENT_VALUES:
-        raise ValueError(f"unknown event {event!r} (one of {', '.join(EVENT_ORDER)})")
-    with _LOCK:
-        existing = load_events(path)
-        next_id = max((e.id for e in existing), default=0) + 1
-        entry = Event(
-            id=next_id,
-            ts=datetime.now().isoformat(timespec="seconds"),
-            event=event,
-            task=task,
-            step=step,
-            gate=gate,
-            detail=detail,
-            commit=commit,
-            ref=ref,
-        )
-        p = Path(path)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        with p.open("a", encoding="utf-8") as fh:
-            fh.write(_dump(entry) + "\n")
-    return entry
-
-
-def open_escalations(events: list[Event]) -> list[Event]:
-    """Escalation events not yet closed by a `resolve` whose ref names their id."""
-    resolved = {e.ref for e in events if e.event == "resolve"}
-    return [e for e in events if e.event in ESCALATION_EVENTS and e.id not in resolved]
-
-
-def _cell(text: str, limit: int = 96) -> str:
-    """First line of `text`, pipe-escaped and truncated, for a markdown table cell."""
-    line = text.strip().splitlines()[0] if text.strip() else ""
-    line = line.replace("|", "\\|")
-    return line[: limit - 1] + "…" if len(line) > limit else line
-
-
-def render_view(events: list[Event]) -> str:
-    """The human-facing escalation view (counts + open-escalation table), deterministically.
-
-    state.md embeds it between the ESCALATION-VIEW markers; --render prints it as-is.
-    """
-    counts = {kind: 0 for kind in EVENT_ORDER}
+def render(events: list[models.Event]) -> str:
+    """The chain as a table, newest last (reading order matches append order)."""
+    if not events:
+        return "no events yet"
+    lines = ["| seq | when | event | actor | subjects |", "|-----|------|-------|-------|----------|"]
     for e in events:
-        if e.event in counts:
-            counts[e.event] += 1
-    lines = ["Events: " + " / ".join(f"{kind}={counts[kind]}" for kind in EVENT_ORDER), ""]
-    lines.append('### Open escalations (resolve with `agentloop events --resolve <ID> --note "..."`)')
-    opened = open_escalations(events)
-    if opened:
-        lines.append("| ID | Date | Event | Task | Step | Detail |")
-        lines.append("|----|------|-------|------|------|--------|")
-        for e in opened:
-            lines.append(
-                f"| {e.id} | {e.date} | {e.event} | {e.task or '-'} | {e.step or '-'} | {_cell(e.detail) or '-'} |"
-            )
-    else:
-        lines.append("- (none)")
+        subjects = ", ".join(e.subject_ids) or "-"
+        lines.append(f"| {e.seq} | {e.ts[:19]} | {e.event} | {e.actor or '-'} | {subjects} |")
     return "\n".join(lines)
 
 
-def _tally(pairs: list[str]) -> str:
-    """Deterministic "key×count" listing, most frequent first (ties by key)."""
-    counts: dict[str, int] = {}
-    for key in pairs:
-        counts[key] = counts.get(key, 0) + 1
-    ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
-    return ", ".join(f"{k}×{n}" for k, n in ranked) if ranked else "(none)"
-
-
-def render_summary(events: list[Event]) -> str:
-    """Aggregates over the log — the "which task / which step / how often" questions."""
-    escalations = [e for e in events if e.event in ESCALATION_EVENTS]
-    opened = open_escalations(events)
-    lines = ["### Aggregates"]
-    lines.append(f"- escalations: {len(escalations)} total, {len(opened)} open")
-    lines.append("- escalations by task: " + _tally([e.task or "(no task)" for e in escalations]))
-    fails = [e.step or "(no step)" for e in events if e.event == "step_fail"]
-    lines.append("- step failures by step: " + _tally(fails))
-    lines.append(f"- tasks done: {sum(1 for e in events if e.event == 'task_done')}")
+def render_summary(events: list[models.Event]) -> str:
+    """Counts per kind plus the events still awaiting a human decision."""
+    counts = event_chain.summarize(events)
+    lines = ["### Aggregates", f"- events: {len(events)}", f"- chain root: {event_chain.chain_root(events)}"]
+    lines.append("- by kind: " + (", ".join(f"{k}×{n}" for k, n in counts.items()) or "(none)"))
+    attention = [e for e in events if e.event in ATTENTION_EVENTS]
+    lines.append(f"- needing a human decision: {len(attention)}")
+    for e in attention:
+        subjects = ", ".join(e.subject_ids) or "-"
+        lines.append(f"  - #{e.seq} {e.event} ({subjects})")
     return "\n".join(lines)
 
 
-def log_escalation(
-    event: str, message: str, *, task: str = "", events_path: str = EVENTS_PATH, state_path: str = STATE_PATH
-) -> None:
-    """Record an escalation as a structured event (the machine-readable truth, see above),
-    refresh state.md's generated view, and echo it to stderr for the console."""
-    append_event(event, task=task, detail=message, path=events_path)
-    refresh_state_view(events_path, state_path)
-    logger.warning(f"[escalation] {message}")
-
-
-def refresh_state_view(path: str = EVENTS_PATH, state_path: str = STATE_PATH) -> bool:
-    """Re-render state.md's generated escalation block (between the ESCALATION-VIEW markers).
-
-    Same contract as build_loop.update_state_view: the NDJSON stays the truth, this only keeps the
-    human-facing board fresh. No markers (a hand-restructured state.md) or unreadable file = no-op.
-    """
-    try:
-        text = Path(state_path).read_text(encoding="utf-8")
-    except OSError:
-        return False
-    begin = text.find(VIEW_BEGIN)
-    end = text.find(VIEW_END)
-    if begin == -1 or end == -1 or end < begin:
-        return False
-    new = text[: begin + len(VIEW_BEGIN)] + "\n" + render_view(load_events(path)) + "\n" + text[end:]
-    Path(state_path).write_text(new, encoding="utf-8")
-    return True
-
-
-def rotate_if_large(path: str = EVENTS_PATH, max_bytes: int = EVENTS_MAX_BYTES) -> bool:
-    """Rotate an oversized log to `<path>.1`, carrying **open escalations** into the fresh file.
-
-    Left unbounded the append-only log bloats the context both humans and agents re-read (Context
-    Rot). Open escalations keep their original ids in the fresh file, so pending `--resolve <id>`
-    references stay valid and id monotonicity is preserved. Best-effort: any OSError = no rotation.
-    """
-    p = Path(path)
-    try:
-        if p.stat().st_size <= max_bytes:
-            return False
-        events = load_events(path)
-        carried = open_escalations(events)
-        p.replace(Path(f"{path}.1"))
-        if carried:
-            with p.open("w", encoding="utf-8") as fh:
-                for e in carried:
-                    fh.write(_dump(e) + "\n")
-    except OSError:
-        return False
-    return True
+def render_verification(path: str, defects: list[event_chain.ChainDefect]) -> str:
+    if not defects:
+        return "PASS event-chain: intact"
+    body = "\n".join(f"  - {d}" for d in defects)
+    return (
+        f"FAIL event-chain: {len(defects)} defect(s) in {path}\n{body}\n"
+        "The log is append-only evidence. Restore it from git — never rewrite it to agree "
+        "with the current state."
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="structured orchestration events (the escalation log's truth)")
+    parser = argparse.ArgumentParser(description="read the hash-chained audit log (read-only)")
     group = parser.add_mutually_exclusive_group()
-    group.add_argument("--render", action="store_true", help="print the escalation view (default)")
-    group.add_argument("--summary", action="store_true", help="print aggregates (per task / per step counts)")
-    group.add_argument("--add", metavar="EVENT", help=f"append an event by hand (one of {', '.join(EVENT_ORDER)})")
-    group.add_argument("--resolve", type=int, metavar="ID", help="close an open escalation (records a resolve event)")
-    group.add_argument("--refresh-state", action="store_true", help="re-render state.md's ESCALATION-VIEW block only")
-    parser.add_argument("--task", default="", help="task id for --add (e.g. T-003)")
-    parser.add_argument("--step", default="", help="quality-gate step for --add (e.g. test)")
-    parser.add_argument("--detail", default="", help="free-text detail for --add")
-    parser.add_argument("--commit", default="", help="related commit hash for --add")
-    parser.add_argument("--note", default="", help="how it was resolved, for --resolve")
-    parser.add_argument("--path", default="", help=f"events file (default: {EVENTS_PATH} under the discovered root)")
-    parser.add_argument("--state", default="", help=f"state.md carrying the view (default: discovered {STATE_PATH})")
+    group.add_argument("--render", action="store_true", help="print the chain as a table (default)")
+    group.add_argument("--summary", action="store_true", help="print aggregates and open decisions")
+    group.add_argument("--verify", action="store_true", help="verify the chain and report every defect")
+    group.add_argument("--root", action="store_true", help="print the chain root digest only")
     parser.add_argument("--repo", default=None, help="repository root (default: discovered from cwd)")
     args = parser.parse_args(argv)
     common.configure_logging()
-    if not args.path or not args.state:
-        try:
-            repo = repo_mod.get(args.repo)
-        except repo_mod.RepoNotFoundError as exc:
-            logger.error(str(exc))
-            return 1
-        args.path = args.path or str(repo.events)
-        args.state = args.state or str(repo.state)
 
-    if args.add is not None:
-        try:
-            entry = append_event(
-                args.add, task=args.task, step=args.step, detail=args.detail, commit=args.commit, path=args.path
-            )
-        except ValueError as exc:
-            logger.error(f"error: {exc} — valid events: {', '.join(EVENT_ORDER)}")
-            return 2
-        print(f"added #{entry.id} {entry.event}" + (f" ({entry.task})" if entry.task else ""))
-        refresh_state_view(args.path, args.state)
+    try:
+        repo = repo_mod.get(args.repo)
+        repo.require_supported_layout()
+    except (repo_mod.RepoNotFoundError, repo_mod.UnsupportedLayoutError) as exc:
+        logger.error(str(exc))
+        return 1
+
+    path = str(repo.events)
+    events, defects = event_chain.scan(path)
+
+    if args.verify:
+        print(render_verification(path, defects))
+        return 1 if defects else 0
+
+    if defects:
+        # Every other view refuses to display a damaged chain as though it were the record:
+        # a table rendered from a broken log reads exactly like a table rendered from a good one.
+        logger.error(render_verification(path, defects))
+        return 1
+
+    if args.root:
+        print(event_chain.chain_root(events))
         return 0
-
-    if args.resolve is not None:
-        events = load_events(args.path)
-        target = next((e for e in events if e.id == args.resolve), None)
-        if target is None or target.event not in ESCALATION_EVENTS:
-            logger.error(
-                f"error: no escalation event with id {args.resolve} — list the open ones with"
-                " `agentloop events --render`"
-            )
-            return 2
-        if target.id not in {e.id for e in open_escalations(events)}:
-            logger.error(f"error: escalation #{args.resolve} is already resolved")
-            return 2
-        append_event("resolve", task=target.task, detail=args.note, commit=args.commit, ref=target.id, path=args.path)
-        print(f"resolved #{target.id} {target.event}" + (f" ({target.task})" if target.task else ""))
-        refresh_state_view(args.path, args.state)
-        return 0
-
-    if args.refresh_state:
-        ok = refresh_state_view(args.path, args.state)
-        print("state view refreshed" if ok else "no ESCALATION-VIEW markers in state.md (nothing refreshed)")
-        return 0
-
-    events = load_events(args.path)
-    print(render_view(events))
     if args.summary:
-        print()
         print(render_summary(events))
+        return 0
+    print(render(events))
     return 0
+
+
+def store_for(repo: repo_mod.Repo) -> store_mod.Store:
+    """The store for `repo` — the only writer of this log (kept here so callers import one name)."""
+    return store_mod.Store(repo)
 
 
 if __name__ == "__main__":

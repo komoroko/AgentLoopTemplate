@@ -1,509 +1,318 @@
-"""Verify gate_guard.py's gate decision."""
+"""Tests for gate_guard.py — the mechanism layer's four rules.
+
+The most important assertions here are the *negative* ones: that there is no configuration
+value, no template mode, and no unreadable state that turns a denial into an allow. A guard
+with an off switch an agent can reach is a convention, and 0.8.x had exactly that
+(`gates.enforce_hook: false`).
+"""
 
 from __future__ import annotations
 
-import io
 import json
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
-from agentloop import gate_guard
-from tests._support import make_state, seed_repo
-
-_CONFIG_ON = "build:\n  max_parallel: 3\ngates:\n  enforce_hook: true\n  template_mode: false\n"
-_CONFIG_OFF = "build:\n  max_parallel: 3\ngates:\n  enforce_hook: false\n  template_mode: false\n"
-_CONFIG_TEMPLATE = "build:\n  max_parallel: 3\ngates:\n  enforce_hook: true\n  template_mode: true\n"
+from agentloop import gate_guard, models
+from agentloop import repo as repo_mod
+from tests._support import make_config, make_state, seed_repo
 
 
-def _setup(
-    root: Path,
-    *,
-    requirements: str = "pending",
-    design: str = "pending",
-    tasks: str = "pending",
-    build: str = "pending",
-    config: str = _CONFIG_ON,
-) -> None:
-    gates = {"requirements": requirements, "design": design, "tasks": tasks, "build": build, "release": "pending"}
-    seed_repo(root, state=make_state(gates=gates), config=config)
+def decide(root: Path, rel: str) -> tuple[bool, str]:
+    return gate_guard.evaluate(str(root / rel), repo_mod.Repo(root))
+
+
+def hook(root: Path, rel: str, **tool_input: object) -> str:
+    """Drive main() through the hook protocol; returns the deny reason ("" = allowed)."""
+    import io
+    import sys
+
+    payload = {"cwd": str(root), "tool_input": {"file_path": str(root / rel), **tool_input}}
+    stdin, stdout = sys.stdin, sys.stdout
+    sys.stdin, sys.stdout = io.StringIO(json.dumps(payload)), io.StringIO()
+    try:
+        assert gate_guard.main([]) == 0  # the decision travels as JSON; the exit code is always 0
+        raw = sys.stdout.getvalue().strip()
+    finally:
+        sys.stdin, sys.stdout = stdin, stdout
+    return json.loads(raw)["hookSpecificOutput"]["permissionDecisionReason"] if raw else ""
+
+
+# --- rule 1: machine-written artifacts ----------------------------------------
 
 
 @pytest.mark.parametrize(
-    ("path", "expected"),
+    "rel",
+    [
+        ".agentloop/state.yaml",
+        ".agentloop/review.yaml",
+        ".agentloop/events.ndjson",
+        ".agentloop/attestations/ATT-BUILD-001.json",
+        ".agentloop/agentloop.lock",
+    ],
+)
+def test_machine_written_artifacts_are_never_hand_edited(tmp_path: Path, rel: str) -> None:
+    seed_repo(tmp_path)
+    allowed, reason = decide(tmp_path, rel)
+    assert not allowed
+    assert "Central Store transaction" in reason
+
+
+def test_rule_one_is_not_relaxed_by_template_mode(tmp_path: Path) -> None:
+    seed_repo(tmp_path, config=make_config(template_mode=True))
+    allowed, _ = decide(tmp_path, ".agentloop/state.yaml")
+    assert not allowed
+
+
+def test_rule_one_holds_even_with_every_gate_approved(tmp_path: Path) -> None:
+    seed_repo(tmp_path, state=make_state(gates=dict.fromkeys(models.GATE_ORDER, "approved"), phase="done"))
+    allowed, _ = decide(tmp_path, ".agentloop/events.ndjson")
+    assert not allowed
+
+
+# --- rule 2: a frozen plan is frozen ------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "rel",
+    [
+        ".agentloop/plan.yaml",
+        ".agentloop/config.yaml",
+        ".agentloop/oracles/O-001/oracle.yaml",
+        ".agentloop/prompts/commands/build.md",
+        ".agentloop/schema/plan.schema.json",
+    ],
+)
+def test_a_frozen_plan_pins_its_artifacts(tmp_path: Path, rel: str) -> None:
+    seed_repo(tmp_path, state=make_state(plan_status="frozen"))
+    allowed, reason = decide(tmp_path, rel)
+    assert not allowed
+    assert "agentloop revise --to tasks" in reason
+
+
+def test_a_draft_plan_is_editable(tmp_path: Path) -> None:
+    seed_repo(tmp_path, state=make_state(plan_status="draft"))
+    assert decide(tmp_path, ".agentloop/plan.yaml")[0]
+    assert decide(tmp_path, ".agentloop/config.yaml")[0]
+
+
+def test_an_unreadable_state_fails_closed_on_the_frozen_set(tmp_path: Path) -> None:
+    seed_repo(tmp_path)
+    (tmp_path / ".agentloop" / "state.yaml").write_text("a: [1, 2\n", encoding="utf-8")
+    allowed, reason = decide(tmp_path, ".agentloop/plan.yaml")
+    assert not allowed
+    assert "fails closed" in reason
+
+
+# --- rule 3: a deliverable waits for its prerequisite gate --------------------
+
+
+@pytest.mark.parametrize(
+    ("rel", "gate"),
     [
         ("docs/20-design.md", "requirements"),
         ("docs/decisions/ADR-001.md", "requirements"),
         ("docs/tasks/T-001.md", "design"),
-        ("src/pkg/main.py", "tasks"),
-        ("lib/util.py", "tasks"),
-        ("app/views.py", "tasks"),
-        ("backend/app/main.py", "tasks"),
-        ("frontend/src/index.ts", "tasks"),
-        ("scripts/my_product_tool.py", "tasks"),  # product script
         ("docs/test/test-plan.md", "build"),
-        # not guarded
-        ("docs/10-requirements.md", None),
-        ("README.md", None),
-        ("tests/test_main.py", None),  # deliberate: speculative fixtures may flow
-        ("app.py", None),  # prefix rules match directories, not lookalike files
+        ("src/app.py", "tasks"),
+        ("frontend/index.ts", "tasks"),
     ],
 )
-def test_required_gate_mapping(chdir_tmp: Path, path: str, expected: str | None) -> None:
-    assert gate_guard.required_gate(path) == expected
+def test_a_guarded_path_names_its_prerequisite(tmp_path: Path, rel: str, gate: str) -> None:
+    seed_repo(tmp_path, state=make_state(gates=dict.fromkeys(models.GATE_ORDER, "pending")))
+    allowed, reason = decide(tmp_path, rel)
+    assert not allowed
+    assert f"gate '{gate}' is not approved" in reason
 
 
-def test_blocks_impl_when_tasks_pending(chdir_tmp: Path) -> None:
-    _setup(chdir_tmp, tasks="pending")
-    allowed, reason = gate_guard.evaluate("backend/app/main.py")
-    assert allowed is False
-    assert "tasks" in reason
+def test_an_approved_gate_opens_its_paths(tmp_path: Path) -> None:
+    seed_repo(tmp_path)  # approved through tasks
+    assert decide(tmp_path, "src/app.py")[0]
+    assert decide(tmp_path, "docs/20-design.md")[0]
+    assert not decide(tmp_path, "docs/test/test-plan.md")[0]  # build is still pending
 
 
-def test_allows_impl_when_tasks_approved(chdir_tmp: Path) -> None:
-    _setup(chdir_tmp, tasks="approved")
-    allowed, _ = gate_guard.evaluate("backend/app/main.py")
-    assert allowed is True
+@pytest.mark.parametrize("rel", ["tests/test_app.py", "docs/00-product-brief.md", "README.md", "makefile"])
+def test_unguarded_paths_stay_open(tmp_path: Path, rel: str) -> None:
+    """tests/ is deliberately unguarded: preparing fixtures while a gate is pending is
+    sanctioned speculative work, and freezing it would just push the work off the record."""
+    seed_repo(tmp_path, state=make_state(gates=dict.fromkeys(models.GATE_ORDER, "pending")))
+    assert decide(tmp_path, rel)[0]
 
 
-def test_blocks_product_script_when_tasks_pending(chdir_tmp: Path) -> None:
-    _setup(chdir_tmp, tasks="pending")
-    allowed, reason = gate_guard.evaluate("scripts/my_product_tool.py")
-    assert allowed is False
-    assert "tasks" in reason
-
-
-def test_allows_unguarded_path(chdir_tmp: Path) -> None:
-    _setup(chdir_tmp)
-    # tests/ is deliberately unguarded so approval-wait speculative work keeps flowing.
-    assert gate_guard.evaluate("tests/test_feature.py") == (True, "")
-    assert gate_guard.evaluate("README.md") == (True, "")
-
-
-def test_enforce_hook_false_allows_everything(chdir_tmp: Path) -> None:
-    _setup(chdir_tmp, tasks="pending", config=_CONFIG_OFF)
-    allowed, _ = gate_guard.evaluate("backend/app/main.py")
-    assert allowed is True
-
-
-_CONFIG_DOCS_ONLY = (
-    "gates:\n"
-    "  enforce_hook: true\n"
-    "  template_mode: false\n"
-    "  guard_paths:\n"
-    "    docs/20-design.md: requirements\n"
-    "    docs/decisions/: requirements\n"
-    "    docs/tasks/: design\n"
-    "    docs/test/: build\n"
-)
-
-_CONFIG_SRC_LAYOUT = (
-    "gates:\n"
-    "  enforce_hook: true\n"
-    "  template_mode: false\n"
-    "  guard_paths:\n"
-    "    docs/20-design.md: requirements\n"
-    "    src/: tasks\n"
-    "    src/design-notes/: design\n"
-)
-
-
-def test_guard_paths_docs_only_lets_existing_code_flow(chdir_tmp: Path) -> None:
-    # The brownfield default: only docs deliverables are guarded, so normal development on the
-    # existing codebase is not frozen by pending gates right after adoption.
-    _setup(chdir_tmp, tasks="pending", config=_CONFIG_DOCS_ONLY)
-    assert gate_guard.evaluate("backend/app/main.py") == (True, "")
-    assert gate_guard.evaluate("src/anything.py") == (True, "")
-    allowed, reason = gate_guard.evaluate("docs/20-design.md")
-    assert allowed is False
-    assert "requirements" in reason
-
-
-def test_guard_paths_maps_custom_layout(chdir_tmp: Path) -> None:
-    _setup(chdir_tmp, tasks="pending", config=_CONFIG_SRC_LAYOUT)
-    allowed, reason = gate_guard.evaluate("src/feature/api.py")
-    assert allowed is False
-    assert "tasks" in reason
-    # The longest matching prefix wins over the shorter one, deterministically.
-    allowed, reason = gate_guard.evaluate("src/design-notes/plan.md")
-    assert allowed is False
-    assert "design" in reason
-    # Paths outside the configured rules are unguarded (the built-in backend/ rule is replaced).
-    assert gate_guard.evaluate("backend/app/main.py") == (True, "")
-
-
-def test_guard_paths_absent_falls_back_to_defaults(chdir_tmp: Path) -> None:
-    # _CONFIG_ON has no guard_paths key → the built-in default rules apply (backward compat).
-    _setup(chdir_tmp, tasks="pending", config=_CONFIG_ON)
-    allowed, _ = gate_guard.evaluate("backend/app/main.py")
-    assert allowed is False
-
-
-def test_template_mode_allows_everything(chdir_tmp: Path) -> None:
-    # The template repo itself: scaffold originals share deliverable paths, so the guard steps aside.
-    _setup(chdir_tmp, tasks="pending", config=_CONFIG_TEMPLATE)
-    allowed, _ = gate_guard.evaluate("backend/app/main.py")
-    assert allowed is True
-    allowed, _ = gate_guard.evaluate("docs/20-design.md")
-    assert allowed is True
-
-
-def test_template_mode_defaults_off(chdir_tmp: Path) -> None:
-    # A config without the key behaves as product mode (guard live).
-    _setup(chdir_tmp, tasks="pending", config="gates:\n  enforce_hook: true\n")
-    allowed, _ = gate_guard.evaluate("backend/app/main.py")
-    assert allowed is False
-
-
-def test_fail_closed_when_no_state(chdir_tmp: Path) -> None:
-    # If state.md is absent, guarded paths are denied (fail closed): the guard is the only
-    # mechanism for the design/tasks phases, so an unknown state must not open every gate.
-    (chdir_tmp / ".agentloop").mkdir(parents=True, exist_ok=True)
-    (chdir_tmp / ".agentloop" / "config.yaml").write_text(_CONFIG_ON, encoding="utf-8")
-    allowed, reason = gate_guard.evaluate("backend/app/main.py")
-    assert allowed is False
-    assert "enforce_hook" in reason  # the escape hatch is pointed out
-    # Unguarded paths stay allowed even with unreadable state.
-    assert gate_guard.evaluate("README.md") == (True, "")
-
-
-def test_fail_closed_when_gates_malformed(chdir_tmp: Path) -> None:
-    (chdir_tmp / ".agentloop").mkdir(parents=True, exist_ok=True)
-    (chdir_tmp / ".agentloop" / "config.yaml").write_text(_CONFIG_ON, encoding="utf-8")
-    (chdir_tmp / ".agentloop" / "state.md").write_text("no front matter here", encoding="utf-8")
-    allowed, _ = gate_guard.evaluate("docs/tasks/T-001.md")
-    assert allowed is False
-
-
-# --- main(): the hook's real stdin→stdout I/O path -----------------------------
-
-
-def _run_main(payload: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> tuple[int, str]:
-    monkeypatch.setattr(sys, "stdin", io.StringIO(payload))
-    rc = gate_guard.main()
-    return rc, capsys.readouterr().out
-
-
-def test_main_emits_deny_decision_for_guarded_path(
-    chdir_tmp: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    _setup(chdir_tmp, tasks="pending")
-    payload = json.dumps({"tool_input": {"file_path": "backend/app/main.py"}})
-    rc, out = _run_main(payload, monkeypatch, capsys)
-    assert rc == 0  # the hook communicates via the JSON decision, not the exit code
-    decision = json.loads(out)["hookSpecificOutput"]
-    assert decision["permissionDecision"] == "deny"
-    assert "tasks" in decision["permissionDecisionReason"]
-
-
-def test_main_stays_silent_for_allowed_path(
-    chdir_tmp: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    _setup(chdir_tmp, tasks="approved")
-    payload = json.dumps({"tool_input": {"file_path": "backend/app/main.py"}})
-    rc, out = _run_main(payload, monkeypatch, capsys)
-    assert rc == 0
-    assert out == ""  # no decision printed = the tool call proceeds
-
-
-def test_main_does_not_intervene_on_malformed_input(
-    chdir_tmp: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    for payload in ("not json", "{}", json.dumps({"tool_input": {"file_path": ""}})):
-        rc, out = _run_main(payload, monkeypatch, capsys)
-        assert (rc, out) == (0, "")
-
-
-# --- VS Code Copilot dialect (camelCase filePath; hook fires on every tool) -----
-
-
-def test_main_denies_camelcase_file_path(
-    chdir_tmp: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    _setup(chdir_tmp, tasks="pending")
-    payload = json.dumps({"tool_name": "create_file", "tool_input": {"filePath": "backend/app/main.py"}})
-    rc, out = _run_main(payload, monkeypatch, capsys)
-    assert rc == 0
-    decision = json.loads(out)["hookSpecificOutput"]
-    assert decision["permissionDecision"] == "deny"
-    assert "tasks" in decision["permissionDecisionReason"]
-
-
-def test_main_allows_camelcase_file_path_when_gate_approved(
-    chdir_tmp: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    _setup(chdir_tmp, tasks="approved")
-    payload = json.dumps({"tool_name": "replace_string_in_file", "tool_input": {"filePath": "backend/app/main.py"}})
-    rc, out = _run_main(payload, monkeypatch, capsys)
-    assert (rc, out) == (0, "")
-
-
-def test_main_passes_pathless_tools_even_when_state_is_unreadable(
-    chdir_tmp: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    # VS Code ignores matchers, so the hook sees reads/terminal too. Fail-closed applies
-    # only to guarded-path writes — a path-less tool must pass even with state.md broken.
-    (chdir_tmp / ".agentloop").mkdir(parents=True, exist_ok=True)
-    (chdir_tmp / ".agentloop" / "config.yaml").write_text(_CONFIG_ON, encoding="utf-8")
-    payload = json.dumps({"tool_name": "run_in_terminal", "tool_input": {"command": "ls"}})
-    rc, out = _run_main(payload, monkeypatch, capsys)
-    assert (rc, out) == (0, "")
-
-
-# --- gate-approval write protection (edit-time): only `make approve` may flip ----
-
-
-def _deny_reason(out: str) -> str:
-    return str(json.loads(out)["hookSpecificOutput"]["permissionDecisionReason"])
-
-
-def test_write_flipping_a_gate_to_approved_is_denied(
-    chdir_tmp: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    _setup(chdir_tmp)
-    flipped = make_state(gates={"requirements": "approved", "design": "pending", "tasks": "pending"})
-    payload = json.dumps({"tool_input": {"file_path": ".agentloop/state.md", "content": flipped}})
-    rc, out = _run_main(payload, monkeypatch, capsys)
-    assert rc == 0
-    reason = _deny_reason(out)
-    assert "gates.requirements" in reason and "agentloop approve" in reason
-
-
-def test_edit_flipping_a_gate_to_approved_is_denied(
-    chdir_tmp: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    _setup(chdir_tmp)
-    payload = json.dumps(
-        {
-            "tool_input": {
-                "file_path": ".agentloop/state.md",
-                "old_string": "requirements: pending",
-                "new_string": "requirements: approved   # 2026-07-13",
-            }
-        }
+def test_template_mode_relaxes_only_rule_three(tmp_path: Path) -> None:
+    seed_repo(
+        tmp_path,
+        config=make_config(template_mode=True),
+        state=make_state(gates=dict.fromkeys(models.GATE_ORDER, "pending"), plan_status="draft"),
     )
-    rc, out = _run_main(payload, monkeypatch, capsys)
-    assert rc == 0
-    assert "agentloop approve" in _deny_reason(out)
+    assert decide(tmp_path, "src/app.py")[0]  # rule 3 relaxed
+    assert not decide(tmp_path, ".agentloop/state.yaml")[0]  # rule 1 is not
 
 
-def test_multiedit_and_camelcase_flips_are_denied(
-    chdir_tmp: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    _setup(chdir_tmp)
-    payload = json.dumps(
-        {
-            "tool_input": {
-                "file_path": ".agentloop/state.md",
-                "edits": [
-                    {"old_string": "current_phase: build", "new_string": "current_phase: verify"},
-                    {"old_string": "build: pending", "new_string": "build: approved"},
-                ],
-            }
-        }
+def test_an_unreadable_state_fails_closed_on_guarded_paths(tmp_path: Path) -> None:
+    seed_repo(tmp_path)
+    (tmp_path / ".agentloop" / "state.yaml").unlink()
+    allowed, reason = decide(tmp_path, "src/app.py")
+    assert not allowed
+    assert "no flag that turns this guard off" in reason
+
+
+def test_there_is_no_enforce_hook_escape_hatch(tmp_path: Path) -> None:
+    """0.8.x's `gates.enforce_hook: false`. The schema rejects the key outright."""
+    config = make_config()
+    config["gates"] = {"enforce_hook": False}  # type: ignore[index]
+    with pytest.raises(AssertionError, match="not schema-valid"):
+        seed_repo(tmp_path, config=config)
+
+
+def test_a_path_outside_the_repo_is_not_this_guard_s_business(tmp_path: Path) -> None:
+    seed_repo(tmp_path)
+    assert gate_guard.evaluate("/etc/hosts", repo_mod.Repo(tmp_path))[0]
+
+
+# --- rule matching: exact wins over prefix, longest prefix wins ---------------
+
+
+def test_exact_rule_wins_over_a_prefix_rule() -> None:
+    rules = {"docs/": "build", "docs/20-design.md": "requirements"}
+    assert gate_guard.required_gate("docs/20-design.md", rules, repo_mod.Repo(Path.cwd())) == "requirements"
+
+
+def test_the_longest_matching_prefix_wins() -> None:
+    rules = {"src/": "tasks", "src/vendor/": "release"}
+    repo = repo_mod.Repo(Path.cwd())
+    assert gate_guard.required_gate("src/vendor/lib.py", rules, repo) == "release"
+    assert gate_guard.required_gate("src/app.py", rules, repo) == "tasks"
+
+
+def test_config_paths_replace_the_built_in_defaults(tmp_path: Path) -> None:
+    seed_repo(
+        tmp_path,
+        config=make_config(guard_paths=[{"path": "core/", "requires_gate": "tasks"}]),
+        state=make_state(gates=dict.fromkeys(models.GATE_ORDER, "pending")),
     )
-    rc, out = _run_main(payload, monkeypatch, capsys)
-    assert "gates.build" in _deny_reason(out)
-    # VS Code Copilot spelling (filePath / oldString / newString) is understood too.
-    payload = json.dumps(
-        {
-            "tool_input": {
-                "filePath": ".agentloop/state.md",
-                "oldString": "requirements: pending",
-                "newString": "requirements: approved",
-            }
-        }
+    assert not decide(tmp_path, "core/thing.py")[0]
+    assert decide(tmp_path, "src/app.py")[0]  # not in this repo's map
+
+
+def test_defaults_apply_when_config_declares_no_paths(tmp_path: Path) -> None:
+    config = make_config()
+    config["guard"].pop("paths")  # type: ignore[union-attr]
+    seed_repo(tmp_path, config=config, state=make_state(gates=dict.fromkeys(models.GATE_ORDER, "pending")))
+    assert not decide(tmp_path, "src/app.py")[0]
+
+
+# --- rule 4: only humans open gates -------------------------------------------
+
+
+def test_an_edit_that_would_approve_a_gate_names_the_reason(tmp_path: Path) -> None:
+    seed_repo(tmp_path)
+    current = (tmp_path / ".agentloop" / "state.yaml").read_text(encoding="utf-8")
+    proposed = current.replace("build:\n    status: pending", "build:\n    status: approved")
+    reason = gate_guard.gate_flip_denial({"content": proposed}, repo_mod.Repo(tmp_path))
+    assert "gates.build to approved" in reason
+    assert "Trust Manifest" in reason
+
+
+def test_an_edit_that_changes_no_gate_is_not_a_flip(tmp_path: Path) -> None:
+    seed_repo(tmp_path)
+    current = (tmp_path / ".agentloop" / "state.yaml").read_text(encoding="utf-8")
+    assert gate_guard.gate_flip_denial({"content": current}, repo_mod.Repo(tmp_path)) == ""
+
+
+def test_the_hook_denies_a_state_write_whatever_the_payload_shape(tmp_path: Path) -> None:
+    seed_repo(tmp_path)
+    assert "Central Store transaction" in hook(tmp_path, ".agentloop/state.yaml", content="anything")
+
+
+# --- the hook protocol --------------------------------------------------------
+
+
+def test_the_hook_allows_an_unguarded_path_silently(tmp_path: Path) -> None:
+    seed_repo(tmp_path)
+    assert hook(tmp_path, "tests/test_x.py") == ""
+
+
+def test_a_payload_with_no_file_path_passes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import io
+    import sys
+
+    seed_repo(tmp_path)
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"cwd": str(tmp_path), "tool_input": {}})))
+    assert gate_guard.main([]) == 0
+
+
+def test_the_camelcase_spelling_is_accepted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import io
+    import sys
+
+    seed_repo(tmp_path, state=make_state(gates=dict.fromkeys(models.GATE_ORDER, "pending")))
+    payload = {"cwd": str(tmp_path), "tool_input": {"filePath": str(tmp_path / "src/app.py")}}
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(payload)))
+    out = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", out)
+    gate_guard.main([])
+    assert "deny" in out.getvalue()
+
+
+def test_an_unparseable_payload_allows_but_leaves_a_trace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Some hosts fire the hook for every tool; a malformed payload must not block path-less
+    tools. The warning is what keeps a guard that stopped guarding visible."""
+    import io
+    import sys
+
+    monkeypatch.setattr(sys, "stdin", io.StringIO("{not json"))
+    assert gate_guard.main([]) == 0
+    assert "unparseable hook payload" in capsys.readouterr().err
+
+
+# --- commit-stage check -------------------------------------------------------
+
+
+def _git(root: Path, *args: str) -> None:
+    subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True)
+
+
+@pytest.mark.integration
+def test_check_diff_fails_on_a_guarded_path(tmp_path: Path) -> None:
+    seed_repo(tmp_path, state=make_state(gates=dict.fromkeys(models.GATE_ORDER, "pending")), git=True)
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("x = 1\n", encoding="utf-8")
+    assert gate_guard.check_diff(repo_mod.Repo(tmp_path)) == 1
+
+
+@pytest.mark.integration
+def test_check_diff_passes_when_the_gate_is_approved(tmp_path: Path) -> None:
+    seed_repo(tmp_path, git=True)  # approved through tasks
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("x = 1\n", encoding="utf-8")
+    assert gate_guard.check_diff(repo_mod.Repo(tmp_path)) == 0
+
+
+@pytest.mark.integration
+def test_check_diff_catches_a_gate_flip_with_no_event(tmp_path: Path) -> None:
+    """A flip smuggled past the editor hook — a shell redirect, `sed -i` — has no
+    gate_approved event, and fails here before it can be committed."""
+    seed_repo(tmp_path, state=make_state(gates={"build": "pending"}), git=True)
+    _git(tmp_path, "config", "user.email", "t@e.x")
+    _git(tmp_path, "config", "user.name", "T")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-q", "-m", "baseline")
+
+    state = tmp_path / ".agentloop" / "state.yaml"
+    state.write_text(
+        state.read_text(encoding="utf-8").replace("build:\n    status: pending", "build:\n    status: approved"),
+        encoding="utf-8",
     )
-    rc, out = _run_main(payload, monkeypatch, capsys)
-    assert "gates.requirements" in _deny_reason(out)
-
-
-def test_state_edits_that_do_not_flip_are_allowed(
-    chdir_tmp: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    # Ordinary state.md maintenance (progress board, logs, already-approved gate untouched or
-    # reset to pending) must keep flowing — only the pending→approved direction is protected.
-    _setup(chdir_tmp, requirements="approved")
-    for old, new in (
-        ("# board", "# board\n- note"),
-        ("requirements: approved", "requirements: approved   # 2026-07-13 alice"),
-        ("requirements: approved", "requirements: pending"),
-    ):
-        payload = json.dumps({"tool_input": {"file_path": ".agentloop/state.md", "old_string": old, "new_string": new}})
-        rc, out = _run_main(payload, monkeypatch, capsys)
-        assert (rc, out) == (0, ""), (old, new)
-
-
-def test_creating_state_with_approved_gates_is_denied(
-    chdir_tmp: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    # No on-disk state.md = nothing is approved yet; a Write that starts life approved is a flip.
-    (chdir_tmp / ".agentloop").mkdir(parents=True, exist_ok=True)
-    (chdir_tmp / ".agentloop" / "config.yaml").write_text(_CONFIG_ON, encoding="utf-8")
-    content = make_state(gates={"requirements": "approved", "design": "pending", "tasks": "pending"})
-    payload = json.dumps({"tool_input": {"file_path": ".agentloop/state.md", "content": content}})
-    rc, out = _run_main(payload, monkeypatch, capsys)
-    assert "gates.requirements" in _deny_reason(out)
-
-
-def test_flip_denial_ignores_template_mode_but_respects_enforce_hook(
-    chdir_tmp: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    # template_mode relaxes the deliverable-path rules, not gate rule 2 (the scaffold state.md
-    # has no legitimate approved-flip either); enforce_hook: false stays the global escape hatch.
-    payload = json.dumps(
-        {
-            "tool_input": {
-                "file_path": ".agentloop/state.md",
-                "old_string": "requirements: pending",
-                "new_string": "requirements: approved",
-            }
-        }
-    )
-    _setup(chdir_tmp, config=_CONFIG_TEMPLATE)
-    rc, out = _run_main(payload, monkeypatch, capsys)
-    assert "agentloop approve" in _deny_reason(out)
-    _setup(chdir_tmp, config=_CONFIG_OFF)
-    rc, out = _run_main(payload, monkeypatch, capsys)
-    assert (rc, out) == (0, "")
-
-
-def test_unrecognized_state_write_shape_is_allowed_with_a_trace(
-    chdir_tmp: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    # A host tool shape we cannot simulate must not block path-carrying non-edits; the
-    # commit-stage flip check still covers whatever it wrote.
-    _setup(chdir_tmp)
-    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"tool_input": {"file_path": ".agentloop/state.md"}})))
-    rc = gate_guard.main()
-    captured = capsys.readouterr()
-    assert (rc, captured.out) == (0, "")
-    assert "unrecognized payload shape" in captured.err
-
-
-# --- --check-diff: the agent-agnostic commit-stage mode --------------------------
-# Every test below shells out to real git, so each carries @pytest.mark.integration.
-
-
-def _git_init(path: Path) -> None:
-    subprocess.run(["git", "init", "-q"], cwd=path, check=True)
+    assert gate_guard.check_diff(repo_mod.Repo(tmp_path)) == 1
 
 
 @pytest.mark.integration
-def test_check_diff_denies_untracked_guarded_path(chdir_tmp: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    # A brand-new deliverable is exactly what lands at a gate — untracked files must be covered.
-    _git_init(chdir_tmp)
-    _setup(chdir_tmp, design="pending")
-    (chdir_tmp / "docs" / "tasks").mkdir(parents=True)
-    (chdir_tmp / "docs" / "tasks" / "T-001.md").write_text("ticket", encoding="utf-8")
-    assert gate_guard.main(["--check-diff"]) == 1
-    err = capsys.readouterr().err
-    assert "docs/tasks/T-001.md" in err
-    assert "design" in err
-
-
-@pytest.mark.integration
-def test_check_diff_passes_when_gate_approved(chdir_tmp: Path) -> None:
-    _git_init(chdir_tmp)
-    _setup(chdir_tmp, design="approved")
-    (chdir_tmp / "docs" / "tasks").mkdir(parents=True)
-    (chdir_tmp / "docs" / "tasks" / "T-001.md").write_text("ticket", encoding="utf-8")
-    assert gate_guard.main(["--check-diff"]) == 0
-
-
-@pytest.mark.integration
-def test_check_diff_passes_unguarded_changes_only(chdir_tmp: Path) -> None:
-    # .agentloop/** and README-like paths are unguarded; a diff of only those must not fail.
-    _git_init(chdir_tmp)
-    _setup(chdir_tmp, design="pending")
-    (chdir_tmp / "README.md").write_text("readme", encoding="utf-8")
-    assert gate_guard.main(["--check-diff"]) == 0
-
-
-@pytest.mark.integration
-def test_check_diff_respects_template_mode(chdir_tmp: Path) -> None:
-    _git_init(chdir_tmp)
-    _setup(chdir_tmp, design="pending", config=_CONFIG_TEMPLATE)
-    (chdir_tmp / "docs" / "tasks").mkdir(parents=True)
-    (chdir_tmp / "docs" / "tasks" / "T-001.md").write_text("ticket", encoding="utf-8")
-    assert gate_guard.main(["--check-diff"]) == 0
-
-
-@pytest.mark.integration
-def test_check_diff_denies_modified_tracked_guarded_path(chdir_tmp: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    _git_init(chdir_tmp)
-    _setup(chdir_tmp, requirements="pending")
-    (chdir_tmp / "docs").mkdir()
-    (chdir_tmp / "docs" / "20-design.md").write_text("v1", encoding="utf-8")
-    subprocess.run(["git", "add", "-A"], cwd=chdir_tmp, check=True)
-    subprocess.run(
-        ["git", "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-qm", "seed"],
-        cwd=chdir_tmp,
-        check=True,
-    )
-    assert gate_guard.main(["--check-diff"]) == 0  # clean tree: nothing to flag
-    (chdir_tmp / "docs" / "20-design.md").write_text("v2", encoding="utf-8")
-    assert gate_guard.main(["--check-diff"]) == 1
-    assert "docs/20-design.md" in capsys.readouterr().err
-
-
-@pytest.mark.integration
-def test_check_diff_skips_outside_a_git_repo(
-    chdir_tmp: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # Without git there is no diff to enforce against; skip with a note instead of blocking make check.
-    monkeypatch.setenv("GIT_DIR", str(chdir_tmp / "nonexistent"))  # make git status fail even under a parent repo
-    _setup(chdir_tmp, design="pending")
-    assert gate_guard.main(["--check-diff"]) == 0
-    assert "skipping" in capsys.readouterr().err
-
-
-# --- --check-diff: the commit-stage gate-flip check -------------------------------
-
-
-def _commit_all(path: Path) -> None:
-    subprocess.run(["git", "add", "-A"], cwd=path, check=True)
-    subprocess.run(
-        ["git", "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-qm", "seed"],
-        cwd=path,
-        check=True,
-    )
-
-
-@pytest.mark.integration
-def test_check_diff_denies_gate_flip_without_event(chdir_tmp: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    # A flip smuggled past the tool hook (shell redirect / sed) has no gate_approved event.
-    _git_init(chdir_tmp)
-    _setup(chdir_tmp)
-    _commit_all(chdir_tmp)
-    flipped = make_state(gates={"requirements": "approved", "design": "pending", "tasks": "pending"})
-    (chdir_tmp / ".agentloop" / "state.md").write_text(flipped, encoding="utf-8")
-    assert gate_guard.main(["--check-diff"]) == 1
-    err = capsys.readouterr().err
-    assert "gates.requirements" in err and "agentloop approve" in err
-
-
-@pytest.mark.integration
-def test_check_diff_passes_gate_flip_with_event(chdir_tmp: Path) -> None:
-    # approve.py writes the flip and the event in one operation — the sanctioned path passes.
-    from agentloop import approve
-
-    _git_init(chdir_tmp)
-    _setup(chdir_tmp)
-    _commit_all(chdir_tmp)
-    approve.record_approval("requirements", "alice")
-    assert gate_guard.main(["--check-diff"]) == 0
-
-
-@pytest.mark.integration
-def test_check_diff_flip_check_ignores_template_mode(chdir_tmp: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    # The deliverable-path rules relax under template_mode; gate rule 2's protection does not.
-    _git_init(chdir_tmp)
-    _setup(chdir_tmp, config=_CONFIG_TEMPLATE)
-    _commit_all(chdir_tmp)
-    flipped = make_state(gates={"requirements": "approved", "design": "pending", "tasks": "pending"})
-    (chdir_tmp / ".agentloop" / "state.md").write_text(flipped, encoding="utf-8")
-    assert gate_guard.main(["--check-diff"]) == 1
-    assert "gates.requirements" in capsys.readouterr().err
+def test_check_diff_skips_when_git_is_unusable(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    seed_repo(tmp_path)  # no git init
+    assert gate_guard.check_diff(repo_mod.Repo(tmp_path)) == 0
+    assert "git status unavailable" in capsys.readouterr().err

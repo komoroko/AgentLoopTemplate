@@ -1,19 +1,16 @@
-"""Shared primitives for the src/agentloop toolset — the single home for what every tool reads.
+"""Shared primitives: diagnostics logging, safe subprocess execution, failure summarization.
 
-Before this module the cross-cutting pieces lived wherever they were first written: the SSOT
-path constants were re-declared per module, four divergent front-matter parsers grew up in
-build_loop/gate_guard/ui/template_lint (with different split rules and failure postures), and
-build_loop.py had become the de-facto utils host everyone imported from. One definition here,
-re-exported where older names must survive, is what keeps those from drifting apart again.
+What used to be here and is now gone: the `state.md` front-matter parser, the gate-line
+surgery, the phase/gate vocabulary, and the tolerant `read_yaml`. 0.9.0 has no hand-edited
+markdown SSOT — the vocabulary lives in :mod:`agentloop.models`, parsing in
+:mod:`agentloop.strict_yaml`, and paths on :class:`agentloop.repo.Repo`. Nothing here reads a
+document any more, which is why this module can stay stdlib-only and cheap to import on the
+gate-guard hook path (it fires on every editor write).
 
-Failure-posture rule for the front-matter parser: structural absence (no fence, unterminated
-fence, non-mapping YAML) is a *state*, returned as None; malformed YAML is an *error*, raised
-as yaml.YAMLError. Each caller then makes its posture explicit at the call site —
-build_loop fails open to {}, gate_guard fails closed to deny, ui answers HTTP 500.
-
-Module-level imports stay stdlib-only (yaml is imported lazily inside the functions that
-need it) so the pyyaml-free paths — revise.py's gate rollback — keep working from a bare
-`python` without the makefile's `--with pyyaml` injection.
+The one behavioural upgrade is :func:`run`. In 0.8.x a timed-out quality-gate step killed the
+process it started but left its children running: a `make test` that spawned pytest, which
+spawned a server, left the server holding the port and the next run failed for the wrong
+reason. Every launch now gets its own process group and the whole group is killed on expiry.
 """
 
 from __future__ import annotations
@@ -21,21 +18,7 @@ from __future__ import annotations
 import logging
 import re
 import sys
-from pathlib import Path
-
-# --- the SSOT trio (see AGENTS.md "Single Source of Truth") -----------------
-
-STATE_PATH = ".agentloop/state.md"
-CONFIG_PATH = ".agentloop/config.yaml"
-TASKS_PATH = ".agentloop/tasks.yaml"
-
-# --- lifecycle vocabulary (AGENTS.md "Development lifecycle") ----------------
-
-# The forward gate order (state.md front-matter keys). Roll-back resets a chain of these.
-GATE_ORDER = ("requirements", "design", "tasks", "build", "release")
-# current_phase values, in lifecycle order (brief precedes gate ①; done follows gate ⑤).
-PHASE_ORDER = ("brief", "requirements", "design", "tasks", "build", "verify", "done")
-
+from typing import Any
 
 # --- diagnostics logging ------------------------------------------------------
 #
@@ -53,10 +36,7 @@ class _StderrHandler(logging.StreamHandler):  # type: ignore[type-arg]
 
 
 def configure_logging(*, level: int = logging.INFO) -> None:
-    """Send agentloop diagnostics to stderr, message-only (byte-identical to the old prints).
-
-    Idempotent, so every verb's `main` may call it (directly or via `agentloop <verb>`).
-    """
+    """Send agentloop diagnostics to stderr, message-only. Idempotent, so every verb may call it."""
     root = logging.getLogger("agentloop")
     if not any(isinstance(h, _StderrHandler) for h in root.handlers):
         handler = _StderrHandler()
@@ -67,137 +47,85 @@ def configure_logging(*, level: int = logging.INFO) -> None:
 
 # --- subprocess ---------------------------------------------------------------
 
+#: rc for a command killed after its timeout — the coreutils `timeout` convention.
+RC_TIMEOUT = 124
+#: Output past this is truncated with a marker. A runaway command must not exhaust memory
+#: before its timeout fires.
+MAX_OUTPUT_BYTES = 4 * 1024 * 1024
 
-def run(cmd: list[str], cwd: str | None = None, timeout: float | None = None) -> tuple[int, str]:
-    """Run a command; (returncode, stdout+stderr). A hang past `timeout` kills it, rc 124.
 
-    124 is the coreutils convention; without the kill, a stuck `claude -p` or test run would
-    stall the autonomous loop forever with no escalation. The expiry flows through the normal
-    failure paths (retry budget / StopLoop).
+def run(
+    cmd: list[str],
+    cwd: str | None = None,
+    timeout: float | None = None,
+    *,
+    env: dict[str, str] | None = None,
+    input_text: str | None = None,
+) -> tuple[int, str]:
+    """Run `cmd` (an argv list, never a shell string); return (returncode, stdout+stderr).
+
+    A hang past `timeout` kills the command **and every process it started** (the launch gets
+    its own process group / session) and returns :data:`RC_TIMEOUT`. Without the group kill a
+    stuck server outlives the run and poisons the next one.
+
+    `env`, when given, *replaces* the environment rather than extending it — an executor
+    profile's allowlist is only an allowlist if nothing leaks in around it.
     """
+    import os
+    import signal
     import subprocess  # lazy: keep `import common` light for the hook path (gate_guard on every edit)
 
+    popen_kwargs: dict[str, Any] = {}
+    if hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):  # Windows
+        popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        popen_kwargs["start_new_session"] = True  # POSIX: own session, so killpg reaches children
+
     try:
-        proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
-    except subprocess.TimeoutExpired as exc:
-        partial = "".join(
-            part if isinstance(part, str) else part.decode(errors="replace")
-            for part in (exc.stdout, exc.stderr)
-            if part
+        proc = subprocess.Popen(  # noqa: S603 - argv list, never a shell string
+            cmd,
+            cwd=cwd,
+            stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            env=env,
+            **popen_kwargs,
         )
-        return 124, f"{partial}\ntimed out after {int(exc.timeout)}s (process killed)"
-    return proc.returncode, proc.stdout + proc.stderr
+    except OSError as exc:  # command not found, not executable, cwd missing
+        return 127, f"could not run {cmd[0]!r}: {exc}"
+
+    with proc:
+        try:
+            output, _ = proc.communicate(input=input_text, timeout=timeout)
+            return proc.returncode, _cap(output or "")
+        except subprocess.TimeoutExpired:
+            # subprocess's own timeout handling kills the direct child only, so anything it
+            # spawned survives — a stuck server keeps the port and the next run fails for a
+            # reason that has nothing to do with the code. Kill the whole group instead.
+            _kill_group(proc, os, signal)
+            output, _ = proc.communicate()
+            elapsed = int(timeout) if timeout is not None else 0
+            return RC_TIMEOUT, _cap(f"{output or ''}\ntimed out after {elapsed}s (process group killed)")
 
 
-# --- front-matter / YAML reading ---------------------------------------------
+def _kill_group(proc: Any, os_mod: Any, signal_mod: Any) -> None:
+    """SIGKILL the whole process group, falling back to the single process where that fails."""
+    if hasattr(os_mod, "killpg"):
+        try:
+            os_mod.killpg(os_mod.getpgid(proc.pid), signal_mod.SIGKILL)
+            return
+        except (ProcessLookupError, PermissionError, OSError):
+            pass  # already gone, or a platform that will not let us — fall through
+    proc.kill()
 
 
-def parse_frontmatter(text: str) -> dict[str, object] | None:
-    """The YAML front-matter mapping of `text`, or None when none is structurally present.
-
-    None covers: no leading `---`, an unterminated fence, or a front matter that is not a
-    mapping. Malformed YAML raises yaml.YAMLError instead — see the module docstring for
-    why the two failure modes are kept distinct.
-    """
-    import yaml  # lazy: keep `import common` stdlib-only (module docstring)
-
-    if not text.startswith("---"):
-        return None
-    parts = text.split("---", 2)
-    if len(parts) < 3:
-        return None
-    loaded = yaml.safe_load(parts[1])
-    return loaded if isinstance(loaded, dict) else None
-
-
-def read_frontmatter(path: str = STATE_PATH) -> dict[str, object]:
-    """state.md front-matter, failing open to {} when structurally absent.
-
-    A missing file raises OSError and malformed YAML raises yaml.YAMLError — callers that
-    must not crash catch those and choose their posture (status_api warns, doctor FAILs).
-    """
-    front = parse_frontmatter(Path(path).read_text(encoding="utf-8"))
-    return front if front is not None else {}
-
-
-def gates_of(front: dict[str, object] | None) -> dict[str, str] | None:
-    """The `gates:` mapping of a parsed front matter, coerced to str→str.
-
-    None when the front matter (or its gates key) is absent or not a mapping — the same
-    posture split as parse_frontmatter: gate_guard fails closed on None, readers that only
-    display fall back to {}.
-    """
-    raw = (front or {}).get("gates")
-    if not isinstance(raw, dict):
-        return None
-    return {str(k): str(v) for k, v in raw.items()}
-
-
-# --- the gate-chain invariant (AGENTS.md "Roll back") -------------------------
-#
-# If an upstream gate is pending, no downstream gate may stay approved — a violated chain
-# means an approval survived a roll back. doctor reports every violation, status_api treats
-# any violation as "repair before continuing", and ui refuses to create one.
-
-
-def gate_chain_violations(gates: dict[str, str]) -> list[tuple[str, str]]:
-    """Every (approved_gate, first_pending_upstream) pair violating the chain invariant."""
-    violations: list[tuple[str, str]] = []
-    first_pending: str | None = None
-    for gate in GATE_ORDER:
-        if gates.get(gate) != "approved":
-            first_pending = first_pending or gate
-        elif first_pending is not None:
-            violations.append((gate, first_pending))
-    return violations
-
-
-def pending_upstream(gates: dict[str, str], gate: str) -> str | None:
-    """The first not-approved gate upstream of `gate` — approving `gate` now would break the chain."""
-    for upstream in GATE_ORDER[: GATE_ORDER.index(gate)]:
-        if gates.get(upstream) != "approved":
-            return upstream
-    return None
-
-
-def rewrite_gate_line(text: str, gate: str, old: str, new: str, *, keep_trailer: bool) -> tuple[str, int]:
-    """Surgically rewrite the front-matter line `<gate>: <old> …` to `<gate>: <new>`.
-
-    The rest of the document survives byte-for-byte (regex line surgery, never a YAML
-    round-trip — state.md's comments and layout must be preserved), and only the front-matter
-    fence is touched, so a matching line in the body cannot be rewritten by accident.
-    keep_trailer keeps the trailing text (roll-back preserves the human's approval note);
-    otherwise the trailer is replaced wholesale (approval stamps its own date comment).
-    Returns (new_text, substitutions); 0 substitutions = no matching line.
-    """
-    if not text.startswith("---"):
-        return text, 0
-    parts = text.split("---", 2)
-    if len(parts) < 3:
-        return text, 0
-    pattern = re.compile(rf"^(\s*{re.escape(gate)}:\s*){re.escape(old)}\b(.*)$", re.MULTILINE)
-
-    def _sub(m: re.Match[str]) -> str:
-        return m.group(1) + new + (m.group(2) if keep_trailer else "")
-
-    new_front, n = pattern.subn(_sub, parts[1], count=1)
-    return f"---{new_front}---{parts[2]}", n
-
-
-def set_current_phase(text: str, value: str) -> str:
-    """Rewrite the front-matter `current_phase:` value (line surgery, comments preserved).
-
-    Shared by the two phase-moving operations — revise.py (backward) and approve.py (forward) —
-    so the line format is interpreted in exactly one place.
-    """
-    pattern = re.compile(r"^(\s*current_phase:\s*)\S+(\s*(?:#.*)?)$", re.MULTILINE)
-    return pattern.sub(rf"\g<1>{value}\2", text)
-
-
-def set_updated_at(text: str, today: str) -> str:
-    """Rewrite the front-matter `updated_at:` value to a quoted ISO date (line surgery)."""
-    pattern = re.compile(r"^(\s*updated_at:\s*).*$", re.MULTILINE)
-    return pattern.sub(rf'\g<1>"{today}"', text)
+def _cap(text: str) -> str:
+    encoded = text.encode("utf-8", errors="replace")
+    if len(encoded) <= MAX_OUTPUT_BYTES:
+        return text
+    kept = encoded[:MAX_OUTPUT_BYTES].decode("utf-8", errors="replace")
+    return f"{kept}\n… (output truncated at {MAX_OUTPUT_BYTES} bytes)"
 
 
 # --- failure summarization (retry-friendly, token-lean) ---------------------
@@ -235,7 +163,7 @@ def summarize_failure(cmd: str, rc: int, output: str) -> str:
     Keeps only the lines carrying the actionable signal (pytest FAILED / assertion lines, ruff/mypy
     error locations, exception markers); when nothing matches, falls back to the non-empty tail (the
     failure is usually last). Capped to a small line/char budget so retries and escalations stay
-    token-lean. Pure and deterministic — unit-tested in test_build_loop.py.
+    token-lean. Pure and deterministic.
     """
     header = f"$ {cmd} (rc={rc})"
     lines = output.splitlines()
@@ -270,14 +198,3 @@ class StopLoop(Exception):
     def __init__(self, message: str, code: int = 1) -> None:
         super().__init__(message)
         self.code = code
-
-
-def read_yaml(path: str) -> dict[str, object] | None:
-    """Load a YAML mapping from `path`; None for any unreadable/non-mapping case (tolerant reads)."""
-    import yaml  # lazy: keep `import common` stdlib-only (module docstring)
-
-    try:
-        data = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError):
-        return None
-    return data if isinstance(data, dict) else None

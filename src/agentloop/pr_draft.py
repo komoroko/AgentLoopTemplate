@@ -1,160 +1,151 @@
-"""pr-draft — assemble a PR body from the cycle's SSOT and deliverables (read-only).
+"""`agentloop pr-draft` — assemble a PR body from what the cycle actually recorded.
 
-Push / PR creation are outward-facing and stay human-run (AGENTS.md "Branch / commit
-conventions") — but the *body* of a good PR is exactly what the loop already recorded:
-gate approvals in state.md, the task table in tasks.yaml, requirement coverage, the
-security-review binding, and the commit list. This tool aggregates those into
-`.agentloop/pr-draft.md` so the human's step is reviewing and running the printed
-`gh pr create` line, not re-transcribing the SSOT by hand. It never invokes gh itself.
+Push and PR creation are outward-facing and stay human-run, but the *body* of an honest PR is
+already in the SSOT: the gate receipts, the evidence coverage, the oracle results, the
+coverage manifest, and the signed attestations. Re-typing that by hand is where a summary
+starts drifting from the record, so this reads it instead. It never invokes `gh`.
 
-Usage:
-  agentloop pr-draft                       # writes .agentloop/pr-draft.md against base 'main'
-  agentloop pr-draft ARGS='--base develop'
-  agentloop pr-draft ARGS='--stdout'       # print instead of writing
+The layout follows plan §28, and one line of it matters more than the rest:
+
+    Extra behaviors: undeterminable (coverage gap)
+
+A PR body is where a reviewer's expectations get set, and "0 blocking" next to an
+unanalysable diff is the single most misleading thing this tool could print. When coverage is
+insufficient the count is not rendered at all — because there is no number that honestly
+describes "we could not look" (plan §2.4).
 """
 
 from __future__ import annotations
 
 import argparse
 import logging
-import re
-from pathlib import Path
 
-import yaml
-
-from agentloop import build_loop, common, dag, events
+from agentloop import common, dag, event_chain, models
 from agentloop import repo as repo_mod
+from agentloop import store as store_mod
 
 logger = logging.getLogger(__name__)
 
 OUT_PATH = ".agentloop/pr-draft.md"
-REQUIREMENTS_PATH = "docs/10-requirements.md"
-TEST_PLAN_PATH = "docs/test/test-plan.md"
-
-# A gate line in state.md's front matter, with the approval note the YAML parser drops
-# (AGENTS.md: approvals are recorded as a trailing comment, e.g. `tasks: approved  # 2026-07-07 alice`).
-_GATE_LINE_RE = re.compile(
-    r"^\s*(requirements|design|tasks|build|release):\s*(\w[\w-]*)\s*(?:#\s*(.*?))?\s*$", re.MULTILINE
-)
 
 
-def _read(path: str) -> str:
-    try:
-        return Path(path).read_text(encoding="utf-8")
-    except OSError:
-        return ""
+def _digest_line(label: str, value: str | None) -> str:
+    return f"- {label}: {value or '(not recorded)'}"
 
 
-def _gate_rows(state_text: str) -> list[tuple[str, str, str]]:
-    """(gate, value, approval note) in file order — the note is the human/date comment."""
-    return [(m.group(1), m.group(2), m.group(3) or "") for m in _GATE_LINE_RE.finditer(state_text)]
+def build_body(repo: repo_mod.Repo, base: str = "main") -> str:
+    """The PR body. Reads only; every figure is derived from the SSOT."""
+    store = store_mod.Store(repo)
+    state = store.read_state()
+    plan = store.read_plan()
+    review = store.read_review()
+    events, defects = event_chain.scan(repo.events)
 
+    lines = ["## Grounded implementation review", ""]
+    if state is None:
+        return "\n".join([*lines, "- (no .agentloop/state.yaml — nothing to summarize)"])
 
-def _requirement_headings(req_text: str) -> list[str]:
-    """Heading lines that name an R-N / NFR-N, with their titles (the covered scope)."""
-    out = []
-    for heading in dag._HEADING_RE.findall(req_text):
-        if dag._REQ_ID_RE.search(heading):
-            out.append(heading.strip())
-    return out
+    lines.append(f"- Cycle: `{state.cycle_id}`   base: `{base}`")
+    lines.append(_digest_line("Plan digest", plan.digest() if plan else None))
+    binding = review.machine.get("binding") if review and review.is_generated else None
+    change_digest = binding.get("change_digest") if isinstance(binding, dict) else None
+    actual_digest = binding.get("actual_digest") if isinstance(binding, dict) else None
+    lines.append(_digest_line("Change digest", change_digest if isinstance(change_digest, str) else None))
+    lines.append(_digest_line("Actual digest", actual_digest if isinstance(actual_digest, str) else None))
 
+    if plan is not None:
+        verdicts: dict[str, int] = {}
+        if review is not None and review.is_generated:
+            for result in review.claim_results:
+                key = str(result.get("verdict", "unknown"))
+                verdicts[key] = verdicts.get(key, 0) + 1
+        summary = " / ".join(f"{n} {v}" for v, n in sorted(verdicts.items())) or "not reviewed"
+        lines.append(f"- Claims: {len(plan.claims)} total — {summary}")
 
-def _reviewed_head(repo: repo_mod.Repo) -> str:
-    review_path = str(repo.path(build_loop.SECURITY_REVIEW_PATH))
-    m = re.search(r"^Reviewed-HEAD:\s*([0-9a-fA-F]+)", _read(review_path), re.MULTILINE)
-    return m.group(1) if m else ""
+        satisfied = sum(1 for o in plan.obligations if o.satisfied)
+        lines.append(f"- Evidence obligations: {satisfied}/{len(plan.obligations)} satisfied")
 
+        complete = sum(1 for s in plan.searches if s.execution_status == "complete")
+        no_match = sum(1 for s in plan.searches for a in s.provider_attempts if a.get("result") == "no_match")
+        unavailable = sorted({p for s in plan.searches for p in s.unavailable_providers})
+        # Provider outages are listed even when an alternate evidence path satisfied the
+        # obligation: hiding them is how "no documentation exists" gets invented (plan §15.3).
+        outage = (
+            f"{len(unavailable)} provider(s) unavailable ({', '.join(unavailable)})"
+            if unavailable
+            else "0 hidden failures"
+        )
+        lines.append(f"- Searches: {complete} complete / {no_match} no-match / {outage}")
+        lines.append(f"- Oracles: {len(plan.oracles)} declared")
 
-def _git(args: list[str], root: str) -> str:
-    rc, out = build_loop._run(["git", *args], cwd=root)
-    return out.strip() if rc == 0 else ""
-
-
-def _task_section(graph: dag.Graph) -> list[str]:
-    counts = graph.counts()
-    done = counts.get("done", 0)
-    lines = [
-        f"{done}/{len(graph.tasks)} tasks done.",
-        "",
-        "| task | kind | status | req | title |",
-        "|---|---|---|---|---|",
-    ]
-    for t in graph.tasks:
-        lines.append(f"| {t.id} | {t.kind} | {t.status} | {t.req or '-'} | {t.title} |")
-    return lines
-
-
-def build_draft(base: str, repo: repo_mod.Repo | None = None) -> str:
-    repo = repo or repo_mod.get()
-    root = str(repo.root)
-    state_text = _read(str(repo.state))
-    front = common.parse_frontmatter(state_text) or {}
-    project = str(front.get("project", ""))
-    branch = str(front.get("branch", ""))
-    lines: list[str] = [f"# {project}: {branch}", ""]
-
-    lines += ["## Gates", ""]
-    for gate, value, note in _gate_rows(state_text):
-        mark = "x" if value == "approved" else " "
-        # The trailing comment is the approval record (date/approver) only on an approved gate;
-        # on a pending one it is scaffold instruction text — don't quote that into the PR.
-        lines.append(f"- [{mark}] {gate}: {value}" + (f" ({note})" if note and value == "approved" else ""))
-
-    headings = _requirement_headings(_read(str(repo.path(REQUIREMENTS_PATH))))
-    if headings:
-        lines += ["", "## Requirements in this cycle", ""]
-        lines += [f"- {h}" for h in headings]
-
-    lines += ["", "## Tasks", ""]
-    try:
-        graph = dag.load(repo.tasks)
-        lines += _task_section(graph)
-    except (OSError, dag.DagError, yaml.YAMLError):
-        lines.append("_(no readable tasks.yaml)_")
-
-    lines += ["", "## Quality evidence", ""]
-    lines.append(
-        f"- Test plan: `{TEST_PLAN_PATH}` " + ("present" if repo.path(TEST_PLAN_PATH).exists() else "**absent**")
-    )
-    reviewed, head = _reviewed_head(repo), _git(["rev-parse", "HEAD"], root)
-    if reviewed:
-        # Either hash may be abbreviated — prefix-match in both directions.
-        fresh = "current" if head and (head.startswith(reviewed) or reviewed.startswith(head)) else "**STALE**"
-        lines.append(f"- Security review: `{build_loop.SECURITY_REVIEW_PATH}` Reviewed-HEAD {reviewed[:12]} ({fresh})")
+    if review is not None and review.is_generated:
+        if review.coverage_sufficient:
+            blocking_extras = sum(1 for e in review.extra_behaviors if e.get("blocking") is True)
+            lines.append("- Coverage: sufficient")
+            lines.append(f"- Extra behaviors: {blocking_extras} blocking, {len(review.extra_behaviors)} total")
+        else:
+            lines.append("- Coverage: **insufficient** — parts of the change could not be analysed")
+            lines.append("- Extra behaviors: **undeterminable** (not zero: we could not look)")
+        lines.append(f"- Security findings: {len(review.blocking_security_findings)} blocking")
+        lines.append(f"- Human review: {review.human_status}")
     else:
-        lines.append(f"- Security review: no `{build_loop.SECURITY_REVIEW_PATH}` report")
-    open_esc = events.open_escalations(events.load_events(str(repo.events)))
-    lines.append(f"- Open escalations: {len(open_esc)}" + (" — resolve before merging" if open_esc else ""))
+        lines.append("- Review: not generated")
 
-    log = _git(["log", "--oneline", "--no-decorate", f"{base}..HEAD"], root)
-    lines += ["", f"## Commits ({base}..HEAD)", ""]
-    lines += ["```", log or "(none — is the base branch right?)", "```", ""]
-    return "\n".join(lines)
+    lines.append(f"- Event chain root: {event_chain.chain_root(events)}")
+    if defects:
+        lines.append(f"- **Audit chain: {len(defects)} defect(s)** — this PR must not be merged as it stands")
+
+    lines += ["", "### Gates", ""]
+    for gate in models.GATE_ORDER:
+        receipt = state.gate_receipt(gate) or {}
+        attestation = receipt.get("attestation_id") or "-"
+        lines.append(f"- {gate}: {state.gate_status(gate)} (attestation: {attestation})")
+
+    if plan is not None:
+        try:
+            graph = dag.join(plan, state)
+            counts = graph.counts()
+            lines += ["", "### Tasks", "", "- " + " / ".join(f"{k}={v}" for k, v in counts.items() if v)]
+        except dag.DagError as exc:
+            lines += ["", f"- task graph inconsistent: {exc}"]
+
+    if plan is not None and plan.non_goals:
+        lines += ["", "### Non-goals", ""]
+        lines += [f"- {g.raw.get('statement', g.id)}" for g in plan.non_goals]
+
+    return "\n".join(lines) + "\n"
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="assemble a PR body from the SSOT (read-only; never calls gh)")
-    parser.add_argument("--base", default="main", help="base branch for the commit list (default: main)")
-    parser.add_argument("--out", default="", help=f"output path (default: {OUT_PATH} under the discovered root)")
-    parser.add_argument("--stdout", action="store_true", help="print the draft instead of writing a file")
+    parser = argparse.ArgumentParser(description="assemble a PR body from the SSOT (read-only; never runs gh)")
+    parser.add_argument("--base", default="main", help="the base branch to name in the body (default: main)")
+    parser.add_argument("--stdout", action="store_true", help="print instead of writing the file")
     parser.add_argument("--repo", default=None, help="repository root (default: discovered from cwd)")
     args = parser.parse_args(argv)
     common.configure_logging()
+
     try:
         repo = repo_mod.get(args.repo)
-    except repo_mod.RepoNotFoundError as exc:
+        repo.require_supported_layout()
+    except (repo_mod.RepoNotFoundError, repo_mod.UnsupportedLayoutError) as exc:
         logger.error(str(exc))
         return 1
-    args.out = args.out or str(repo.path(OUT_PATH))
-    draft = build_draft(args.base, repo)
+
+    try:
+        body = build_body(repo, args.base)
+    except (models.DocumentError, store_mod.StoreError) as exc:
+        logger.error(str(exc))
+        return 1
+
     if args.stdout:
-        print(draft)
+        print(body, end="")
         return 0
-    Path(args.out).write_text(draft, encoding="utf-8")
-    shown = repo.rel(args.out) or args.out  # repo-relative in messages; the write used the absolute path
-    print(f"wrote {shown}")
-    print("review it, then create the PR yourself (outward-facing = human-run):")
-    print(f"  gh pr create --draft --base {args.base} --body-file {shown}")
+    out = repo.path(OUT_PATH)
+    out.write_text(body, encoding="utf-8")
+    print(
+        f"wrote {OUT_PATH}\n\nReview it, then create the PR yourself:\n"
+        f"  gh pr create --base {args.base} --body-file {OUT_PATH}"
+    )
     return 0
 
 

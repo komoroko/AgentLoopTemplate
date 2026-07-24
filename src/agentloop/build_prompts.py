@@ -23,8 +23,8 @@ def implementer_prompt(task: dag.Task, failure_log: str, *, gate_cmds: Sequence[
     # "Lost in the Middle" on a long design (see AGENTS.md "Context budget"). Fall back to the whole
     # doc when the task has no req linkage.
     design_ref = (
-        f"the design section(s) for your requirement ({task.req}) in docs/20-design.md"
-        if task.req
+        f"the design section(s) covering {', '.join(task.claim_ids)} in docs/20-design.md"
+        if task.claim_ids
         else "docs/20-design.md"
     )
     # In an adopted (brownfield) repo the baseline doc carries the conventions and the
@@ -34,13 +34,21 @@ def implementer_prompt(task: dag.Task, failure_log: str, *, gate_cmds: Sequence[
         if has_baseline
         else ""
     )
-    # The gate runs the ticket's own test command first (_steps_for), so tell the implementer
-    # the same thing it will be judged by — instruction and execution must not diverge.
-    task_test_ref = (
-        f"The quality gate runs this task's own test command first — make `{task.test.strip()}` green.\n"
-        if task.test.strip()
+    # Name the claims this task is answerable for and the oracles that will judge it. The
+    # implementer must know what it is being measured against — an acceptance oracle it cannot
+    # see is still a boundary it has to satisfy, and hiding it produces guesswork, not rigour.
+    claims_ref = (
+        f"This task is answerable for: {', '.join(task.claim_ids)} (see .agentloop/plan.yaml).\n"
+        if task.claim_ids
         else ""
     )
+    oracle_ref = (
+        f"Frozen acceptance oracle(s) will judge it independently: {', '.join(task.oracle_ids)}. "
+        "You may read their interface, but never edit .agentloop/oracles/ — the gate guard denies it.\n"
+        if task.oracle_ids
+        else ""
+    )
+    task_test_ref = claims_ref + oracle_ref
     prompt = (
         f'You are the implementer subagent. Your only task is {task.id} "{task.title}".\n'
         f"Read docs/tasks/{task.id}.md, {design_ref}, and the existing code, and implement "

@@ -1,52 +1,44 @@
-"""Close a delta cycle (`agentloop cycle-close --name <slug>`): archive the filled deliverables and reset.
+"""`agentloop cycle-close --name <slug>` — archive a finished delta cycle and reset for the next.
 
-An adopted/ongoing repo runs AgentLoop as a series of **delta cycles** — each cycle's
-requirements/design/tasks/test docs describe one change, not the whole product. When a cycle
-reaches `done` (release approved at gate ⑤ and the retrospective is written), a human closes it:
+An ongoing repository runs AgentLoop as a series of delta cycles: each cycle's requirements,
+design, tasks, and tests describe one change, not the whole product. Closing a cycle:
 
-  1. The filled deliverables (10-requirements.md, 20-design.md, decisions/, tasks/, test/,
-     retrospective.md) move to `docs/archive/<YYYY-MM-DD>-<slug>/` (via `git mv`), and the
-     orchestration event log (`.agentloop/events.ndjson` + its `.1` rotation) moves with them.
-     `00-product-brief.md` and `05-current-state.md` (the persistent baseline) stay.
-  2. Fresh scaffolds are restored from the snapshot in `.agentloop/scaffold/docs/`
-     (taken by `agentloop init` while the docs were still pristine).
-  3. `tasks.yaml` resets to an empty task list; every gate resets to pending and
-     `current_phase` returns to brief. state.md's human-facing body (phase progress,
-     task table, execution plan, escalation/speculative logs, and the stale gate
-     comments) is refreshed from the pristine state.md snapshot taken at init — the
-     accumulating roll-back log is carried forward and a cycle-close row appended.
-     (When no state snapshot exists — a repo initialised before this feature — the
-     reset falls back to front-matter only, leaving the body as-is.)
+  1. Moves the filled deliverables to `docs/archive/<date>-<slug>/` (via `git mv`), **together
+     with the cycle's `plan.yaml`, `state.yaml`, `review.yaml`, `events.ndjson`, and its
+     attestations** (plan §27). The four SSOT documents go with the docs because they *are*
+     the record of what was decided and on what evidence — archiving the prose and dropping
+     the evidence would leave a history of conclusions with no grounds.
+  2. Restores fresh scaffolds from the snapshot taken at `init`, while the docs were pristine.
+  3. Resets state to a new cycle: every gate pending, phase back to `brief`, a fresh chain.
 
-Closing a cycle is a human decision, like opening a gate — the agent never runs this on its own.
-Idempotent: already-archived items are skipped; `--dry-run` prints the plan only.
+`00-product-brief.md` and `05-current-state.md` persist — they are the product, not the cycle.
 
-Usage:
-  agentloop cycle-close --name payment-refactor
-  agentloop cycle-close --name payment-refactor [--dry-run]
+Closing is a human decision, like opening a gate; the agent never runs this on its own. It
+refuses to close a cycle whose release gate is not approved, whose audit chain is damaged, or
+whose attestations do not cover its receipts: an archive is a record, and a record assembled
+from an inconsistent state is worse than none.
 """
 
 from __future__ import annotations
 
 import argparse
 import logging
-import re
 import shutil
 from datetime import date
-from pathlib import Path
 
-from agentloop import build_loop, common, events, revise
+from agentloop import common, event_chain, models
 from agentloop import repo as repo_mod
+from agentloop import store as store_mod
 
 logger = logging.getLogger(__name__)
 
 DOCS_DIR = "docs"
-SCAFFOLD_DIR = ".agentloop/scaffold/docs"
-SCAFFOLD_STATE = ".agentloop/scaffold/state.md"
+SCAFFOLD_DOCS = ".agentloop/scaffold/docs"
+SCAFFOLD_AGENTLOOP = ".agentloop/scaffold/agentloop"
 ARCHIVE_DIR = "docs/archive"
-# The per-cycle deliverables (relative to docs/). Everything else in docs/ persists across
-# cycles: 00-product-brief.md (the product vision) and 05-current-state.md (the baseline).
-CYCLE_ITEMS: tuple[str, ...] = (
+
+#: Per-cycle deliverables under docs/. Everything else persists across cycles.
+CYCLE_DOCS: tuple[str, ...] = (
     "10-requirements.md",
     "20-design.md",
     "decisions",
@@ -55,223 +47,205 @@ CYCLE_ITEMS: tuple[str, ...] = (
     "retrospective.md",
 )
 
+#: The cycle's machine record. Archived under `<archive>/agentloop/` (plan §27).
+CYCLE_STATE: tuple[str, ...] = ("plan.yaml", "state.yaml", "review.yaml", "events.ndjson", "attestations")
 
-def snapshot_scaffold(docs_dir: str = DOCS_DIR, scaffold_dir: str = SCAFFOLD_DIR) -> bool:
-    """Copy the pristine docs scaffolds *and* state.md aside, once. Returns True if anything was taken.
 
-    Called by init_cmd while docs/ and state.md are still pristine. A no-op per target
-    when its snapshot already exists — re-running init after they are filled must not overwrite the
-    pristine copy. The state.md snapshot is what `reset_state_text` restores the human-facing body
-    from at cycle-close (each is guarded independently, so an older repo can gain the state snapshot
-    on its own).
+class CycleError(RuntimeError):
+    """The cycle cannot be closed."""
+
+
+def snapshot_scaffold(repo: repo_mod.Repo) -> bool:
+    """Copy the pristine docs and SSOT documents aside, once. True if anything was taken.
+
+    Called by `init` while everything is still pristine. A no-op per target once its snapshot
+    exists — re-running init after the docs are filled must never overwrite the pristine copy.
     """
     took = False
-    dst = Path(scaffold_dir)
-    src = Path(docs_dir)
-    if not dst.exists() and src.is_dir():
-        dst.mkdir(parents=True)
-        for item in sorted(src.iterdir()):
-            if item.name == Path(ARCHIVE_DIR).name:
+    docs_dst = repo.path(SCAFFOLD_DOCS)
+    docs_src = repo.path(DOCS_DIR)
+    if not docs_dst.exists() and docs_src.is_dir():
+        docs_dst.mkdir(parents=True)
+        for item in sorted(docs_src.iterdir()):
+            if item.name == "archive":
                 continue
-            if item.is_dir():
-                shutil.copytree(item, dst / item.name)
-            else:
-                shutil.copy2(item, dst / item.name)
+            (shutil.copytree if item.is_dir() else shutil.copy2)(item, docs_dst / item.name)
         took = True
-    # state.md lives beside docs/ (repo root = docs_dir's parent), so derive both from docs_dir —
-    # this keeps the snapshot root-relative so a foreign repo root works too.
-    root = Path(docs_dir).parent
-    state_dst = root / SCAFFOLD_STATE
-    state_src = root / revise.STATE_PATH
-    if not state_dst.exists() and state_src.is_file():
-        state_dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(state_src, state_dst)
-        took = True
+
+    state_dst = repo.path(SCAFFOLD_AGENTLOOP)
+    state_dst.mkdir(parents=True, exist_ok=True)
+    for name in ("plan.yaml", "state.yaml", "review.yaml"):
+        src = repo.agentloop_dir / name
+        dst = state_dst / name
+        if src.is_file() and not dst.exists():
+            shutil.copy2(src, dst)
+            took = True
     return took
 
 
-def plan_close(
-    slug: str, today: str, docs_dir: str = DOCS_DIR, archive_base: str | None = None
-) -> list[tuple[str, str, str]]:
-    """The deterministic archive plan: (action, source, destination) rows (pure w.r.t. the fs read).
+def readiness(repo: repo_mod.Repo) -> list[str]:
+    """Every reason this cycle may not be closed yet (plan §27's final check)."""
+    store = store_mod.Store(repo)
+    blockers: list[str] = []
+    try:
+        state = store.read_state()
+    except models.DocumentError as exc:
+        return [str(exc)]
+    if state is None:
+        return ["no .agentloop/state.yaml — there is no cycle to close"]
 
-    action is "archive" for an existing deliverable, "skip" for one already gone
-    (already archived by a previous run — idempotence). `archive_base` defaults to the
-    conventional docs/archive/<date>-<slug> next to `docs_dir`.
+    if state.gate_status("release") != "approved":
+        blockers.append("the release gate (5) is not approved — a cycle closes on a signed release decision")
+    events, defects = event_chain.scan(repo.events)
+    if defects:
+        blockers.append(f"the audit chain has {len(defects)} defect(s); the archive would record an unreadable log")
+
+    for gate in models.GATE_ORDER:
+        receipt = state.gate_receipt(gate)
+        if state.gate_status(gate) != "approved" or receipt is None:
+            continue
+        attestation_id = receipt.get("attestation_id")
+        if not isinstance(attestation_id, str) or not (repo.attestations / f"{attestation_id}.json").exists():
+            blockers.append(
+                f"gate '{gate}' cites attestation {attestation_id!r}, which is not in .agentloop/attestations/ — "
+                "the archive would claim an approval whose signature nobody can check"
+            )
+    return blockers
+
+
+def plan_close(repo: repo_mod.Repo, slug: str, today: str) -> list[tuple[str, str, str]]:
+    """The deterministic archive plan: (action, source, destination) rows.
+
+    `action` is "archive" for something present and "skip" for something already gone, which
+    is what makes a re-run idempotent.
     """
-    if archive_base is None:
-        archive_base = str(Path(docs_dir) / "archive" / f"{today}-{slug}")
+    base = f"{ARCHIVE_DIR}/{today}-{slug}"
     rows: list[tuple[str, str, str]] = []
-    for name in CYCLE_ITEMS:
-        src = f"{docs_dir}/{name}"
-        action = "archive" if Path(src).exists() else "skip"
-        rows.append((action, src, f"{archive_base}/{name}"))
+    for name in CYCLE_DOCS:
+        src = f"{DOCS_DIR}/{name}"
+        rows.append(("archive" if repo.path(src).exists() else "skip", src, f"{base}/{name}"))
+    for name in CYCLE_STATE:
+        src = f".agentloop/{name}"
+        rows.append(("archive" if repo.path(src).exists() else "skip", src, f"{base}/agentloop/{name}"))
     return rows
 
 
-def _archive(rows: list[tuple[str, str, str]], cwd: str | None = None) -> list[str]:
-    """Execute the archive plan with `git mv` (falling back to a plain move for untracked files)."""
+def _archive(repo: repo_mod.Repo, rows: list[tuple[str, str, str]]) -> list[str]:
+    """Execute the plan with `git mv`, falling back to a plain move for untracked files."""
     moved: list[str] = []
     for action, src, dst in rows:
         if action != "archive":
             continue
-        Path(dst).parent.mkdir(parents=True, exist_ok=True)
-        rc, _ = common.run(["git", "mv", src, dst], cwd=cwd)
-        if rc != 0:  # untracked deliverable (never committed): move it all the same
-            shutil.move(src, dst)
+        repo.path(dst).parent.mkdir(parents=True, exist_ok=True)
+        rc, _ = common.run(["git", "mv", src, dst], cwd=str(repo.root))
+        if rc != 0:
+            shutil.move(str(repo.path(src)), str(repo.path(dst)))
         moved.append(src)
     return moved
 
 
-def _restore_scaffold(scaffold_dir: str = SCAFFOLD_DIR, docs_dir: str = DOCS_DIR) -> list[str]:
-    """Recreate fresh per-cycle scaffolds from the snapshot (never overwriting existing files)."""
+def _restore(repo: repo_mod.Repo) -> list[str]:
+    """Recreate fresh scaffolds from the snapshot, never overwriting an existing file."""
     restored: list[str] = []
-    for name in CYCLE_ITEMS:
-        src = Path(scaffold_dir) / name
-        dst = Path(docs_dir) / name
+    for name in CYCLE_DOCS:
+        src = repo.path(SCAFFOLD_DOCS) / name
+        dst = repo.path(DOCS_DIR) / name
         if not src.exists() or dst.exists():
             continue
-        if src.is_dir():
-            shutil.copytree(src, dst)
-        else:
+        (shutil.copytree if src.is_dir() else shutil.copy2)(src, dst)
+        restored.append(str(dst.relative_to(repo.root)))
+    for name in ("plan.yaml", "review.yaml"):
+        src = repo.path(SCAFFOLD_AGENTLOOP) / name
+        dst = repo.agentloop_dir / name
+        if src.exists() and not dst.exists():
             shutil.copy2(src, dst)
-        restored.append(str(dst))
+            restored.append(str(dst.relative_to(repo.root)))
     return restored
 
 
-def _get_field(text: str, field: str) -> str:
-    """Read a `field: "value"` front-matter value (empty string if absent)."""
-    m = re.search(rf'^{re.escape(field)}: "([^"]*)"', text, re.MULTILINE)
-    return m.group(1) if m else ""
+def next_state(previous: models.State, slug: str) -> dict[str, object]:
+    """A fresh state document for the next cycle, carrying only the project identity forward.
 
-
-def _set_field(text: str, field: str, value: str) -> str:
-    """Set a `field: "value"` front-matter value (first occurrence)."""
-    return re.sub(rf'^({re.escape(field)}: ")[^"]*(")', rf"\g<1>{value}\g<2>", text, count=1, flags=re.MULTILINE)
-
-
-def _is_separator_row(row: str) -> bool:
-    """True for a markdown table separator like `|------|-----|` (only pipes/dashes/colons/space)."""
-    s = row.strip()
-    return "-" in s and set(s) <= set("|-: ")
-
-
-def _rollback_rows(text: str) -> list[str]:
-    """The roll-back log's data rows (the `| … |` lines after its header separator, before the marker)."""
-    before = text.split(revise.REVISE_MARKER, 1)[0]
-    block: list[str] = []
-    for line in reversed(before.splitlines()):
-        if not line.strip() or not line.lstrip().startswith("|"):
-            break
-        block.append(line)
-    block.reverse()  # now [header, separator, data...]
-    sep = next((i for i, r in enumerate(block) if _is_separator_row(r)), None)
-    return block[sep + 1 :] if sep is not None else []
-
-
-def _restore_from_pristine(pristine: str, live: str) -> str:
-    """Pristine body with the live repo's identity (`project`/`branch`) and roll-back log carried over."""
-    base = _set_field(pristine, "project", _get_field(live, "project"))
-    base = _set_field(base, "branch", _get_field(live, "branch"))
-    carried = _rollback_rows(live)
-    if carried and revise.REVISE_MARKER in base:
-        base = base.replace(revise.REVISE_MARKER, "\n".join(carried) + "\n" + revise.REVISE_MARKER, 1)
-    return base
-
-
-def reset_state_text(text: str, slug: str, today: str, archive_base: str, pristine: str | None = None) -> str:
-    """Reset gates/phase/updated_at and log the close; when `pristine` is given, also refresh the body.
-
-    Without `pristine` (no state snapshot — a repo initialised before this feature) the reset is
-    front-matter only, leaving the human-facing body untouched (the historical behaviour). With the
-    pristine snapshot, the body is restored from it — carrying the live `project`/`branch` and the
-    accumulating roll-back log across — so cycle-close leaves a clean next-cycle board, not a stale one.
+    Nothing else survives: a gate status, a receipt, or a task status carried into a new cycle
+    would be an approval for work that has not happened.
     """
-    base = text if pristine is None else _restore_from_pristine(pristine, text)
-    for gate in revise.GATE_ORDER:
-        base = revise._set_gate_pending(base, gate)
-    base = common.set_current_phase(base, "brief")
-    base = common.set_updated_at(base, today)
-    return revise._insert_log(
-        base, f"cycle-close ({slug})", list(revise.GATE_ORDER), f"deliverables archived to {archive_base}", today
-    )
+    return {
+        "project": previous.project,
+        "cycle_id": slug,
+        "current_phase": "brief",
+        "updated_at": event_chain.now_iso(),
+        "gates": {gate: {"status": "pending", "receipt": None} for gate in models.GATE_ORDER},
+        "plan": {"status": "draft"},
+        "execution": {"status": "idle"},
+        "review": {"status": "none"},
+        "tasks": {},
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="close the current delta cycle (archive docs, reset gates)")
-    parser.add_argument("--name", default="", help="a short slug for the cycle (archive folder name)")
-    parser.add_argument("--dry-run", action="store_true", help="print the plan only")
+    parser = argparse.ArgumentParser(description="archive the finished delta cycle and reset for the next")
+    parser.add_argument("--name", required=True, help="a slug for the archive directory and the next cycle id")
+    parser.add_argument("--dry-run", action="store_true", help="print the plan; write nothing")
     parser.add_argument("--repo", default=None, help="repository root (default: discovered from cwd)")
     args = parser.parse_args(argv)
     common.configure_logging()
 
-    slug = args.name.strip()
-    if not slug:
-        logger.error("usage: agentloop cycle-close --name <slug>")
-        return 2
     try:
         repo = repo_mod.get(args.repo)
-    except repo_mod.RepoNotFoundError as exc:
+        repo.require_supported_layout()
+    except (repo_mod.RepoNotFoundError, repo_mod.UnsupportedLayoutError) as exc:
         logger.error(str(exc))
         return 1
+
+    slug = args.name.strip().lower()
+    if not slug or not slug.replace("-", "").isalnum():
+        logger.error(f"--name {args.name!r} must be a lowercase slug (letters, digits, dashes)")
+        return 2
+
     today = date.today().isoformat()
-    # rel_base names the archive in messages and the state.md log row (a repo-relative name
-    # belongs in a committed doc); the absolute twin anchors the actual fs operations.
-    rel_base = f"{ARCHIVE_DIR}/{today}-{slug}"
-    archive_base = str(repo.path(rel_base))
-    rows = plan_close(slug, today, docs_dir=str(repo.docs), archive_base=archive_base)
-
-    if not repo.path(SCAFFOLD_DIR).is_dir():
-        logger.error(
-            f"no scaffold snapshot at {SCAFFOLD_DIR} — run `agentloop init` first so fresh"
-            " scaffolds can be restored after archiving."
-        )
-        return 1
-
+    rows = plan_close(repo, slug, today)
+    print(f"Archive plan for cycle '{slug}' → {ARCHIVE_DIR}/{today}-{slug}/")
     for action, src, dst in rows:
-        # Display repo-relative names (the fs operations use the absolute twins).
-        src_shown, dst_shown = repo.rel(src) or src, repo.rel(dst) or dst
-        print(
-            f"  {action:<7} {src_shown} → {dst_shown}"
-            if action == "archive"
-            else f"  {action:<7} {src_shown} (already archived)"
-        )
+        print(f"  {action:8} {src}" + (f" → {dst}" if action == "archive" else ""))
+
+    blockers = readiness(repo)
+    if blockers:
+        logger.error("cannot close this cycle:\n" + "\n".join(f"  - {b}" for b in blockers))
+        return 1
     if args.dry_run:
-        print("[dry-run] then: restore scaffolds, reset tasks.yaml, gates → pending, phase → brief")
+        print("\n(dry run — nothing was written)")
         return 0
 
-    _archive(rows, cwd=str(repo.root))
-    # The orchestration event log (and its rotated generation) and the post-build security-review
-    # report belong to the closing cycle: archive them alongside the deliverables so the next cycle
-    # starts clean (AGENTS.md "Context budget" — logs are rotated/archived, never left to grow
-    # without bound). The legacy pre-events build-loop.log is swept the same way.
-    runtime_artifacts = [
-        f"{base}{suffix}" for base in (events.EVENTS_PATH, ".agentloop/build-loop.log") for suffix in ("", ".1")
-    ]
-    runtime_artifacts.append(build_loop.SECURITY_REVIEW_PATH)
-    for name in runtime_artifacts:
-        log_src = repo.path(name)
-        if log_src.is_file():
-            log_dst = Path(archive_base) / log_src.name
-            log_dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(log_src), log_dst)
-            print(f"  archive {name} → {rel_base}/{log_src.name}")
-    for path in _restore_scaffold(scaffold_dir=str(repo.path(SCAFFOLD_DIR)), docs_dir=str(repo.docs)):
-        print(f"  restore {repo.rel(path) or path} (fresh scaffold)")
-    repo.tasks.write_text(build_loop.TASKS_HEADER + "schema_version: 1\ntasks: []\n", encoding="utf-8")
-    print(f"  reset   {build_loop.TASKS_PATH} (empty task list)")
-    state = repo.state
-    snapshot = repo.path(SCAFFOLD_STATE)
-    pristine = snapshot.read_text(encoding="utf-8") if snapshot.is_file() else None
-    state.write_text(
-        reset_state_text(state.read_text(encoding="utf-8"), slug, today, rel_base, pristine), encoding="utf-8"
-    )
-    body = "body refreshed" if pristine is not None else "body kept — no state snapshot"
-    print(f"  reset   {revise.STATE_PATH} (gates pending, phase brief; {body})")
-    print(
-        f'\nCycle "{slug}" closed (archive: {rel_base}).\n'
-        "Next cycle: update docs/00-product-brief.md with the next change and start with /req."
-    )
+    store = store_mod.Store(repo)
+    previous = store.read_state()
+    if previous is None:
+        logger.error("no .agentloop/state.yaml")
+        return 1
+
+    # The archive is assembled and recorded BEFORE the reset, so the closing event is the last
+    # entry of the chain being archived rather than the first of a chain that has no history.
+    with store.transaction() as tx:
+        tx.append(
+            "cycle_closed",
+            cycle_id=previous.cycle_id,
+            subject_ids=[slug],
+            detail={"archive": f"{ARCHIVE_DIR}/{today}-{slug}", "chain_root": store.chain_root()},
+        )
+
+    moved = _archive(repo, rows)
+    restored = _restore(repo)
+
+    fresh = next_state(previous, slug)
+    store_mod.atomic_write(repo.state, store_mod.dump_yaml(fresh), mode=0o644)
+    with store.transaction() as tx:
+        tx.append(
+            "cycle_initialized",
+            cycle_id=slug,
+            detail={"previous_cycle": previous.cycle_id, "archived_from": f"{today}-{slug}"},
+        )
+
+    print(f"\narchived {len(moved)} item(s), restored {len(restored)} scaffold(s)")
+    print(f"cycle '{slug}' is open at phase 'brief'. Commit the archive, then write the next brief.")
     return 0
 
 

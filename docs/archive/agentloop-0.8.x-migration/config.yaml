@@ -1,0 +1,104 @@
+# yaml-language-server: $schema=schema/config.schema.json
+# .agentloop/config.yaml — the "single source of knobs" for deterministic orchestration.
+# build_loop.py and gate_guard.py read this file — code, not prose, so a change here
+# deterministically changes the execution control flow. Narrative detail lives in the /build
+# procedure (.agentloop/prompts/commands/build.md) and AGENTS.md, not in these comments.
+
+schema_version: 1
+
+build:
+  # Concurrent independent leaf tasks within the frontier (the worktree-isolation cap).
+  max_parallel: 3
+
+  # The headless agent CLI mode A launches; the prompt is appended as the last argument.
+  # Switch with `agentloop agent <claude|codex|gemini|"custom cmd">` (agent_cli.py):
+  #   claude: ["claude", "-p"]   codex: ["codex", "exec"]   gemini: ["gemini", "-p"]
+  headless:
+    cmd: ["claude", "-p"]
+
+  worktree:
+    enabled: true            # set false to run serially on the work branch without isolation
+    dir: .worktrees          # where worktrees are created (already .gitignore'd)
+    # Joined with `-`, NOT `/`: git forbids a branch that is a path-prefix of another ref,
+    # so "{branch}/{task_id}" would always fail to create.
+    branch_pattern: "{branch}-{task_id}"
+
+  # The quality gate = **the single definition of the DoD** (step semantics: the /build
+  # procedure's "Quality-gate step notes"). kind: cmd — pass/fail decided by exit code;
+  # `run` is shlex-split with no shell (wrap pipes/redirects in a make target); an empty
+  # `run` skips the step; `retries` is that step's budget for sending a failure back to the
+  # implementer (over budget → blocked). kind: agent — a headless review+simplify pass that
+  # fixes findings in place; if it changes code, already-passed cmd steps are re-run.
+  # A tasks.yaml `test` command that differs from every cmd step is prepended as `task-test`.
+  # In a project without make, substitute that project's own commands.
+  quality_gate:
+    agent_steps: true        # false = skip agent steps (cmd-only gate; cheaper but below the documented DoD)
+    # Re-run the cmd steps once on the MERGED work branch when a batch merged 2+ leaves (each
+    # leaf was green only in isolation); a red goes to a headless fixer within the step's
+    # retries budget. A single-leaf join skips (its tree equals the verified worktree).
+    integration_gate: true
+    steps:
+      - name: test
+        kind: cmd
+        run: "make test"
+        retries: 2
+      - name: check
+        kind: cmd
+        run: "make check"
+        retries: 2
+      - name: review         # /code-review + /simplify discipline, applied in place
+        kind: agent
+      - name: smoke          # minimal real-launch check — required for runnable deliverables.
+        kind: cmd            # Fill `run` as soon as any entry point launches (tests can be
+        run: ""              # green while the launch path is broken), then set the human
+        retries: 1           # decision knob `required: true`: an empty run then refuses to
+                             # build (fail-fast) instead of silently skipping the launch check.
+
+  # Steps run once when every task is done, before presenting gate ④.
+  post_build:
+    # Headless security review of the work branch, written to .agentloop/security-review.md
+    # with the reviewed HEAD embedded (same-HEAD re-runs skip; logged as a security_review
+    # event). Report-only — findings are triaged by the human/lead. false = run the review
+    # yourself before gate ④ (procedure: /build "When all tasks complete").
+    security_review: true
+
+  # Hard timeouts for external processes, in seconds (0 = none); on expiry the process is
+  # killed and the step fails like a normal red step.
+  timeouts:
+    cmd_sec: 1800            # quality-gate cmd steps (make test / make check / smoke)
+    agent_sec: 3600          # headless.cmd launches (implementer, review agent step)
+
+  # (merge order is deliberately NOT a knob: leaves merge into work in ascending task-id
+  #  order — build_loop.py hardcodes it so every run joins the same way.)
+
+gates:
+  # If true, gate_guard.py (the editor hook) mechanically blocks deliverable edits while the
+  # prerequisite gate is unapproved; false falls back to the convention layer (AGENTS.md).
+  enforce_hook: true
+  # true while this repo IS the template itself (scaffold originals share paths with product
+  # deliverables). `agentloop init` flips this to false for products (guard goes live).
+  template_mode: true
+  # Paths the guard watches → the gate each requires. A key ending in "/" guards the prefix;
+  # any other key guards that exact file; exact wins over prefixes, longest prefix wins.
+  # Omit the key entirely to use these same built-in defaults. tests/ is deliberately NOT
+  # guarded: fixture/harness prep while a gate is pending is sanctioned speculative work.
+  guard_paths:
+    docs/20-design.md: requirements
+    docs/decisions/: requirements
+    docs/tasks/: design
+    docs/test/: build
+    src/: tasks
+    lib/: tasks
+    app/: tasks
+    backend/: tasks
+    frontend/: tasks
+    scripts/: tasks        # product scripts (product-owned; the harness is an installed package now)
+
+github:
+  # One-way-mirror tasks.yaml to GitHub Issues (issue_sync.py). Off by default = offline-safe;
+  # even when true, auto-skips if gh / remote is absent. tasks.yaml is always the SSOT; Issues
+  # are a projection that is never read back.
+  enabled: false
+  label: agentloop        # the label identifying mirror issues (only these are managed)
+  close_on_done: true     # close the issue for tasks with status==done
+  repo: ""                # empty: gh infers from origin. Specify owner/repo to pin it

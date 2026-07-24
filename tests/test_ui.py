@@ -14,31 +14,8 @@ from pathlib import Path
 
 import pytest
 
-from agentloop import registry, ui
-
-_STATE = """---
-project: "demo"
-branch: "build/demo"
-current_phase: requirements
-gates:
-  requirements: pending       # c1
-  design: pending             # c2
-  tasks: pending
-  build: pending
-  release: pending
-updated_at: "2026-07-01"
----
-# board
-
-Body example that must never be rewritten: `tasks: pending`.
-"""
-
-_CONFIG = """gates:
-  template_mode: false
-github:
-  enabled: false
-"""
-
+from agentloop import models, registry, store, ui
+from tests._support import SANDBOXED_PROFILES, chain, make_config, make_state, seed_repo
 
 # --- action_argv: the fixed whitelist ------------------------------------------
 
@@ -85,20 +62,23 @@ def isolate_config_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None
 
 
 def _seed_repo(base: Path, project: str) -> Path:
-    loop = base / ".agentloop"
-    loop.mkdir(parents=True)
-    (loop / "state.md").write_text(_STATE.replace('project: "demo"', f'project: "{project}"'), encoding="utf-8")
-    (loop / "config.yaml").write_text(_CONFIG, encoding="utf-8")
+    base.mkdir(parents=True, exist_ok=True)
+    seed_repo(
+        base,
+        state=make_state(
+            project=project,
+            gates=dict.fromkeys(models.GATE_ORDER, "pending"),
+            phase="requirements",
+            plan_status="draft",
+        ),
+        config=make_config(profiles=SANDBOXED_PROFILES),
+    )
     return base
 
 
 @pytest.fixture
 def repo(tmp_path: Path) -> Path:
-    loop = tmp_path / ".agentloop"
-    loop.mkdir()
-    (loop / "state.md").write_text(_STATE, encoding="utf-8")
-    (loop / "config.yaml").write_text(_CONFIG, encoding="utf-8")
-    return tmp_path
+    return _seed_repo(tmp_path, "demo")
 
 
 @pytest.fixture
@@ -215,19 +195,31 @@ def test_post_unknown_action_is_400(server: ui.DashboardServer) -> None:
     assert status == 400
 
 
-def test_post_gate_approve_updates_state(server: ui.DashboardServer, repo: Path) -> None:
-    status, _ = _request(server, "POST", "/api/gate/approve", {"gate": "requirements"}, token=server.token)
+def test_post_gate_approve_returns_a_request_and_opens_nothing(server: ui.DashboardServer, repo: Path) -> None:
+    """Clicking in a localhost UI is not authentication: the browser proves nothing about who
+    is at the keyboard, which is why the authority moved to a signature (plan §7.1)."""
+    from agentloop import repo as repo_mod
+    from agentloop import store as store_mod
+
+    status, body = _request(server, "POST", "/api/gate/approve", {"gate": "requirements"}, token=server.token)
     assert status == 200
-    state = (repo / ".agentloop" / "state.md").read_text(encoding="utf-8")
-    assert re.search(r"requirements: approved\s+# \d{4}-\d{2}-\d{2} \(via ui\)", state)
-    assert re.search(r"design: pending\s+# c2", state)
-    # The delegation to approve.py carries its full behavior: phase advance + the event record.
-    assert "current_phase: design" in state
-    events = (repo / ".agentloop" / "events.ndjson").read_text(encoding="utf-8")
-    assert '"event": "gate_approved"' in events and '"gate": "requirements"' in events
-    # The chain check answers 409 through HTTP too (tasks needs design first).
-    status2, _ = _request(server, "POST", "/api/gate/approve", {"gate": "tasks"}, token=server.token)
-    assert status2 == 409
+    payload = json.loads(body)
+    assert payload["gate"] == "requirements"
+    assert "attestation sign" in " ".join(payload["next"])
+
+    state = store_mod.Store(repo_mod.Repo(repo)).read_state()
+    assert state is not None and state.gate_status("requirements") == "pending"
+
+
+def test_post_gate_approve_reports_blockers_rather_than_proceeding(
+    server: ui.DashboardServer,
+) -> None:
+    status, body = _request(server, "POST", "/api/gate/approve", {"gate": "build"}, token=server.token)
+    assert status == 200
+    payload = json.loads(body)
+    assert payload["ok"] is False
+    assert payload["blockers"]
+    assert payload["attestation_request"] is None
 
 
 def test_read_only_server_refuses_posts(repo: Path) -> None:
@@ -266,12 +258,12 @@ def test_open_mode_targets_vscode_over_external_browser() -> None:
 
 
 def _seed_events(repo: Path, count: int) -> None:
-    lines = [
-        json.dumps({"id": i, "ts": f"2026-07-19T00:00:{i:02d}", "event": "task_done", "task": f"T-{i:03d}"})
-        for i in range(1, count)
-    ]
-    lines.append(json.dumps({"id": count, "ts": "2026-07-19T01:00:00", "event": "blocked", "task": "T-009"}))
-    (repo / ".agentloop" / "events.ndjson").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    """A chained log: `count - 1` completed tasks, then one event awaiting a human decision."""
+    from agentloop import event_chain
+
+    ui._events_cache = None
+    names = ["task_completed"] * (count - 1) + ["oracle_failed"]
+    event_chain.append_lines(repo / ".agentloop" / "events.ndjson", chain(*names))
 
 
 def test_get_events_returns_tail_newest_first_with_open_flag(server: ui.DashboardServer, repo: Path) -> None:
@@ -281,12 +273,15 @@ def test_get_events_returns_tail_newest_first_with_open_flag(server: ui.Dashboar
     payload = json.loads(data)
     assert payload["total"] == 5 and len(payload["events"]) == 3
     newest = payload["events"][0]
-    assert newest["event"] == "blocked" and newest["open"] is True  # unresolved escalation
-    assert payload["events"][1]["open"] is False  # task_done is not an escalation kind
+    assert newest["event"] == "oracle_failed" and newest["needs_decision"] is True
+    assert payload["events"][1]["needs_decision"] is False  # a completed task needs no decision
+    # The chain root the feed was rendered from, so a viewer can check it against a receipt.
+    assert payload["chain_root"].startswith("sha256:")
 
 
 def test_get_events_defaults_and_rejects_bad_limit(server: ui.DashboardServer, repo: Path) -> None:
-    assert json.loads(_request(server, "GET", "/api/events")[1]) == {"events": [], "total": 0}
+    empty = json.loads(_request(server, "GET", "/api/events")[1])
+    assert empty["events"] == [] and empty["total"] == 0
     assert _request(server, "GET", "/api/events?limit=abc")[0] == 400
 
 
@@ -299,13 +294,14 @@ def test_events_are_parsed_once_per_version_of_the_log(server: ui.DashboardServe
     first = ui._load_events_cached(log)
     assert ui._load_events_cached(log) is first  # unchanged file: the same parsed list, not a re-parse
 
-    with log.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps({"id": 6, "ts": "2026-07-19T02:00:00", "event": "task_done"}) + "\n")
+    from agentloop import event_chain
+
+    event_chain.append_lines(log, [event_chain.link(first[-1], event_chain.make("task_completed", "demo-cycle"))])
     payload = json.loads(_request(server, "GET", "/api/events")[1])
-    assert payload["total"] == 6 and payload["events"][0]["id"] == 6
+    assert payload["total"] == 6 and payload["events"][0]["seq"] == 6
 
     missing = repo / ".agentloop" / "nope.ndjson"
-    assert ui._load_events_cached(missing) == []  # same tolerance as load_events
+    assert ui._load_events_cached(missing) == []  # an absent log is empty
 
 
 # --- /api/status conditional requests --------------------------------------------
@@ -339,7 +335,21 @@ def test_status_without_if_none_match_is_always_200(server: ui.DashboardServer) 
 
 def test_status_etag_changes_when_the_ssot_moves(server: ui.DashboardServer, repo: Path) -> None:
     _, etag, _ = _get_conditional(server, "/api/status")
-    (repo / ".agentloop" / "state.md").write_text(_STATE.replace("requirements: pending", "requirements: approved"))
+    (repo / ".agentloop" / "state.yaml").write_bytes(
+        store.dump_yaml(
+            make_state(
+                gates={
+                    "requirements": "approved",
+                    "design": "pending",
+                    "tasks": "pending",
+                    "build": "pending",
+                    "release": "pending",
+                },
+                phase="design",
+                plan_status="draft",
+            )
+        )
+    )
     status, new_etag, body = _get_conditional(server, "/api/status", etag)
     assert status == 200 and new_etag != etag
     assert json.loads(body)["gates"][0]["status"] == "approved"
@@ -351,7 +361,7 @@ def test_status_reads_the_event_log_through_the_cache(server: ui.DashboardServer
     _seed_events(repo, count=5)
     log = repo / ".agentloop" / "events.ndjson"
     ui._events_cache = None  # empty the one slot, so what fills it can only be the request below
-    assert json.loads(_get_conditional(server, "/api/status")[2])["escalations"]["total_open"] == 1
+    assert len(json.loads(_get_conditional(server, "/api/status")[2])["attention"]) == 1
     assert ui._events_cache is not None and ui._events_cache[0][0] == str(log)
 
 
@@ -378,6 +388,109 @@ def test_get_review_serves_rendered_deliverable(server: ui.DashboardServer, repo
 @pytest.mark.parametrize("path", ["/api/review/nope", "/api/review/../state", "/api/review/", "/api/review/Build"])
 def test_get_review_unknown_gate_is_404(server: ui.DashboardServer, path: str) -> None:
     assert _request(server, "GET", path)[0] == 404
+
+
+# --- Challenge-first human review (plan §21.1, §21.2) ---------------------------
+
+
+def _generated_review_with_challenge() -> dict[str, object]:
+    """A minimal generated machine review carrying one unanswered challenge (expected 'B')."""
+    return {
+        "machine": {
+            "status": "generated",
+            "binding": {
+                "change_digest": "sha256:" + "a" * 64,
+                "plan_digest": "sha256:" + "b" * 64,
+                "toolchain_digest": "sha256:" + "c" * 64,
+            },
+            "coverage": [
+                {
+                    "diff_digest": "sha256:" + "d" * 64,
+                    "analyzed_files": 1,
+                    "truncated": False,
+                    "coverage_status": "sufficient",
+                }
+            ],
+            "actual_extraction": [],
+            "claims": [],
+            "challenges": [
+                {
+                    "id": "CH-001",
+                    "risk": "high",
+                    "scenario": "the remote committed, the response was lost, the client retried",
+                    "choices": [{"id": "A", "text": "double-charges"}, {"id": "B", "text": "one logical request"}],
+                    "reveal": {"expected_choice": "B", "counterfactual": "trace the retry key"},
+                }
+            ],
+        },
+        "human": {"status": "not_started"},
+    }
+
+
+@pytest.fixture
+def review_server(tmp_path: Path) -> Iterator[ui.DashboardServer]:
+    root = tmp_path / "rv"
+    root.mkdir()
+    seed_repo(
+        root,
+        state=make_state(project="rv", gates=dict.fromkeys(models.GATE_ORDER, "pending"), phase="build"),
+        config=make_config(profiles=SANDBOXED_PROFILES),
+        review=_generated_review_with_challenge(),
+    )
+    srv = ui.DashboardServer(("127.0.0.1", 0), root=root, read_only=False)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        yield srv
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+def test_session_carries_the_next_challenge_without_its_reveal(review_server: ui.DashboardServer) -> None:
+    status, data = _request(review_server, "GET", "/api/review/session")
+    assert status == 200
+    session = json.loads(data)
+    assert session["generated"] is True
+    assert session["next_challenge"]["id"] == "CH-001"
+    assert "reveal" not in session["next_challenge"]  # the expected choice must not leak with the question
+    assert session["machine_digest"].startswith("sha256:")
+
+
+def test_priming_stage_is_locked_until_the_challenge_is_answered(review_server: ui.DashboardServer) -> None:
+    locked = json.loads(_request(review_server, "GET", "/api/review/stage/expected_actual")[1])
+    assert locked["locked"] is True
+    # A pre-reveal stage is open from the start.
+    assert json.loads(_request(review_server, "GET", "/api/review/stage/risk_brief")[1])["locked"] is False
+
+
+def test_answering_the_challenge_unlocks_the_priming_stage(review_server: ui.DashboardServer) -> None:
+    digest = json.loads(_request(review_server, "GET", "/api/review/session")[1])["machine_digest"]
+    body = {"challenge_id": "CH-001", "choice": "B", "confidence": "high", "machine_digest": digest}
+    status, data = _request(review_server, "POST", "/api/review/challenge", body, token=review_server.token)
+    assert status == 200 and json.loads(data)["ok"] is True
+    after = json.loads(_request(review_server, "GET", "/api/review/stage/expected_actual")[1])
+    assert after["locked"] is False
+
+
+def test_a_human_answer_leaves_the_machine_digest_unchanged(review_server: ui.DashboardServer) -> None:
+    # E2E-09: answering a challenge moves the human half, never the machine half.
+    before = json.loads(_request(review_server, "GET", "/api/review/session")[1])["machine_digest"]
+    body = {"challenge_id": "CH-001", "choice": "B", "confidence": "low", "machine_digest": before}
+    data = json.loads(_request(review_server, "POST", "/api/review/challenge", body, token=review_server.token)[1])
+    assert data["machine_digest"] == before
+
+
+def test_a_stale_machine_digest_is_refused_with_409(review_server: ui.DashboardServer) -> None:
+    # E2E-08: an answer written against a machine review that has since changed is a conflict.
+    stale = "sha256:" + "0" * 64
+    body: dict[str, object] = {"challenge_id": "CH-001", "choice": "B", "confidence": "low", "machine_digest": stale}
+    status, _ = _request(review_server, "POST", "/api/review/challenge", body, token=review_server.token)
+    assert status == 409
+
+
+def test_review_post_without_token_is_403(review_server: ui.DashboardServer) -> None:
+    status, _ = _request(review_server, "POST", "/api/review/challenge", {"challenge_id": "CH-001", "choice": "B"})
+    assert status == 403
 
 
 def test_review_is_readable_on_a_read_only_server(repo: Path) -> None:

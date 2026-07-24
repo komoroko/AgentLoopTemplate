@@ -1,436 +1,327 @@
-"""Verify doctor.py — the read-only environment / SSOT-consistency diagnosis."""
+"""Tests for doctor.py — the read-only diagnosis of everything the guarantees rest on.
+
+Two rules make the output trustworthy, and both are asserted here.
+
+**It never reports "not measured" as "fine".** A missing Trust Manifest is a FAIL, not a
+silent pass; an insufficient coverage manifest is a FAIL, not a zero.
+
+**It never repairs anything.** Several of the things it inspects — an approval, an audit
+record — must only ever change by a deliberate human action, and a doctor that fixes what it
+finds is a doctor whose findings nobody reads.
+"""
 
 from __future__ import annotations
 
-import shutil
-from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-import yaml
 
-from agentloop import build_loop, doctor, events
-from tests._support import fake_git
-
-_STATE = """---
-project: "demo"
-branch: "build/demo"
-current_phase: build
-gates:
-  requirements: approved
-  design: approved
-  tasks: approved
-  build: pending
-  release: pending
-updated_at: "2026-07-09"
----
-# board
-"""
-
-_CONFIG = (
-    "build:\n"
-    "  max_parallel: 3\n"
-    "  worktree: {enabled: true, dir: .worktrees, branch_pattern: '{branch}-{task_id}'}\n"
-    "  quality_gate:\n"
-    "    steps:\n"
-    "      - {name: test, kind: cmd, run: 'make test'}\n"
-    "      - {name: check, kind: cmd, run: 'make check'}\n"
-    "gates:\n  enforce_hook: true\n  template_mode: false\n"
-)
-
-_TASKS = "tasks:\n  - {id: T-001, title: base, kind: foundation, blockedBy: [], status: todo, test: make test}\n"
-
-_SETTINGS = '{"hooks": {"PreToolUse": [{"hooks": [{"command": "uv run src/agentloop/gate_guard.py"}]}]}}\n'
+from agentloop import doctor, models
+from agentloop import repo as repo_mod
+from tests._support import SANDBOXED_PROFILES, chain, make_config, make_review, make_state, seed_repo
 
 
-@pytest.fixture
-def project(make_repo: Callable[..., Path], monkeypatch: pytest.MonkeyPatch) -> Path:
-    """A healthy product repo: every check should PASS/INFO on this baseline."""
-    root = make_repo(state=_STATE, config=_CONFIG, tasks=_TASKS, settings=_SETTINGS)
-    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
-    # rev-parse yields the work branch; branch --list etc. leave nothing behind on the baseline.
-    monkeypatch.setattr(build_loop, "_run", fake_git({("git", "rev-parse"): (0, "build/demo\n")}))
-    return root
+def findings(repo: repo_mod.Repo) -> dict[str, list[doctor.Finding]]:
+    """run_checks grouped by area, for readable assertions."""
+    grouped: dict[str, list[doctor.Finding]] = {}
+    for finding in doctor.run_checks(repo):
+        grouped.setdefault(finding.area, []).append(finding)
+    return grouped
 
 
-def _levels(findings: list[doctor.Finding], area: str) -> list[str]:
-    return [f.level for f in findings if f.area == area]
+def levels(items: list[doctor.Finding], substring: str) -> list[str]:
+    return [f.level for f in items if substring in f.message]
 
 
-def _messages(findings: list[doctor.Finding], level: str) -> list[str]:
-    return [f.message for f in findings if f.level == level]
+def trust_manifest(tmp_path: Path, *, identities: int = 1) -> Path:
+    path = tmp_path / "config" / "agentloop" / "trust.yaml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    signers = tmp_path / "config" / "agentloop" / "allowed_signers"
+    signers.write_text("p0@example.com ssh-ed25519 AAAA\n", encoding="utf-8")
+    header = f"attestation: {{namespace: agentloop, allowed_signers_file: {signers}}}\n"
+    body = (
+        header
+        + "identities:\n"
+        + "".join(
+            f"  - principal: p{i}@example.com\n"
+            f"    key_fingerprint: SHA256:{chr(65 + i)}{'a' * 42}\n"
+            f"    roles: [gate_reviewer]\n"
+            for i in range(identities)
+        )
+    )
+    path.write_text(body if identities else header + "identities: []\n", encoding="utf-8")
+    return path
 
 
-def test_healthy_repo_has_no_fail_or_warn(project: Path) -> None:
-    findings = doctor.run_checks()
-    assert not _messages(findings, "FAIL")
-    assert not _messages(findings, "WARN")
-    assert doctor.main([]) == 0
+def healthy(tmp_path: Path, **kwargs: object) -> repo_mod.Repo:
+    """A repo that should produce no FAIL: sandboxed profiles and a Trust Manifest present."""
+    trust_manifest(tmp_path)
+    kwargs.setdefault("config", make_config(profiles=SANDBOXED_PROFILES))
+    seed_repo(tmp_path, **kwargs)  # type: ignore[arg-type]
+    return repo_mod.Repo(tmp_path)
 
 
-def test_missing_required_binary_fails(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(shutil, "which", lambda name: None if name == "uv" else f"/usr/bin/{name}")
-    findings = doctor.run_checks()
-    assert any("uv not found" in m for m in _messages(findings, "FAIL"))
+# --- format -------------------------------------------------------------------
+
+
+def test_a_legacy_layout_short_circuits_every_other_check(tmp_path: Path) -> None:
+    seed_repo(tmp_path)
+    (tmp_path / ".agentloop" / "state.md").write_text("legacy\n", encoding="utf-8")
+    results = doctor.run_checks(repo_mod.Repo(tmp_path))
+    assert len(results) == 1
+    assert results[0].level == "FAIL"
+    assert "does not read or migrate" in results[0].message
+
+
+def test_missing_ssot_documents_are_named(tmp_path: Path) -> None:
+    seed_repo(tmp_path, plan=None, review=None)
+    assert any(
+        "plan.yaml" in f.message and "review.yaml" in f.message for f in doctor.check_layout(repo_mod.Repo(tmp_path))
+    )
+
+
+def test_an_invalid_document_fails_with_its_validation_errors(tmp_path: Path) -> None:
+    seed_repo(tmp_path)
+    (tmp_path / ".agentloop" / "plan.yaml").write_text("cycle: {}\nclaims: []\n", encoding="utf-8")
+    results, _ = doctor.check_documents(repo_mod.Repo(tmp_path))
+    assert any(f.level == "FAIL" and "plan.yaml" in f.message for f in results)
+
+
+def test_a_healthy_repo_validates_all_four_documents(tmp_path: Path) -> None:
+    repo = healthy(tmp_path)
+    _, loaded = doctor.check_documents(repo)
+    assert set(loaded) == {"config", "state", "plan", "review"}
+
+
+def test_the_lock_format_is_reported(tmp_path: Path) -> None:
+    repo = healthy(tmp_path)
+    assert any("agentloop-grounded-v1" in f.message for f in doctor.check_lock(repo))
+
+
+def test_a_pre_090_lock_fails(tmp_path: Path) -> None:
+    seed_repo(tmp_path, lock=False)
+    (tmp_path / ".agentloop" / "agentloop.lock").write_text("version: 1\n", encoding="utf-8")
+    results = doctor.check_lock(repo_mod.Repo(tmp_path))
+    assert results[0].level == "FAIL"
+    assert "predates AgentLoop 0.9.0" in results[0].message
+
+
+# --- trust --------------------------------------------------------------------
+
+
+def test_a_missing_trust_manifest_is_a_fail_not_a_shrug(tmp_path: Path) -> None:
+    """Without it there is no authorized principal, so no gate can open. Reporting that as
+    healthy would describe a repository in which nothing can ever be approved as fine."""
+    seed_repo(tmp_path)
+    results = doctor.check_trust()
+    assert any(f.level == "FAIL" and "no Trust Manifest" in f.message for f in results)
+    assert any("OUTSIDE the repository" in f.message for f in results)
+
+
+def test_a_manifest_with_no_identities_still_fails(tmp_path: Path) -> None:
+    trust_manifest(tmp_path, identities=0)
+    assert any(f.level == "FAIL" and "no identities" in f.message for f in doctor.check_trust())
+
+
+def test_a_readable_manifest_passes(tmp_path: Path) -> None:
+    trust_manifest(tmp_path, identities=2)
+    assert any(f.level == "PASS" and "2 identity" in f.message for f in doctor.check_trust())
+
+
+def test_a_group_readable_manifest_warns(tmp_path: Path) -> None:
+    path = trust_manifest(tmp_path)
+    path.chmod(0o644)
+    assert any(f.level == "WARN" and "group/world accessible" in f.message for f in doctor.check_trust())
+
+
+def test_an_approved_gate_must_cite_an_attestation_that_exists(tmp_path: Path) -> None:
+    repo = healthy(tmp_path)
+    results = doctor.check_attestations(repo, models.State(make_state()))
+    assert any(f.level == "FAIL" and "not in .agentloop/attestations/" in f.message for f in results)
+
+
+def test_a_present_attestation_passes(tmp_path: Path) -> None:
+    repo = healthy(tmp_path)
+    repo.attestations.mkdir(parents=True, exist_ok=True)
+    for gate in ("requirements", "design", "tasks"):
+        (repo.attestations / f"ATT-{gate.upper()}-0001.json").write_text("{}", encoding="utf-8")
+    results = doctor.check_attestations(repo, models.State(make_state()))
+    assert all(f.level == "PASS" for f in results)
+
+
+# --- runtime and sandbox ------------------------------------------------------
+
+
+def test_an_unsandboxed_profile_is_a_fail_with_the_command_to_fix_it(tmp_path: Path) -> None:
+    config = models.Config(make_config())  # host profiles
+    results = doctor.check_sandbox(config)
+    assert results[0].level == "FAIL"
+    assert "agentloop oci build" in results[0].message
+
+
+def test_a_digest_pinned_profile_passes(tmp_path: Path) -> None:
+    config = models.Config(make_config(profiles=SANDBOXED_PROFILES))
+    assert not [f for f in doctor.check_sandbox(config) if f.level == "FAIL" and "run repository" in f.message]
+
+
+def test_an_oci_profile_with_no_pinned_digest_fails() -> None:
+    profiles = {"oracle": {"kind": "oci", "network_profile": "none"}}
+    config = models.Config(make_config(profiles={**SANDBOXED_PROFILES, **profiles}))
+    assert any(f.level == "FAIL" and "no digest-pinned image" in f.message for f in doctor.check_sandbox(config))
+
+
+def test_a_shared_independence_group_fails() -> None:
+    config = make_config()
+    config["agents"]["comparator"]["independence_group"] = "claude/opus"  # type: ignore[index]
+    results = doctor.check_independence(models.Config(config))
+    assert results[0].level == "FAIL"
+    assert "share the independence group" in results[0].message
+
+
+def test_two_models_of_one_provider_pass_but_warn() -> None:
+    """A mechanical pass that is weaker than two providers, and the honest thing is to say so
+    rather than let a green check imply more independence than exists."""
+    results = doctor.check_independence(models.Config(make_config()))
+    assert results[0].level == "WARN"
+    assert "same provider" in results[0].message
+
+
+def test_two_providers_pass_cleanly() -> None:
+    config = make_config()
+    config["agents"]["comparator"]["independence_group"] = "openai/gpt"  # type: ignore[index]
+    assert doctor.check_independence(models.Config(config))[0].level == "PASS"
+
+
+def test_the_runtime_fallback_warns_that_it_is_weaker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    repo = healthy(tmp_path)
+    assert any(f.level == "WARN" and "isolation is weaker" in f.message for f in doctor.check_runtime(repo))
+
+
+def test_a_leftover_journal_is_reported(tmp_path: Path) -> None:
+    from agentloop import store as store_mod
+
+    repo = healthy(tmp_path)
+    store = store_mod.Store(repo)
+    store_mod.ensure_private_dir(store.runtime)
+    store._write_journal({"tx_id": "abc", "phase": "prepared"})
+    assert any("transaction was interrupted" in f.message for f in doctor.check_runtime(repo))
+
+
+# --- gates, plan, evidence ----------------------------------------------------
+
+
+def test_a_broken_gate_ladder_fails(tmp_path: Path) -> None:
+    state = models.State(make_state(gates={"requirements": "pending"}))
+    results = doctor.check_gate_chain(state)
+    assert results[0].level == "FAIL"
+    assert "survived a roll back" in results[0].message
+
+
+def test_a_healthy_ladder_passes() -> None:
+    assert doctor.check_gate_chain(models.State(make_state()))[0].level == "PASS"
+
+
+def test_a_whole_evidence_thread_passes(tmp_path: Path) -> None:
+    repo = healthy(tmp_path)
+    grouped = findings(repo)
+    assert any(f.level == "PASS" for f in grouped["evidence"])
+    assert not [f for f in grouped["plan"] if f.level == "FAIL"]
+
+
+def test_a_failed_source_verification_fails(tmp_path: Path) -> None:
+    from tests._support import make_plan, make_source
+
+    source = make_source()
+    source["verification"] = {"status": "failed"}
+    plan = models.Plan(make_plan(sources=[source]))
+    assert any(f.level == "FAIL" and "source verification failed" in f.message for f in doctor.check_plan(plan, None))
+
+
+# --- the audit chain and the review -------------------------------------------
+
+
+def test_an_intact_chain_reports_its_root(tmp_path: Path) -> None:
+    repo = healthy(tmp_path, events=chain("cycle_initialized"))
+    results = doctor.check_chain(repo)
+    assert results[0].level == "PASS"
+    assert "root sha256:" in results[0].message
+
+
+def test_a_damaged_chain_fails_and_says_restore_not_rewrite(tmp_path: Path) -> None:
+    repo = healthy(tmp_path, events=chain("cycle_initialized", "task_completed"))
+    repo.events.write_text(repo.events.read_text(encoding="utf-8").replace("demo-cycle", "x", 1), encoding="utf-8")
+    results = doctor.check_chain(repo)
+    assert results[0].level == "FAIL"
+    assert "never rewrite it to agree" in results[0].message
+
+
+def test_an_ungenerated_review_is_info_not_a_pass() -> None:
+    results = doctor.check_review(models.Review(make_review(generated=False)))
+    assert results[0].level == "INFO"
+
+
+def test_an_insufficient_coverage_manifest_fails() -> None:
+    review = models.Review(make_review(generated=True, coverage_status="insufficient"))
+    assert any(f.level == "FAIL" and "undeterminable, not zero" in f.message for f in doctor.check_review(review))
+
+
+def test_a_blocking_security_finding_fails() -> None:
+    finding = {
+        "id": "SEC-001",
+        "severity": "critical",
+        "category": "sandbox_escape",
+        "attack_scenario": "the oracle reaches the docker socket",
+        "blocking": True,
+    }
+    review = models.Review(make_review(generated=True, security_findings=[finding]))
+    assert any(f.level == "FAIL" and "1 blocking security" in f.message for f in doctor.check_review(review))
+
+
+# --- the CLI ------------------------------------------------------------------
+
+
+def test_a_healthy_repo_has_no_fail(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = healthy(tmp_path)
+    repo.attestations.mkdir(parents=True, exist_ok=True)
+    for gate in ("requirements", "design", "tasks"):
+        (repo.attestations / f"ATT-{gate.upper()}-0001.json").write_text("{}", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    fails = [f for f in doctor.run_checks(repo) if f.level == "FAIL"]
+    assert fails == [], "\n".join(f"{f.area}: {f.message}" for f in fails)
+
+
+def test_the_cli_exits_1_when_something_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    seed_repo(tmp_path)  # no Trust Manifest, host profiles
+    monkeypatch.chdir(tmp_path)
     assert doctor.main([]) == 1
 
 
-def test_missing_claude_is_warn_and_gh_is_info(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(shutil, "which", lambda name: None if name in ("claude", "gh") else f"/usr/bin/{name}")
-    findings = doctor.run_checks()
-    assert any("claude not found" in m for m in _messages(findings, "WARN"))
-    assert any("gh not found" in m for m in _messages(findings, "INFO"))
-    assert doctor.main([]) == 0  # degraded features, not broken invariants
-
-
-def _steps_config(smoke_attrs: str) -> str:
-    return (
-        "build:\n"
-        "  quality_gate:\n"
-        "    steps:\n"
-        "      - {name: test, kind: cmd, run: 'make test'}\n"
-        f"      - {{name: smoke, kind: cmd, run: ''{smoke_attrs}}}\n"
-        "gates:\n  enforce_hook: true\n  template_mode: false\n"
-    )
-
-
-def test_required_step_without_command_fails(project: Path) -> None:
-    # The same contradiction build_loop refuses to start on must surface here, pre-launch.
-    (project / ".agentloop" / "config.yaml").write_text(_steps_config(", required: true"), encoding="utf-8")
-    findings = doctor.run_checks()
-    assert any("'smoke' is `required: true` but has no command" in m for m in _messages(findings, "FAIL"))
-
-
-def test_empty_smoke_without_required_key_warns(project: Path) -> None:
-    # An undecided empty smoke is the classic silent DoD hole — nudge until a human decides.
-    (project / ".agentloop" / "config.yaml").write_text(_steps_config(""), encoding="utf-8")
-    findings = doctor.run_checks()
-    assert any("smoke has no command" in m for m in _messages(findings, "WARN"))
-
-
-def test_empty_smoke_with_explicit_required_false_is_accepted(project: Path) -> None:
-    # `required: false` written out is the recorded human decision (not runnable) — no nagging.
-    (project / ".agentloop" / "config.yaml").write_text(_steps_config(", required: false"), encoding="utf-8")
-    findings = doctor.run_checks()
-    assert not [m for m in _messages(findings, "WARN") if "smoke" in m]
-    assert not _messages(findings, "FAIL")
-
-
-def test_shipped_scaffold_config_leaves_the_smoke_decision_open(project: Path) -> None:
-    # The scaffold must not pre-record `required: false` — that is a human decision, and an
-    # explicit key would silence the WARN above on every fresh repo before anyone decided.
-    from agentloop import data as data_mod
-
-    scaffold = data_mod.read_text("scaffold/agentloop/config.yaml")
-    smoke = next(
-        step for step in yaml.safe_load(scaffold)["build"]["quality_gate"]["steps"] if step.get("name") == "smoke"
-    )
-    assert "required" not in smoke
-    (project / ".agentloop" / "config.yaml").write_text(scaffold, encoding="utf-8")
-    findings = doctor.run_checks()
-    assert any("smoke has no command" in m for m in _messages(findings, "WARN"))
-
-
-def _install_schemas(project: Path) -> None:
-    """Copy the template's real schemas into the fixture (they live outside the tmp cwd)."""
-    src = Path(__file__).resolve().parents[1] / ".agentloop" / "schema"
-    shutil.copytree(src, project / ".agentloop" / "schema")
-
-
-def test_schema_validation_passes_on_healthy_files(project: Path) -> None:
-    pytest.importorskip("jsonschema")
-    _install_schemas(project)
-    assert _levels(doctor.run_checks(), "schema") == ["PASS", "PASS"]
-
-
-def test_schema_violation_fails_even_when_the_parser_tolerates_it(project: Path) -> None:
-    # dag.load ignores unknown keys (tolerant runtime); the schema is the stricter lint that
-    # catches the typo'd field a tolerant parser would silently drop.
-    pytest.importorskip("jsonschema")
-    _install_schemas(project)
-    (project / ".agentloop" / "tasks.yaml").write_text(
-        "tasks:\n  - {id: T-001, title: base, kind: foundation, blockedBy: [], status: todo, blockedby: [T-002]}\n",
-        encoding="utf-8",
-    )
-    findings = doctor.run_checks()
-    assert any("violates its schema" in m for m in _messages(findings, "FAIL"))
-
-
-def test_schema_files_absent_is_info_only(project: Path) -> None:
-    # An adopted repo from an older template has no .agentloop/schema/ — degrade, don't fail.
-    pytest.importorskip("jsonschema")
-    assert _levels(doctor.run_checks(), "schema") == ["INFO", "INFO"]
-
-
-# --- the practical checks: tickets, leaf branches, security binding, log size, guard typos
-
-
-def test_missing_ticket_warns_and_orphan_ticket_is_info(project: Path) -> None:
-    (project / "docs" / "tasks").mkdir(parents=True)
-    (project / "docs" / "tasks" / "T-002.md").write_text("# T-002\n", encoding="utf-8")
-    findings = doctor.run_checks()
-    assert any("no ticket file under docs/tasks/ for: T-001" in m for m in _messages(findings, "WARN"))
-    assert any("no tasks.yaml entry: T-002" in m for m in _messages(findings, "INFO"))
-
-
-def test_no_tickets_dir_stays_silent(project: Path) -> None:
-    # Nothing under docs/tasks/ at all (e.g. a brownfield repo before its first /tasks) — no noise.
-    assert not any("ticket" in m for m in _messages(doctor.run_checks(), "WARN"))
-
-
-def test_unmerged_leaf_branch_warns_and_merged_is_info(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake_git(cmd: list[str], cwd: str, timeout: float | None = None) -> tuple[int, str]:
-        if cmd[:2] == ["git", "rev-parse"]:
-            return 0, "build/demo\n"
-        if cmd[:3] == ["git", "branch", "--no-merged"]:
-            return 0, "  build/demo-T-003\n"
-        if cmd[:3] == ["git", "branch", "--list"]:
-            return 0, "  build/demo-T-002\n  build/demo-T-003\n"
-        return 0, ""
-
-    monkeypatch.setattr(build_loop, "_run", fake_git)
-    findings = doctor.run_checks()
-    assert any("UNMERGED leaf branch(es): build/demo-T-003" in m for m in _messages(findings, "WARN"))
-    assert any("merged leaf branch(es) left behind: build/demo-T-002" in m for m in _messages(findings, "INFO"))
-
-
-def _all_done(project: Path) -> None:
-    (project / ".agentloop" / "tasks.yaml").write_text(
-        "tasks:\n  - {id: T-001, title: base, kind: foundation, blockedBy: [], status: done, test: make test}\n",
-        encoding="utf-8",
-    )
-
-
-def _git_with_head(monkeypatch: pytest.MonkeyPatch, head: str) -> None:
-    def fake_git(cmd: list[str], cwd: str, timeout: float | None = None) -> tuple[int, str]:
-        if cmd[:2] == ["git", "rev-parse"]:
-            return (0, "build/demo\n") if "--abbrev-ref" in cmd else (0, f"{head}\n")
-        return 0, ""
-
-    monkeypatch.setattr(build_loop, "_run", fake_git)
-
-
-def test_all_done_without_security_report_is_info(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _all_done(project)
-    _git_with_head(monkeypatch, "abc123")
-    assert any("no .agentloop/security-review.md" in m for m in _messages(doctor.run_checks(), "INFO"))
-
-
-def test_stale_security_review_warns_and_current_passes(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _all_done(project)
-    _git_with_head(monkeypatch, "abc123def")
-    report = project / ".agentloop" / "security-review.md"
-    report.write_text("Reviewed-HEAD: 999999\n", encoding="utf-8")
-    assert any("security review is STALE" in m for m in _messages(doctor.run_checks(), "WARN"))
-    report.write_text("Reviewed-HEAD: abc123def\n", encoding="utf-8")
-    assert any(f.area == "security" and f.level == "PASS" for f in doctor.run_checks())
-
-
-def test_pending_build_stays_silent_on_security(project: Path) -> None:
-    # T-001 is still todo in the baseline fixture — the report legitimately doesn't exist yet.
-    assert not any(f.area == "security" for f in doctor.run_checks())
-
-
-def test_large_events_log_is_flagged_before_rotation(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(events, "EVENTS_MAX_BYTES", 100)
-    (project / ".agentloop" / "events.ndjson").write_text("x" * 90 + "\n", encoding="utf-8")
-    assert any("rotation" in m for m in _messages(doctor.run_checks(), "INFO"))
-
-
-def test_guard_paths_typo_fails(project: Path) -> None:
-    (project / ".agentloop" / "config.yaml").write_text(
-        _CONFIG + "  guard_paths:\n    docs/20-design.md: requirments\n", encoding="utf-8"
-    )
-    findings = doctor.run_checks()
-    assert any("guard_paths values must be one of" in m and "requirments" in m for m in _messages(findings, "FAIL"))
-
-
-def test_guard_paths_valid_passes(project: Path) -> None:
-    (project / ".agentloop" / "config.yaml").write_text(
-        _CONFIG + "  guard_paths:\n    docs/20-design.md: requirements\n    docs/tasks/: design\n", encoding="utf-8"
-    )
-    assert any("guard_paths valid (2 entries)" in m for m in _messages(doctor.run_checks(), "PASS"))
-
-
-def test_unparseable_config_fails(project: Path) -> None:
-    (project / ".agentloop" / "config.yaml").write_text("build: [not a mapping", encoding="utf-8")
-    assert any("not valid YAML" in m for m in _messages(doctor.run_checks(), "FAIL"))
-
-
-def test_all_empty_cmd_steps_warn(project: Path) -> None:
-    (project / ".agentloop" / "config.yaml").write_text(
-        _CONFIG.replace("run: 'make test'", "run: ''").replace("run: 'make check'", "run: ''"),
-        encoding="utf-8",
-    )
-    assert any("would check nothing" in m for m in _messages(doctor.run_checks(), "WARN"))
-
-
-def test_stale_legacy_config_keys_warn(project: Path) -> None:
-    # Legacy keys next to a valid steps list are silently ignored — flag them so a reader
-    # doesn't believe test_cmd still steers the gate.
-    (project / ".agentloop" / "config.yaml").write_text(
-        _CONFIG.replace("  quality_gate:\n", "  retries: {test_fix: 2}\n  quality_gate:\n    test_cmd: make test\n"),
-        encoding="utf-8",
-    )
-    warns = [m for m in _messages(doctor.run_checks(), "WARN") if "legacy pre-0.3.0 keys are ignored" in m]
-    assert warns and "quality_gate.test_cmd" in warns[0] and "build.retries" in warns[0]
-
-
-def test_gate_chain_violation_fails(project: Path) -> None:
-    # design pending but tasks approved: an approval survived a roll back — the core invariant.
-    broken = _STATE.replace("design: approved", "design: pending")
-    (project / ".agentloop" / "state.md").write_text(broken, encoding="utf-8")
-    fails = _messages(doctor.run_checks(), "FAIL")
-    assert any("'tasks' is approved while upstream 'design' is pending" in m for m in fails)
-
-
-def test_invalid_gate_value_and_phase_fail(project: Path) -> None:
-    broken = _STATE.replace("build: pending", "build: yes").replace("current_phase: build", "current_phase: biuld")
-    (project / ".agentloop" / "state.md").write_text(broken, encoding="utf-8")
-    fails = _messages(doctor.run_checks(), "FAIL")
-    assert any("invalid value" in m for m in fails)
-    assert any("current_phase" in m for m in fails)
-
-
-def test_missing_state_fails(project: Path) -> None:
-    (project / ".agentloop" / "state.md").unlink()
-    assert any("missing" in m for m in _messages(doctor.run_checks(), "FAIL"))
-
-
-def test_placeholders_fail_in_product_but_info_in_template(project: Path) -> None:
-    placeholder = _STATE.replace('project: "demo"', 'project: "<enter the product name>"')
-    (project / ".agentloop" / "state.md").write_text(placeholder, encoding="utf-8")
-    assert any("agentloop init" in m for m in _messages(doctor.run_checks(), "FAIL"))
-    (project / ".agentloop" / "config.yaml").write_text(
-        _CONFIG.replace("template_mode: false", "template_mode: true"), encoding="utf-8"
-    )
-    findings = doctor.run_checks()
-    assert not any("agentloop init" in m for m in _messages(findings, "FAIL"))
-    assert any("template_mode" in m for m in _messages(findings, "INFO"))
-
-
-def test_broken_dag_fails_and_absent_tasks_is_info(project: Path) -> None:
-    (project / ".agentloop" / "tasks.yaml").write_text(
-        "tasks:\n  - {id: T-001, title: a, kind: parallel, blockedBy: [T-001]}\n", encoding="utf-8"
-    )
-    assert any("does not load" in m for m in _messages(doctor.run_checks(), "FAIL"))
-    (project / ".agentloop" / "tasks.yaml").unlink()
-    assert any("before /tasks" in m for m in _messages(doctor.run_checks(), "INFO"))
-
-
-def test_stuck_and_needy_tasks_warn(project: Path) -> None:
-    (project / ".agentloop" / "tasks.yaml").write_text(
-        "tasks:\n"
-        "  - {id: T-001, title: a, kind: parallel, blockedBy: [], status: in_progress}\n"
-        "  - {id: T-002, title: b, kind: parallel, blockedBy: [], status: blocked}\n",
-        encoding="utf-8",
-    )
-    warns = _messages(doctor.run_checks(), "WARN")
-    assert any("in_progress leftovers: T-001" in m for m in warns)
-    assert any("awaiting human intervention: T-002" in m for m in warns)
-
-
-def test_branch_mismatch_warns(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(build_loop, "_run", lambda cmd, cwd, timeout=None: (0, "main\n"))
-    assert any("≠ state.md branch" in m for m in _messages(doctor.run_checks(), "WARN"))
-
-
-def test_not_a_git_repo_fails(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(build_loop, "_run", lambda cmd, cwd, timeout=None: (128, "fatal: not a git repository"))
-    assert any("not a git repository" in m for m in _messages(doctor.run_checks(), "FAIL"))
-
-
-def test_leftover_worktrees_and_stale_lock_warn(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    (project / ".worktrees" / "T-002").mkdir(parents=True)
-    (project / ".agentloop" / "build-loop.lock").write_text("99999", encoding="utf-8")
-    monkeypatch.setattr(build_loop, "_pid_alive", lambda pid: False)
-    warns = _messages(doctor.run_checks(), "WARN")
-    assert any("leftover worktrees" in m and "T-002" in m for m in warns)
-    assert any("stale build-loop.lock" in m for m in warns)
-
-
-def test_live_lock_is_info(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    (project / ".agentloop" / "build-loop.lock").write_text("12345", encoding="utf-8")
-    monkeypatch.setattr(build_loop, "_pid_alive", lambda pid: True)
-    assert any("appears active" in m for m in _messages(doctor.run_checks(), "INFO"))
-
-
-def test_hook_registration_checked_only_when_enforced(project: Path) -> None:
-    (project / ".claude" / "settings.json").write_text('{"hooks": {}}', encoding="utf-8")
-    assert any("registered in neither" in m for m in _messages(doctor.run_checks(), "FAIL"))
-    (project / ".claude" / "settings.json").unlink()
-    assert any("registered in neither" in m for m in _messages(doctor.run_checks(), "FAIL"))
-    (project / ".agentloop" / "config.yaml").write_text(
-        _CONFIG.replace("enforce_hook: true", "enforce_hook: false"), encoding="utf-8"
-    )
-    findings = doctor.run_checks()
-    assert not _messages(findings, "FAIL")
-    assert any("convention layer only" in m for m in _messages(findings, "INFO"))
-
-
-def _copilot_hooks(project: Path) -> None:
-    (project / ".github" / "hooks").mkdir(parents=True, exist_ok=True)
-    (project / ".github" / "hooks" / "agentloop.json").write_text(
-        '{"hooks": {"PreToolUse": [{"type": "command", "command": "uv run src/agentloop/gate_guard.py"}]}}\n',
-        encoding="utf-8",
-    )
-
-
-def test_hook_single_surface_passes_with_an_info(project: Path) -> None:
-    # claude only (the fixture baseline)
-    findings = doctor.run_checks()
-    assert any("gate_guard hook registered (claude)" in m for m in _messages(findings, "PASS"))
-    assert any("only the claude hook host" in m for m in _messages(findings, "INFO"))
-    # copilot only
-    (project / ".claude" / "settings.json").write_text('{"hooks": {}}', encoding="utf-8")
-    _copilot_hooks(project)
-    findings = doctor.run_checks()
-    assert any("gate_guard hook registered (copilot)" in m for m in _messages(findings, "PASS"))
-    assert any("only the copilot hook host" in m for m in _messages(findings, "INFO"))
-    assert not _messages(findings, "FAIL")
-
-
-def test_hook_both_surfaces_pass_without_info(project: Path) -> None:
-    _copilot_hooks(project)
-    findings = doctor.run_checks()
-    assert any("gate_guard hook registered (claude, copilot)" in m for m in _messages(findings, "PASS"))
-    assert not any("hook host" in m for m in _messages(findings, "INFO"))
-
-
-def test_open_escalation_warns(project: Path) -> None:
-    events.append_event("blocked", task="T-001", detail="red")
-    warns = _messages(doctor.run_checks(), "WARN")
-    assert any("open escalation" in m and "#1 blocked(T-001)" in m for m in warns)
-
-
-def test_stale_integration_surfaces_warn(project: Path) -> None:
-    import agentloop
-    from agentloop import lock as lock_mod
-
-    lock_path = project / ".agentloop" / "agentloop.lock"
-    data = lock_mod.new(agentloop.__version__, "")
-    data["integrations"] = {"claude": {"version": "0.1.0", "files": {}}}
-    lock_mod.write(lock_path, data)
-    warns = _messages(doctor.run_checks(), "WARN")
-    assert any("agentloop install claude" in m for m in warns)
-    data["integrations"]["claude"]["version"] = agentloop.__version__
-    lock_mod.write(lock_path, data)
-    findings = doctor.run_checks()
-    assert _levels(findings, "integrations") == ["PASS"]
-
-
-def test_version_prefers_manifest_over_version_file(project: Path) -> None:
-    (project / "VERSION").write_text("0.2.0\n", encoding="utf-8")
-    assert any("template repo, VERSION 0.2.0" in m for m in _messages(doctor.run_checks(), "INFO"))
-    (project / ".agentloop" / "adopt-manifest.yaml").write_text("template:\n  version: 0.1.0\n", encoding="utf-8")
-    assert any("template version 0.1.0" in m for m in _messages(doctor.run_checks(), "INFO"))
-
-
-def test_headless_binary_check_follows_config(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    # The mode-A binary probe must track build.headless.cmd, not a hardcoded "claude".
-    config = _CONFIG.replace("build:\n", 'build:\n  headless: {cmd: ["codex", "exec"]}\n')
-    (project / ".agentloop" / "config.yaml").write_text(config, encoding="utf-8")
-    monkeypatch.setattr(shutil, "which", lambda name: None if name == "codex" else f"/usr/bin/{name}")
-    findings = doctor.run_checks()
-    assert any("codex not found" in m for m in _messages(findings, "WARN"))
-    assert doctor.main([]) == 0  # a missing headless CLI degrades mode A, it does not break the repo
+def test_unsupported_layout_mode_diagnoses_a_08x_repo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    seed_repo(tmp_path)
+    (tmp_path / ".agentloop" / "tasks.yaml").write_text("tasks: []\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    assert doctor.main(["--unsupported-layout"]) == 1
+    out = capsys.readouterr().out
+    assert "tasks.yaml" in out
+    assert "manufacturing evidence" in out  # why there is deliberately no migration
+
+
+def test_unsupported_layout_mode_on_a_clean_repo_passes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    healthy(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    assert doctor.main(["--unsupported-layout"]) == 0
+
+
+def test_doctor_never_writes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A doctor that repairs what it finds is a doctor whose findings nobody reads."""
+    from agentloop import store as store_mod
+
+    repo = healthy(tmp_path)
+    before = {name: store_mod.Store(repo).document_digest(name) for name in ("plan", "state", "review")}
+    monkeypatch.chdir(tmp_path)
+    doctor.main([])
+    after = {name: store_mod.Store(repo).document_digest(name) for name in ("plan", "state", "review")}
+    assert before == after

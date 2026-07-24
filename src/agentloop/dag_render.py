@@ -13,8 +13,9 @@ from agentloop.dag import STATUS_ORDER, Graph
 def render(graph: Graph) -> str:
     """Deterministic rendering of the human-facing DAG view (task table, layers, critical path, frontier).
 
-    /status prints it as-is; state.md embeds it between the DAG-VIEW markers (pasted by hand at
-    /tasks, refreshed automatically by build_loop.py in deterministic mode A).
+    `/status` and `agentloop dag --render` print it. Unlike 0.8.x there is no generated block
+    inside a state file for it to be pasted into: a view embedded in the SSOT is a second copy
+    of the truth, and the two drifted.
     """
     lines: list[str] = []
     counts = graph.counts()
@@ -23,13 +24,15 @@ def render(graph: Graph) -> str:
     lines.append("### Task table")
     if graph.tasks:
         fan = graph.fan_out()
-        lines.append("| ID | Title | Kind | blockedBy | req | fan-out | status | Test |")
-        lines.append("|----|-------|------|-----------|-----|---------|--------|------|")
+        lines.append("| ID | Title | Kind | blockedBy | risk | claims | oracles | fan-out | status |")
+        lines.append("|----|-------|------|-----------|------|--------|---------|---------|--------|")
         for t in graph.tasks:
             blocked = ", ".join(t.blocked_by) if t.blocked_by else "-"
+            claims = ", ".join(t.claim_ids) or "-"
+            oracles = ", ".join(t.oracle_ids) or "-"
             lines.append(
-                f"| {t.id} | {t.title} | {t.kind} | {blocked} | {t.req or '-'} | {fan[t.id]} "
-                f"| {t.status} | {t.test or '-'} |"
+                f"| {t.id} | {t.title} | {t.kind} | {blocked} | {t.risk} | {claims} "
+                f"| {oracles} | {fan[t.id]} | {t.status} |"
             )
     else:
         lines.append("- (no tasks)")
@@ -51,7 +54,7 @@ def render(graph: Graph) -> str:
     if ordered:
         fan = graph.fan_out()
         for t in ordered:
-            lines.append(f"- {t.id} [{t.kind}, fan-out={fan[t.id]}] {t.title}")
+            lines.append(f"- {t.id} [{t.kind}, risk={t.risk}, fan-out={fan[t.id]}] {t.title}")
     else:
         lines.append("- (no startable todo)")
     return "\n".join(lines)

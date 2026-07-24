@@ -1,24 +1,27 @@
 name: CI
 
-# Run the same quality gate as local development: pre-commit (commit + pre-push
-# hooks = ruff / gitleaks / ruff-format / mypy, via `make check`) plus the test suites.
+# The same quality gate as local development, plus the 0.9.0 base-side meta-policy.
+#
+# Third-party Actions are pinned to full 40-character commit SHAs (plan §29.1): a mutable tag lets
+# the action's owner change what runs in CI after review. The version each SHA corresponds to is in
+# the trailing comment so a human can audit the pin against the upstream release.
 on:
-  # `develop` is a template default for users who adopt a main + develop (Git Flow) model;
-  # harmless when the repo only uses main. `pull_request` is unfiltered, so PRs into any base
-  # branch (including a future develop) already run CI.
   push:
     branches: [main, develop]
   pull_request:
+
+permissions:
+  contents: read
 
 jobs:
   pre-commit:
     name: pre-commit (lint / format / type-check)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           enable-cache: true
 
@@ -26,32 +29,32 @@ jobs:
         run: uv sync --frozen
 
       - name: Cache pre-commit environments
-        uses: actions/cache@v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/pre-commit
           key: pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}
 
-      # `make check` == pre-commit (commit stage) + pre-push stage + template-lint (the drift
-      # canaries) + sync-check (materialized artifacts match the packaged payload) — the full gate.
+      # `make check` == pre-commit (commit stage) + pre-push stage + template-lint (drift canaries)
+      # + sync-check (materialized artifacts match the packaged payload) — the full gate.
       - name: Run pre-commit, template-lint and sync-check
         run: make check
 
-  test:
-    name: tests (py${{ matrix.python-version }})
+  unit:
+    name: unit tests (py${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        # The endpoints that matter: the advertised 3.10 floor (pyproject requires-python —
-        # mypy targets it, but only running the suite proves the runtime) and the newest CPython.
+        # The endpoints that matter: the advertised 3.10 floor (pyproject requires-python) and the
+        # newest CPython. The unit layer runs without docker/ssh so a fork PR without secrets is green.
         python-version: ["3.10", "3.13"]
     env:
       UV_PYTHON: ${{ matrix.python-version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           enable-cache: true
 
@@ -61,43 +64,61 @@ jobs:
       - name: Sync dependencies
         run: uv sync --frozen
 
-      - name: Run the package test suite
-        run: uv run --frozen pytest -vv tests/
+      - name: Run the unit suite (fakes only, no docker/ssh)
+        run: uv run --frozen pytest -q -m "not integration" tests/
 
-      - name: Validate the task DAG and the R-N trace
-        # --validate: structural consistency of tasks.yaml (vocabulary, unknown ids, cycles).
-        # --trace: the requirements → design → tasks thread — only once tasks exist (the empty
-        # scaffold's example R-N headings have no tasks yet, by design). Exit 2 = "cannot
-        # check" (requirements doc absent) is tolerated; a broken thread exits 1 and fails.
-        run: |
-          uv run --frozen agentloop dag --validate
-          if grep -q "id:" .agentloop/tasks.yaml; then
-            uv run --frozen agentloop dag --trace || test $? -eq 2
-          else
-            echo "tasks.yaml holds no tasks yet: skipping --trace"
-          fi
+  integration:
+    name: integration tests (docker / git / ssh)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - name: End-to-end smoke (init → guard deny in a fresh temp repo)
-        # Prove the packaged payload seeds a repo and the gate guard denies a pending-gate
-        # write — the product-facing path, exercised straight from this checkout via uvx.
-        run: |
-          d="$(mktemp -d)"; ( cd "$d" && git init -q )
-          uvx --from . agentloop init --name smoke --repo "$d"
-          test -f "$d/.agentloop/agentloop.lock"
-          test ! -e "$d/.claude"   # agent surfaces are opt-in
-          printf '{"cwd":"%s","tool_input":{"file_path":"%s/docs/20-design.md"}}' "$d" "$d" \
-            | uvx --from . agentloop guard | grep -q '"deny"'
-          uvx --from . agentloop sync --check --repo "$d"
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
 
-  # Aggregate gate over the python matrix. Branch protection requires the single stable name
-  # "tests" — the matrix jobs are named per version, so this is what reports it. `if: always()`
-  # + the explicit result check make a failed/cancelled matrix FAIL here (a plain `needs` job
-  # would be skipped, and a skipped required check slips through protection as passing).
+      - name: Sync dependencies
+        run: uv sync --frozen
+
+      # ubuntu-latest ships docker; the OCI executor and oracle tests exercise the real sandbox.
+      - name: Run the integration suite
+        run: uv run --frozen pytest -q -m integration tests/
+
+  policy:
+    name: base-side policy check
+    # Only meaningful for a pull request, where CI knows the trusted base and head SHAs from its own
+    # event context — never a branch name and never a base the head declared (plan §29.1, §29.3).
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0 # policy-check reads both the base and head trees
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync --frozen
+
+      # Bootstrap note (plan §29.3): the commit that FIRST introduces 0.9.0 has no prior 0.9.0 base
+      # verifier to check it, so that one run is not self-verified. Every later PR is checked by the
+      # base side. The exact SHAs come from the event, so the head cannot declare its own base.
+      - name: Run policy-check (base-side meta-policy)
+        run: >-
+          uv run --frozen agentloop policy-check
+          --base-sha "${{ github.event.pull_request.base.sha }}"
+          --head-sha "${{ github.event.pull_request.head.sha }}"
+
+  # Aggregate gate over the unit matrix. Branch protection requires the single stable name "tests".
   tests:
     name: tests
-    needs: test
+    needs: unit
     if: always()
     runs-on: ubuntu-latest
     steps:
       - name: Every matrix job succeeded
-        run: test "${{ needs.test.result }}" = "success"
+        run: test "${{ needs.unit.result }}" = "success"

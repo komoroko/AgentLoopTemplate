@@ -13,9 +13,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol
 
-from agentloop import common, events
+from agentloop import common
 from agentloop import repo as repo_mod
 from agentloop.common import StopLoop
+
+
+class EventSink(Protocol):
+    """Where the git layer reports what happened. The orchestrator supplies a Store-backed one."""
+
+    def __call__(self, event: str, subject: str, detail: dict[str, object]) -> None: ...
 
 
 class Runner(Protocol):
@@ -36,6 +42,7 @@ class GitWorkspace:
         worktree_dir: str,
         branch_pattern: str,
         run: Runner,
+        on_event: EventSink | None = None,
     ) -> None:
         self.repo = repo
         self.root = str(repo.root)
@@ -44,6 +51,10 @@ class GitWorkspace:
         self.worktree_dir = worktree_dir
         self.branch_pattern = branch_pattern
         self._run = run
+        # Where this layer reports what it did. Injected rather than imported: git surgery
+        # happens inside leaf worktrees, and a worktree writing its own event log is how a
+        # decision recorded during a parallel build used to disappear (plan §11.1).
+        self.on_event: EventSink = on_event or (lambda event, subject, detail: None)
 
     def git(self, args: list[str], cwd: str | None = None) -> None:
         """Run one git command; StopLoop on failure; prints and no-ops under dry-run."""
@@ -117,11 +128,10 @@ class GitWorkspace:
             if rc != 0 or out.strip():  # unmerged commits — or unable to prove there are none
                 salvage = self._salvage_name(branch)
                 self.git(["branch", "-m", branch, salvage])
-                events.append_event(
-                    "branch_salvaged",
-                    task=task_id,
-                    detail=f"{branch} → {salvage} (unmerged work preserved at restart)",
-                    path=str(self.repo.events),
+                self.on_event(
+                    "decision_declared",
+                    task_id,
+                    {"branch_salvaged": f"{branch} -> {salvage}", "why": "unmerged work preserved at restart"},
                 )
                 print(f"  [salvage] {task_id}: {branch} held unmerged work — renamed to {salvage}")
             else:
@@ -151,12 +161,10 @@ class GitWorkspace:
         rc, out = self._run(["git", "merge", "--no-ff", "--no-edit", branch], cwd=self.root)
         if rc != 0:
             self._run(["git", "merge", "--abort"], cwd=self.root)
-            events.log_escalation(
-                "merge_conflict",
-                f"{task_id}: conflict merging into work. Manual resolution needed.\n{out[-500:]}",
-                task=task_id,
-                events_path=str(self.repo.events),
-                state_path=str(self.repo.state),
+            self.on_event(
+                "task_failed",
+                task_id,
+                {"kind": "merge_conflict", "detail": f"conflict merging into work: {out[-500:]}"},
             )
             return False
         self.git(["worktree", "remove", "--force", self.worktree_path(task_id)])
@@ -215,12 +223,15 @@ class GitWorkspace:
             rc, out = self._run(["git", "commit", "--no-verify", "-m", message], cwd=cwd)
         if rc != 0:
             task_id = message.split(":", 1)[0]
-            events.log_escalation(
-                "blocked",
-                f"{task_id}: finalize commit failed in {cwd} (rc={rc}) — the uncommitted diff is "
-                f"preserved only in that tree, which is kept for manual recovery.\n"
-                f"{common.summarize_failure('git finalize commit', rc, out)}",
-                task=task_id,
+            self.on_event(
+                "task_failed",
+                task_id,
+                {
+                    "kind": "finalize_commit",
+                    "detail": f"finalize commit failed in {cwd} (rc={rc}); the uncommitted diff exists "
+                    f"only in that tree, which is kept for manual recovery. "
+                    f"{common.summarize_failure('git finalize commit', rc, out)}",
+                },
             )
             return False
         return True

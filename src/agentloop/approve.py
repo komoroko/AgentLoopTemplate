@@ -1,220 +1,381 @@
-"""Deterministic helper for recording a human gate approval — the forward twin of revise.py.
+"""`agentloop approve <gate>` — check readiness and produce an attestation request.
 
-The **single sanctioned write path** for `gates.<name>: pending → approved`. AGENTS.md gate
-rule 2 ("only humans open a gate") used to be convention only: the agent was instructed to
-edit state.md itself after the human said "approve", which left the flip one prompt
-misinterpretation away. Now the flip is an *operation*: this script stamps the gate line with
-the date (and approver), advances `current_phase`, and appends a `gate_approved` event to
-`.agentloop/events.ndjson` — the machine record the commit-stage gate guard cross-checks a
-state.md flip against. gate_guard.py denies agent Write/Edit flips at edit time, so the only
-ways a gate opens are a human running this (directly, via `agentloop approve`, or acknowledging
-the agent's *non-pre-authorized* `agentloop approve` permission prompt) or a human editing
-state.md by hand.
+**This command does not open a gate.** That is the most important thing about it, and the
+reason it was rewritten. In 0.8.x `agentloop approve build` stamped the gate line: the
+permission prompt in front of the command *was* the human's approval, and `--force` skipped
+even the evidence check. Anything that could run the command could open the gate.
 
-Like revise.py it preserves state.md byte-for-byte outside the touched lines
-(common.rewrite_gate_line / set_current_phase / set_updated_at — regex line surgery, never a
-YAML round-trip), and it enforces the gate-chain invariant: approving a gate whose upstream
-is still pending is refused.
+In 0.9.0 a gate opens only when :mod:`agentloop.attestations` imports an envelope signed by a
+key the **external** Trust Manifest authorizes for that role, bound to the exact digests being
+approved. So this command does three things and stops:
 
-ApproveError carries an `http.HTTPStatus` (BAD_REQUEST / CONFLICT / INTERNAL_SERVER_ERROR for a
-broken state.md) so ui.py's approval endpoint can map failures to responses directly; the CLI
-folds them all to exit 1 (except the already-approved no-op, exit 0).
+  1. **Readiness** — every mechanical precondition for the gate (:func:`readiness`).
+  2. **Request** — an unsigned envelope naming what would be approved, and its digests.
+  3. **Instructions** — the two commands the human runs to sign and import it.
 
-Usage:
-  agentloop approve design --by alice
+`--force` does not exist and is not coming back, and neither does `--by`: an identity you can
+type is not an identity, so the principal is resolved from the signing key. Nothing here can
+be pre-authorized into opening a gate, because nothing here opens one.
+
+:func:`record_approval` is the other half — the Central Store transaction that writes the
+receipt once a signature has been verified. It lives here, beside the readiness rules it has
+to agree with, and is called by `attestation import`, never by a command.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import logging
-from datetime import date
-from http import HTTPStatus
-from pathlib import Path
+import sys
 
-from agentloop import common, events
+from agentloop import common, dag, dag_trace, digests, event_chain, models, oracle_bundle
 from agentloop import repo as repo_mod
+from agentloop import store as store_mod
 
 logger = logging.getLogger(__name__)
 
-STATE_PATH = common.STATE_PATH
-GATE_ORDER = common.GATE_ORDER
-# The phase entered once each gate is approved (the forward counterpart of revise._PHASE_GATE).
-NEXT_PHASE = {"requirements": "design", "design": "tasks", "tasks": "build", "build": "verify", "release": "done"}
+#: The document each gate approves, for the receipt's `artifact_digest`.
+GATE_ARTIFACT: dict[str, str] = {
+    "requirements": "docs/10-requirements.md",
+    "design": "docs/20-design.md",
+}
 
-# --- readiness preconditions (machine anchors only — never a markdown parse) -----------------
-# Each gate's procedure promises evidence before the human is asked; these checks turn the
-# promise into mechanism, the same convention→mechanism migration gate flips already made.
-# Deliberately limited to anchors code can decide (a literal marker string, the report's
-# Reviewed-HEAD line, the structured event log) — adequacy stays the human's judgment.
-SECURITY_REVIEW_PATH = ".agentloop/security-review.md"
-_CLARIFICATION_MARKER = "[NEEDS CLARIFICATION"
-_GATE_DELIVERABLE = {"requirements": "docs/10-requirements.md", "design": "docs/20-design.md"}
+#: gate → the attestation type that opens it (the inverse of models.ATTESTATION_GATE).
+GATE_ATTESTATION: dict[str, str] = {gate: type_ for type_, gate in models.ATTESTATION_GATE.items()}
 
 
-def _reviewed_head(report: Path) -> str:
-    try:
-        first = report.read_text(encoding="utf-8").splitlines()[0]
-    except (OSError, IndexError):
-        return ""
-    return first.removeprefix("Reviewed-HEAD:").strip() if first.startswith("Reviewed-HEAD:") else ""
+class ApprovalError(RuntimeError):
+    """The gate cannot be approved, or an approval cannot be recorded."""
 
 
-def _holds_unresolved_marker(text: str) -> bool:
-    """A live marker is inline plain text; the scaffold *teaches* the marker inside backtick
-    spans and HTML comments, which must not read as unresolved work."""
-    import re  # lazy: match the toolset convention (module import stays stdlib+common only)
-
-    text = re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
-    text = re.sub(r"`[^`\n]*`", "", text)
-    return _CLARIFICATION_MARKER in text
+# --- readiness ------------------------------------------------------------------
 
 
-def readiness_findings(gate: str, root: Path, events_path: str) -> list[str]:
-    """What blocks presenting this gate as ready — [] when the recorded evidence is in order."""
-    findings: list[str] = []
-    doc = _GATE_DELIVERABLE.get(gate)
-    if doc:
-        try:
-            text = (root / doc).read_text(encoding="utf-8")
-        except OSError:
-            text = ""
-        if _holds_unresolved_marker(text):
-            findings.append(f"{doc} still holds an unresolved {_CLARIFICATION_MARKER}] marker")
-    if gate == "build":
-        reviewed = _reviewed_head(root / SECURITY_REVIEW_PATH)
-        if not reviewed:
-            findings.append(f"no security-review report bound to this build ({SECURITY_REVIEW_PATH} — /build gate ④)")
-        else:
-            rc, out = common.run(["git", "rev-parse", "HEAD"], cwd=str(root))
-            head = out.strip() if rc == 0 else ""
-            if reviewed != head:  # unknown HEAD fails closed, like every other unverifiable gate input
-                findings.append(f"security review is stale: Reviewed-HEAD {reviewed[:12]} ≠ HEAD {head[:12] or '?'}")
-    if gate in ("build", "release"):
-        open_ids = [f"#{e.id}" for e in events.open_escalations(events.load_events(events_path))]
-        if open_ids:
-            findings.append(f"open escalation event(s) {', '.join(open_ids)} — resolve them (`agentloop events`) first")
-    return findings
+def _chain_blockers(state: models.State, gate: str) -> list[str]:
+    pending = state.pending_upstream(gate)
+    if pending:
+        return [
+            f"gate '{pending}' is still pending — approving '{gate}' now would leave a decision "
+            "standing on one that was never made (gates open in order)"
+        ]
+    if state.gate_status(gate) == "approved":
+        return [f"gate '{gate}' is already approved"]
+    return []
 
 
-class ApproveError(Exception):
-    """A refused approval. `status` is an `http.HTTPStatus` so ui.py can answer with it directly."""
+def _plan_blockers(plan: models.Plan | None, gate: str) -> list[str]:
+    if plan is None:
+        return [f"no plan at .agentloop/plan.yaml — there is nothing for gate '{gate}' to approve"]
+    blockers: list[str] = list(dag_trace.trace(plan).errors)
 
-    def __init__(self, status: HTTPStatus, message: str) -> None:
-        super().__init__(message)
-        self.status = status
-        self.message = message
-
-
-class AlreadyApproved(ApproveError):
-    """The gate is already approved — a no-op for the CLI, a 409 for the UI."""
-
-    def __init__(self, gate: str) -> None:
-        super().__init__(HTTPStatus.CONFLICT, f"gate '{gate}' is already approved")
-
-
-def apply_approval(text: str, gate: str, today: str, by: str = "") -> str:
-    """Record the approval in the state.md text and return the new text (pure function).
-
-    Flips the gate line to `approved   # <date> [<by>]`, advances `current_phase` to the
-    approved gate's next phase, and bumps `updated_at`. Refuses (ApproveError) an unknown
-    gate, a broken front matter, an already-approved gate, and a chain violation.
-    """
-    import yaml  # lazy: match the toolset convention (module import stays stdlib+common only)
-
-    if gate not in GATE_ORDER:
-        raise ApproveError(HTTPStatus.BAD_REQUEST, f"unknown gate '{gate}' (one of {', '.join(GATE_ORDER)})")
-    try:
-        front = common.parse_frontmatter(text)
-    except yaml.YAMLError as exc:
-        raise ApproveError(
-            HTTPStatus.INTERNAL_SERVER_ERROR, f"state.md front-matter is not valid YAML: {exc}"
-        ) from None
-    if front is None:
-        raise ApproveError(HTTPStatus.INTERNAL_SERVER_ERROR, "state.md has no YAML front-matter")
-    gates = common.gates_of(front) or {}
-    current = gates.get(gate, "")
-    if current == "approved":
-        raise AlreadyApproved(gate)
-    upstream = common.pending_upstream(gates, gate)
-    if upstream is not None:
-        raise ApproveError(HTTPStatus.CONFLICT, f"cannot approve '{gate}': upstream gate '{upstream}' is still pending")
-    stamp = f"approved   # {today} {by}".rstrip()
-    new_text, n = common.rewrite_gate_line(text, gate, current, stamp, keep_trailer=False)
-    if n == 0:
-        raise ApproveError(
-            HTTPStatus.INTERNAL_SERVER_ERROR, f"gate line '{gate}: {current}' not found in state.md front-matter"
+    # A plan with nothing in it passes every consistency check trivially. Requiring content is
+    # the difference between "no contradictions found" and "there is something here to approve".
+    if not plan.claims:
+        blockers.append(
+            "the plan states no claims — there is nothing to approve. /req turns the brief into "
+            "claims, each with the evidence that settles it."
         )
-    new_text = common.set_current_phase(new_text, NEXT_PHASE[gate])
-    new_text = common.set_updated_at(new_text, today)
-    return new_text
+    for claim in plan.claims:
+        if not claim.obligation_ids:
+            blockers.append(
+                f"{claim.id}: no evidence obligation — a claim nobody has to produce evidence for is "
+                "an opinion with an id"
+            )
+
+    if gate in {"design", "tasks", "build", "release"}:
+        for solution in plan.solutions:
+            if not solution.alternatives:
+                blockers.append(
+                    f"{solution.id}: no alternatives recorded — a design decision with no stated "
+                    "alternative is a decision nobody actually made"
+                )
+    if gate in {"tasks", "build", "release"}:
+        if not plan.tasks:
+            blockers.append("the plan declares no tasks")
+        for oracle in plan.oracles:
+            blockers += oracle_bundle.check_negative_controls(oracle)
+    return blockers
 
 
-def record_approval(
-    gate: str, by: str = "", *, state_path: str = STATE_PATH, events_path: str = events.EVENTS_PATH, force: bool = False
-) -> str:
-    """Apply the approval to state.md on disk and append the `gate_approved` event.
+def _oracle_blockers(repo: repo_mod.Repo, plan: models.Plan | None, gate: str) -> list[str]:
+    """Refuse a downstream gate when an already-frozen oracle bundle has since been tampered with.
 
-    Returns the date stamped on the gate line. The event is what the commit-stage gate guard
-    matches a state.md flip against, so it is written in the same operation — never separately.
-    Readiness preconditions run first (readiness_findings); `force` overrides them, and the
-    override is recorded in the event detail so the skip is auditable, never silent.
+    A tamper detector, not a freeze *presence* check: the freeze that stamps `bundle.digest` is
+    part of the gate-③ plan deliverable (it must be in the plan the human signs, so it cannot be
+    written after the fact). Here we only assert that an oracle *carrying* a frozen digest still
+    matches its committed bundle — the "edit a fixture to make the oracle pass" move (E2E-12) —
+    at the gates downstream of the freeze. An oracle with no digest yet is left to the freeze
+    step's own enforcement, not blocked here.
     """
+    if gate not in {"build", "release"} or plan is None:
+        return []
+    blockers: list[str] = []
+    for oracle in plan.oracles:
+        if not oracle.bundle_digest:
+            continue
+        ok, message = oracle_bundle.verify_frozen(repo, oracle)
+        if not ok:
+            blockers.append(message)
+    return blockers
+
+
+def _task_blockers(plan: models.Plan | None, state: models.State | None, gate: str) -> list[str]:
+    if gate not in {"tasks", "build", "release"} or plan is None:
+        return []
     try:
-        text = Path(state_path).read_text(encoding="utf-8")
-    except OSError as exc:
-        raise ApproveError(HTTPStatus.INTERNAL_SERVER_ERROR, f"cannot read {state_path}: {exc}") from None
-    root = Path(state_path).resolve().parents[1]
-    findings = readiness_findings(gate, root, events_path)
-    if findings and not force:
-        listed = "; ".join(findings)
-        raise ApproveError(HTTPStatus.CONFLICT, f"gate '{gate}' is not ready: {listed} (--force overrides)")
-    today = date.today().isoformat()
-    detail = by if not findings else f"{by} [forced past: {'; '.join(findings)}]".strip()
-    Path(state_path).write_text(apply_approval(text, gate, today, by), encoding="utf-8")
-    events.append_event("gate_approved", gate=gate, detail=detail, path=events_path)
-    return today
+        graph = dag.join(plan, state)
+    except dag.DagError as exc:
+        return [str(exc)]
+    blockers = [f"{cid}: no task is answerable for this claim" for cid in graph.claims_without_a_task(plan)]
+    if gate in {"build", "release"}:
+        unfinished = sorted(t.id for t in graph.tasks if not t.is_done)
+        if unfinished:
+            blockers.append(f"tasks not done: {', '.join(unfinished)}")
+    return blockers
+
+
+def _review_blockers(review: models.Review | None, gate: str) -> list[str]:
+    """Gate ④/⑤ preconditions carried by the machine review (plan §16.8).
+
+    A readiness check that passes because a stage has not been implemented yet is worse than
+    no check at all, so an absent review is a blocker rather than a shrug.
+    """
+    if gate not in {"build", "release"}:
+        return []
+    if review is None or not review.is_generated:
+        return [
+            "no machine review has been generated — run `agentloop review generate`. "
+            "Gate 4 approves a grounded review, not a green test run."
+        ]
+    blockers: list[str] = []
+    if not review.coverage_sufficient:
+        blockers.append("the coverage manifest is insufficient — extra-behaviour counts are undeterminable, not zero")
+    blocking_extras = [e for e in review.extra_behaviors if e.get("blocking") is True]
+    if blocking_extras:
+        blockers.append(
+            "blocking extra behaviours the plan does not account for: "
+            + ", ".join(str(e.get("id")) for e in blocking_extras)
+        )
+    if review.blocking_security_findings:
+        blockers.append(
+            "blocking security findings: " + ", ".join(str(f.get("id")) for f in review.blocking_security_findings)
+        )
+    if review.human_status != "frozen":
+        blockers.append(
+            f"the human review is '{review.human_status}', not 'frozen' — "
+            "complete it in the review UI (`agentloop review complete`)"
+        )
+    return blockers
+
+
+def readiness(repo: repo_mod.Repo, gate: str) -> list[str]:
+    """Every mechanical reason `gate` cannot be approved. Empty means a request may be issued.
+
+    Deliberately exhaustive rather than short-circuiting: being handed one blocker, fixing it,
+    and being handed the next is exactly the review friction plan §2.6 budgets against.
+    """
+    if gate not in models.GATE_VALUES:
+        raise ApprovalError(f"unknown gate {gate!r} (one of {', '.join(models.GATE_ORDER)})")
+
+    store = store_mod.Store(repo)
+    try:
+        state = store.read_state()
+        plan = store.read_plan()
+        review = store.read_review()
+    except models.DocumentError as exc:
+        return [str(exc)]
+
+    if state is None:
+        return ["no .agentloop/state.yaml — run `agentloop init` first"]
+
+    blockers: list[str] = []
+    _, defects = event_chain.scan(repo.events)
+    if defects:
+        blockers.append(
+            f"the audit chain has {len(defects)} defect(s) — a receipt binds the chain root, so it "
+            "cannot be issued against a damaged log (see `agentloop events --verify`)"
+        )
+    blockers += _chain_blockers(state, gate)
+    blockers += _plan_blockers(plan, gate)
+    blockers += _task_blockers(plan, state, gate)
+    blockers += _oracle_blockers(repo, plan, gate)
+    blockers += _review_blockers(review, gate)
+    return blockers
+
+
+# --- the attestation request ------------------------------------------------------
+
+
+def _repository_id(repo: repo_mod.Repo) -> str:
+    """The repository's identity in the attestation subject: its origin URL, else its path.
+
+    Binding a signature to a repository is what stops it being lifted into a fork (E2E-14).
+    The origin URL is the meaningful identity when there is one; the resolved path is the
+    honest fallback for a local-only repository.
+    """
+    return repo._git("config", "--get", "remote.origin.url") or str(repo.root)
+
+
+def _role_for(gate: str) -> str:
+    return sorted(models.REQUIRED_ROLE[GATE_ATTESTATION[gate]])[0]
+
+
+def request_envelope(repo: repo_mod.Repo, gate: str) -> dict[str, object]:
+    """The unsigned envelope a human signs to open `gate`.
+
+    Every digest the approval would *cover* goes in the subject, including the event chain root
+    at this moment — so a signature can never be presented for a plan, a review, or a log other
+    than the one the human actually read (plan §7.5, §7.6).
+    """
+    store = store_mod.Store(repo)
+    state = store.read_state()
+    plan = store.read_plan()
+    review = store.read_review()
+    config = store.read_config()
+    events, _ = event_chain.scan(repo.events)
+
+    subject: dict[str, object] = {
+        "repository_id": _repository_id(repo),
+        "cycle_id": state.cycle_id if state else "",
+        "event_chain_root_before": event_chain.chain_root(events),
+    }
+    if plan is not None:
+        subject["plan_digest"] = plan.digest()
+    if config is not None:
+        subject["config_digest"] = config.digest()
+    if review is not None and review.is_generated:
+        subject["machine_digest"] = review.machine_digest()
+        subject["human_digest"] = review.human_digest()
+    artifact = GATE_ARTIFACT.get(gate)
+    if artifact and repo.path(artifact).exists():
+        subject["artifact_digest"] = digests.of_file(repo.path(artifact))
+    subject["validation_digest"] = digests.of({"gate": gate, "readiness": "clear"})
+
+    return {
+        "id": f"ATT-{gate.upper()}-{event_chain.new_id()[:8].upper()}",
+        "type": GATE_ATTESTATION[gate],
+        "subject": subject,
+        "actor": {"principal": "unresolved@signing-key", "role": _role_for(gate)},
+        "issued_at": event_chain.now_iso(),
+    }
+
+
+# --- recording an approval (called by `attestation import`) ---------------------
+
+
+def record_approval(repo: repo_mod.Repo, gate: str, attestation: models.Attestation) -> None:
+    """Write the gate receipt in one Central Store transaction. The signature is already verified.
+
+    Deliberately not reachable from the CLI: the only route to an approved gate is a verified
+    signature, and a command that opened a gate without one would *be* an alternative route.
+    """
+    store = store_mod.Store(repo)
+    state = store.read_state()
+    if state is None:
+        raise ApprovalError("no .agentloop/state.yaml to record the approval in")
+
+    events, defects = event_chain.scan(repo.events)
+    if defects:
+        raise ApprovalError("refusing to record an approval against a damaged audit chain")
+    root_before = event_chain.chain_root(events)
+    if not digests.matches(attestation.subject_digest("event_chain_root_before"), root_before):
+        raise ApprovalError(
+            "the attestation was issued against a different audit-chain root — events were appended, "
+            "removed, or regenerated since it was signed. Re-run `agentloop approve` and sign again."
+        )
+
+    raw = json.loads(json.dumps(state.raw))  # plain deep copy; state.raw stays untouched
+    receipt: dict[str, object] = {
+        "attestation_id": attestation.id,
+        "validation_digest": attestation.subject_digest("validation_digest"),
+        "attested_chain_root": root_before,
+        "result_chain_root": root_before,
+    }
+    for key in ("artifact_digest", "plan_digest", "toolchain_digest", "oracle_bundle_set_digest"):
+        value = attestation.subject_digest(key)
+        if value:
+            receipt[key] = value
+
+    raw["gates"][gate] = {"status": "approved", "receipt": receipt}
+    raw["current_phase"] = models.PHASE_AFTER_GATE[gate]
+    raw["updated_at"] = event_chain.now_iso()
+
+    with store.transaction() as tx:
+        tx.write("state", raw, expect_digest=store.document_digest("state"))
+        tx.append(
+            "gate_approved",
+            cycle_id=state.cycle_id,
+            actor=attestation.principal,
+            subject_ids=[gate, attestation.id],
+            detail={"attested_chain_root": root_before},
+        )
+
+
+# --- CLI -------------------------------------------------------------------------
+
+
+def render_blockers(gate: str, blockers: list[str]) -> str:
+    body = "\n".join(f"  - {b}" for b in blockers)
+    return f"gate '{gate}' is not ready ({len(blockers)} blocker(s)):\n{body}"
+
+
+def render_instructions(gate: str, request_path: str) -> str:
+    signed = request_path.replace(".json", ".signed.json")
+    return (
+        f"Attestation request for gate '{gate}' written to {request_path}\n"
+        "\n"
+        "Nothing is approved yet. A gate opens only on a signature from a key the external\n"
+        "Trust Manifest authorizes for this role:\n"
+        "\n"
+        f"  agentloop attestation sign {request_path}\n"
+        f"  agentloop attestation import {signed}\n"
+        "\n"
+        "Read what you are signing first — the subject block names every digest the approval\n"
+        "will cover. If any of them moves afterwards, the approval stops applying."
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="record a human gate approval (the only sanctioned pending→approved write)"
+        description="check a gate's readiness and produce an attestation request (never opens a gate)"
     )
-    parser.add_argument("gate", choices=GATE_ORDER, help="the gate the human approved")
-    parser.add_argument(
-        "--by",
-        default="",
-        help="approver name, stamped on the gate line (recommended when several humans share the repo)",
-    )
+    parser.add_argument("gate", help=f"one of: {', '.join(models.GATE_ORDER)}")
+    parser.add_argument("--out", default="", help="where to write the request (default: <gate>-attestation.json)")
+    parser.add_argument("--check", action="store_true", help="readiness only; write no request")
     parser.add_argument("--repo", default=None, help="repository root (default: discovered from cwd)")
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        help="approve despite failed readiness preconditions (the override is recorded in the gate_approved event)",
-    )
     args = parser.parse_args(argv)
     common.configure_logging()
+
     try:
         repo = repo_mod.get(args.repo)
-    except repo_mod.RepoNotFoundError as exc:
+        repo.require_supported_layout()
+    except (repo_mod.RepoNotFoundError, repo_mod.UnsupportedLayoutError) as exc:
         logger.error(str(exc))
         return 1
+
     try:
-        today = record_approval(
-            args.gate, args.by, state_path=str(repo.state), events_path=str(repo.events), force=args.force
-        )
-    except AlreadyApproved as exc:
-        print(exc.message + " (nothing to do)")
-        return 0
-    except ApproveError as exc:
-        logger.error(f"error: {exc.message}")
+        blockers = readiness(repo, args.gate)
+    except ApprovalError as exc:
+        logger.error(str(exc))
+        return 2
+    if blockers:
+        logger.error(render_blockers(args.gate, blockers))
         return 1
-    print(
-        f"gate '{args.gate}' approved   # {today}{' ' + args.by if args.by else ''} — "
-        f"current_phase → {NEXT_PHASE[args.gate]} (recorded as a gate_approved event)"
-    )
+    if args.check:
+        print(f"gate '{args.gate}' is ready for a signed attestation")
+        return 0
+
+    envelope = request_envelope(repo, args.gate)
+    problems = models.schema_errors(envelope, "attestation")
+    if problems:  # a request we cannot validate is a request nobody should sign
+        logger.error(f"the generated request is not a valid attestation envelope: {'; '.join(problems)}")
+        return 1
+    out = args.out or f"{args.gate}-attestation.json"
+    repo.path(out).write_text(json.dumps(envelope, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    print(render_instructions(args.gate, out))
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    sys.exit(main())

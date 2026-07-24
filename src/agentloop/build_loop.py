@@ -1,296 +1,219 @@
-"""The deterministic orchestrator for the implementation phase (the engine driving /build).
+"""The deterministic orchestrator for the implementation phase (the engine behind `/build`).
 
-It runs the scheduling control flow (which tasks, at what parallelism, in what merge order, and when to stop)
-deterministically **in code, not a prompt**. Each task's implementation code content itself is non-deterministic
-because an LLM writes it (the implementer launched via the configured headless agent CLI,
-`build.headless.cmd` — `claude -p` by default), but
+Scheduling runs **in code, not in a prompt**. An LLM writes the implementation, but which tasks
+run, at what parallelism, in what merge order, and when to stop are decided here — so two runs
+of the same plan schedule identically and a reviewer can predict the loop instead of
+interviewing it:
 
   - frontier computation / consumption order / max parallelism / worktree isolation / merge order
-  - the pass/fail decision of each quality-gate step (config `quality_gate.steps`) by exit code
-  - the per-step retry budget / blocked decision / stop condition / prerequisite-gate check
-
-are all decided deterministically by this script. `.agentloop/config.yaml` is the single source of knobs,
-and its `quality_gate.steps` is the single definition of the DoD (AGENTS.md and /build refer here).
+  - each quality-gate step's pass/fail, by exit code
+  - the per-step retry budget, the blocked decision, the stop condition, the gate check
 
 The determinism boundary:
-  - Deterministic (here): control flow, parallelism, merge, cmd-step gate decisions, stopping.
-  - Non-deterministic (LLM): implementation code, and the review/simplify agent step's fixes
-    → absorbed by "re-run the preceding cmd steps after an agent step; retry until green, else blocked".
+  - Deterministic (here): control flow, parallelism, merge, cmd-step decisions, stopping.
+  - Non-deterministic (LLM): the code, and the review step's fixes → absorbed by "re-run the
+    preceding cmd steps after an agent step; retry until green, else blocked".
 
-This script **does not set gates.build to approved** (only the human opens a gate).
-After all tasks are done it prints a summary and stops, leaving it to the human's approval (/build's gate ④).
+Three things left in 0.8.x are gone.
+
+**It no longer runs a security review and calls that gate ④'s evidence.** Gate ④ now approves a
+*grounded review* — a blind actual-behaviour extraction compared against the frozen plan, with a
+coverage manifest — and a green test run is not a substitute for one. When the tasks finish, this
+prints what remains and stops.
+
+**A step's command is an argv list, not a shell string.** No `shlex.split` of user text, and a
+pipe has to live in a script a reviewer can read.
+
+**Task status is written through the Central Store**, in the same transaction as the event that
+explains it — so a status change with no audit record cannot happen, including when a leaf
+worktree is the thing reporting it.
 
 Usage:
   agentloop build            # run
-  agentloop build --dry-run  # check the control flow without calling the agent CLI/git
+  agentloop build --dry-run  # exercise the control flow without calling the agent CLI or git
 
---dry-run is strictly read-only: task statuses advance only in an in-memory overlay, and no SSOT
-file, event log, or lock file is written — running it never changes what a later real run sees.
+--dry-run is strictly read-only: statuses advance in an in-memory overlay only, and no document,
+event, or lock is written — running it never changes what a later real run sees.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
-import re
-import shlex
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
-from datetime import date
-from pathlib import Path
 from typing import Any
 
-import yaml
-
-from agentloop import build_git, build_prompts, common, dag, events, gate_guard
+from agentloop import (
+    build_git,
+    build_prompts,
+    common,
+    control_plane,
+    dag,
+    event_chain,
+    gate_guard,
+    models,
+    strict_yaml,
+)
 from agentloop import repo as repo_mod
+from agentloop import store as store_mod
 
 logger = logging.getLogger(__name__)
 
-# Single definitions live in common.py; the old names stay importable from here.
-STATE_PATH = common.STATE_PATH
-CONFIG_PATH = common.CONFIG_PATH
-TASKS_PATH = common.TASKS_PATH
-LOCK_PATH = ".agentloop/build-loop.lock"
-# The post-build security-review report. Under .agentloop/ (not docs/test/) deliberately: the
-# review runs BEFORE gate ④ is approved, and gate_guard denies docs/test/** writes until then.
-SECURITY_REVIEW_PATH = ".agentloop/security-review.md"
-
-
 StopLoop = common.StopLoop
+
+#: Adapter name → the argv that launches it headless, with the prompt appended last. An interim
+#: registry: PR-D replaces it with the executor profiles, which run the same adapters inside a
+#: sandbox rather than on the host.
+ADAPTERS: dict[str, tuple[str, ...]] = {
+    "claude": ("claude", "-p"),
+    "codex": ("codex", "exec"),
+    "gemini": ("gemini", "-p"),
+}
 
 
 @dataclass(frozen=True)
 class GateStep:
-    """One quality-gate step.
+    """One quality-gate step, normalized from config.
 
-    kind="cmd"   — run `run` and decide deterministically by exit code. `retries` is that step's
-                   own budget for sending a failure back to the implementer (empty `run` = skip).
-    kind="agent" — a headless review+simplify pass (the configured headless CLI,
-                   build.headless.cmd) that fixes findings in place.
-                   Its content is non-deterministic, so the pipeline re-runs the cmd steps that
-                   already passed whenever it changed the tree.
+    kind="command" — run `command` (argv) and decide by exit code. `retries` is that step's own
+                     budget for handing the failure back to the implementer.
+    kind="agent"   — a headless review+simplify pass that fixes findings in place. Its content is
+                     non-deterministic, so the pipeline re-runs the cmd steps that already passed
+                     whenever it changed the tree.
 
-    `required` (cmd only): an empty `run` is normally a silent skip — fine for a library, but for
-    a runnable deliverable a forgotten smoke command lets the whole build finish without ever
-    launching the thing. Marking the step required makes the loop refuse to start until `run` is
-    filled (fail-fast, before any implementer is paid for).
+    `required` (command only): an empty command is normally a silent skip — fine for a library,
+    but for a runnable deliverable a forgotten smoke command lets the whole build finish without
+    ever launching the thing. Marking it required makes the loop refuse to start, before any
+    implementer has been paid for.
     """
 
     name: str
     kind: str
-    run: str = ""
+    command: tuple[str, ...] = ()
     retries: int = 2
     required: bool = False
 
+    @property
+    def runnable(self) -> bool:
+        return self.kind == "agent" or bool(self.command)
 
-def _parse_steps(qg: Any) -> tuple[GateStep, ...]:
-    """Parse quality_gate.steps — the required, single definition of the DoD.
-
-    (The pre-0.3.0 legacy form — quality_gate.test_cmd/check_cmd + build.retries — was removed;
-    a config still carrying it fails here with a migration hint, and doctor flags the stale keys.)
-    """
-    raw = qg.get("steps")
-    if not raw:
-        raise ValueError(
-            "quality_gate.steps is missing — define the DoD as a steps list in .agentloop/config.yaml "
-            "(the legacy test_cmd/check_cmd + retries form was removed in 0.3.0; "
-            "see the template config.yaml or .agentloop/schema/config.schema.json)"
-        )
-    if not isinstance(raw, list):
-        raise ValueError("quality_gate.steps must be a list")
-    steps: list[GateStep] = []
-    for i, entry in enumerate(raw):
-        if not isinstance(entry, dict):
-            raise ValueError(f"quality_gate.steps[{i}] must be a mapping")
-        kind = str(entry.get("kind", "cmd"))
-        if kind not in ("cmd", "agent"):
-            raise ValueError(f"quality_gate.steps[{i}]: unknown kind {kind!r} (expected cmd | agent)")
-        steps.append(
-            GateStep(
-                name=str(entry.get("name", f"step{i}")),
-                kind=kind,
-                run=str(entry.get("run") or ""),
-                retries=max(0, int(entry.get("retries", 2))),
-                required=bool(entry.get("required", False)),
-            )
-        )
-    return tuple(steps)
+    @property
+    def display(self) -> str:
+        return " ".join(self.command) if self.command else f"<{self.kind}:{self.name}>"
 
 
-def _timeout_sec(value: Any, default: int) -> float | None:
-    """Normalize a timeouts knob: seconds as a positive float, or None (= no timeout) for 0/negative."""
-    sec = float(default if value is None else value)
-    return sec if sec > 0 else None
-
-
-def _parse_headless(build: Any) -> tuple[str, ...]:
-    """build.headless.cmd — the headless agent CLI; the prompt is appended as the last argument.
-
-    Mode A is agent-CLI-pluggable through this one knob: ["claude", "-p"] (the default),
-    ["codex", "exec"], ["gemini", "-p"], … all launch the same prompts.
-    """
-    raw = (build.get("headless") or {}).get("cmd")
-    if raw is None:
-        return ("claude", "-p")
-    if not isinstance(raw, list) or not raw or not all(isinstance(x, str) and x.strip() for x in raw):
-        raise ValueError('build.headless.cmd must be a non-empty list of strings, e.g. ["claude", "-p"]')
-    return tuple(x.strip() for x in raw)
-
-
-@dataclass
+@dataclass(frozen=True)
 class Config:
+    """The orchestrator's view of config.yaml — the single source of knobs."""
+
+    raw: models.Config
     max_parallel: int
     worktree_enabled: bool
     worktree_dir: str
     branch_pattern: str
     steps: tuple[GateStep, ...]
-    agent_steps: bool
-    integration_gate: bool = True
-    security_review: bool = True
-    timeout_cmd: float | None = 1800.0
-    timeout_agent: float | None = 3600.0
-    headless_cmd: tuple[str, ...] = ("claude", "-p")
+    branch: str
+    timeout_cmd: float | None
+    timeout_agent: float | None
+    adapter_argv: tuple[str, ...]
 
     @property
     def gate_cmds(self) -> list[str]:
-        """The deterministic commands of the gate (for prompts / display)."""
-        return [s.run for s in self.steps if s.kind == "cmd" and s.run]
-
-    # The config.yaml schema version this parser understands (see data/schema/config.schema.json).
-    SCHEMA_VERSION = 1
+        """The deterministic commands of the gate, for prompts and display."""
+        return [s.display for s in self.steps if s.kind == "command" and s.command]
 
     @classmethod
-    def load(cls, path: str = CONFIG_PATH) -> Config:
-        data = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
-        declared = data.get("schema_version")
-        if isinstance(declared, int) and declared > cls.SCHEMA_VERSION:
-            raise ValueError(
-                f"config.yaml declares schema_version {declared} but this agentloop understands "
-                f"{cls.SCHEMA_VERSION} — upgrade the tool (`uv tool upgrade agentloop`)"
+    def from_models(cls, config: models.Config) -> Config:
+        steps = tuple(
+            GateStep(
+                name=step.name,
+                kind=step.kind,
+                command=step.command,
+                retries=max(0, step.retries),
+                required=step.required,
             )
-        build = data.get("build") or {}
-        wt = build.get("worktree") or {}
-        qg = build.get("quality_gate") or {}
-        tm = build.get("timeouts") or {}
-        pb = build.get("post_build") or {}
+            for step in config.quality_gate
+        )
+        adapter = config.adapter("implementer") or "claude"
+        argv = ADAPTERS.get(adapter)
+        if argv is None:
+            raise ValueError(
+                f"agents.implementer.adapter is {adapter!r}, which this release does not know how to launch "
+                f"(one of: {', '.join(sorted(ADAPTERS))})"
+            )
         return cls(
-            max_parallel=max(1, int(build.get("max_parallel", 3))),
-            worktree_enabled=bool(wt.get("enabled", True)),
-            worktree_dir=str(wt.get("dir", ".worktrees")),
+            raw=config,
+            max_parallel=max(1, config.max_parallel),
+            # Worktree isolation is not optional in 0.9.0: parallel leaves writing one tree is how
+            # two tasks' changes end up attributed to one review.
+            worktree_enabled=True,
+            worktree_dir=config.worktree_dir,
             # `-` (not `/`) between branch and task: git forbids a branch that is a path-prefix of
             # another ref ("work" + "work/T-001" cannot coexist), so a slash pattern always fails.
-            branch_pattern=str(wt.get("branch_pattern", "{branch}-{task_id}")),
-            steps=_parse_steps(qg),
-            agent_steps=bool(qg.get("agent_steps", True)),
-            integration_gate=bool(qg.get("integration_gate", True)),
-            security_review=bool(pb.get("security_review", True)),
-            timeout_cmd=_timeout_sec(tm.get("cmd_sec"), 1800),
-            timeout_agent=_timeout_sec(tm.get("agent_sec"), 3600),
-            headless_cmd=_parse_headless(build),
+            branch_pattern="{branch}-{task_id}",
+            steps=steps,
+            branch=config.work_branch,
+            timeout_cmd=float(config.command_timeout_sec) or None,
+            timeout_agent=float(config.agent_timeout_sec) or None,
+            adapter_argv=argv,
         )
 
-
-# --- reading/writing state.md / tasks.yaml ---------------------------------
-
-
-# The single parser lives in common.py (fail-open posture: {} on a structurally absent block).
-read_frontmatter = common.read_frontmatter
-
-
-def work_branch(front: dict[str, object], root: str = ".") -> str:
-    branch = front.get("branch")
-    if isinstance(branch, str) and branch and not branch.startswith("<"):
-        return branch
-    # If state.md is not filled in, use the current branch.
-    rc, out = _run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=root)
-    return out.strip() if rc == 0 else "HEAD"
+    @classmethod
+    def load(cls, repo: repo_mod.Repo) -> Config:
+        store = store_mod.Store(repo)
+        config = store.read_config()
+        if config is None:
+            raise ValueError(f"no {repo.config} — run `agentloop init` first")
+        return cls.from_models(config)
 
 
-# The pointer header of tasks.yaml. The shipped scaffold starts with exactly these lines, so the
-# round-trip rewrite below is lossless — keep the file pure data + this pointer (schema detail
-# lives in .agentloop/prompts/commands/tasks.md, not in comments a rewrite would destroy).
-TASKS_HEADER = (
-    "# yaml-language-server: $schema=schema/tasks.schema.json\n"
-    "# .agentloop/tasks.yaml — machine-readable SSOT of the task graph (DAG) (build_loop updates status)\n"
-    "# schema (id/title/kind/blockedBy/status/test/req/phase): see .agentloop/prompts/commands/tasks.md / AGENTS.md\n"
-)
+# --- the build lock -----------------------------------------------------------
+#
+# One lock per repository, in the shared runtime directory rather than inside the working tree:
+# a per-worktree lock file meant two leaves could each hold "the" lock (plan §11.1). Lock order
+# is build.lock → store.lock, always.
 
 
-def set_task_status(task_id: str, status: str, tasks_path: str = TASKS_PATH) -> None:
-    """Update one task's status in tasks.yaml and write it back (pure data + pointer header)."""
-    data = yaml.safe_load(Path(tasks_path).read_text(encoding="utf-8")) or {}
-    tasks = data.get("tasks") or []
-    for t in tasks:
-        if str(t.get("id")) == task_id:
-            t["status"] = status
-            break
-    Path(tasks_path).write_text(
-        TASKS_HEADER + yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8"
+def build_lock(repo: repo_mod.Repo) -> store_mod.FileLock:
+    """The exclusive whole-run lock. Held for the duration of a build."""
+    return store_mod.FileLock(store_mod.Store(repo).build_lock)
+
+
+# --- task status (through the Central Store) ----------------------------------
+
+
+def set_task_status(repo: repo_mod.Repo, task_id: str, status: str, *, note: str = "") -> None:
+    """Write one task's status and the event that explains it, in one transaction."""
+    if status not in models.TASK_STATUS_VALUES:
+        raise ValueError(f"unknown task status {status!r}")
+    store = store_mod.Store(repo)
+    state = store.read_state()
+    if state is None:
+        raise StopLoop("no .agentloop/state.yaml to record task status in")
+
+    raw = json.loads(json.dumps(state.raw))
+    tasks = raw.setdefault("tasks", {})
+    entry = tasks.get(task_id) if isinstance(tasks.get(task_id), dict) else {}
+    attempts = entry.get("attempts", 0) if isinstance(entry.get("attempts"), int) else 0
+    if status == "in-progress":
+        attempts += 1
+    merged = {**entry, "status": status, "attempts": attempts, "note": note}
+    tasks[task_id] = {k: v for k, v in merged.items() if v != ""}
+    raw["updated_at"] = event_chain.now_iso()
+
+    event = {"done": "task_completed", "in-progress": "task_started", "blocked": "task_failed"}.get(
+        status, "decision_declared"
     )
+    with store.transaction() as tx:
+        tx.write("state", raw, expect_digest=store.document_digest("state"))
+        tx.append(event, cycle_id=state.cycle_id, subject_ids=[task_id], detail={"status": status, "note": note})
 
 
-def _pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)  # signal 0 = existence probe only
-    except ProcessLookupError:
-        return False
-    except OSError:  # e.g. EPERM: exists but owned by someone else
-        return True
-    return True
-
-
-def acquire_lock(path: str = LOCK_PATH) -> bool:
-    """Take the single-run lock (a PID file). False = another live run holds it.
-
-    Two concurrent loops would race the whole-file tasks.yaml rewrites and collide on the same
-    worktree paths. A lock whose PID is no longer alive (a crashed run) is reclaimed automatically,
-    so no manual cleanup is needed after an interruption.
-    """
-    p = Path(path)
-    try:
-        pid = int(p.read_text(encoding="utf-8").strip())
-    except (OSError, ValueError):
-        pid = 0
-    if pid > 0 and pid != os.getpid() and _pid_alive(pid):
-        return False
-    p.write_text(str(os.getpid()), encoding="utf-8")
-    return True
-
-
-def release_lock(path: str = LOCK_PATH) -> None:
-    Path(path).unlink(missing_ok=True)
-
-
-DAG_VIEW_BEGIN = "<!-- DAG-VIEW:BEGIN -->"
-DAG_VIEW_END = "<!-- DAG-VIEW:END -->"
-
-
-def update_state_view(graph: dag.Graph, path: str = STATE_PATH) -> bool:
-    """Refresh state.md's generated DAG view block (between the DAG-VIEW markers) and bump updated_at.
-
-    tasks.yaml stays the SSOT; this only re-renders the human-facing view so the board does not go
-    stale while the deterministic loop runs (a human pastes the same render output in mode B).
-    No markers (a hand-restructured state.md) or unreadable file = no-op, never an abort.
-    """
-    try:
-        text = Path(path).read_text(encoding="utf-8")
-    except OSError:
-        return False
-    begin = text.find(DAG_VIEW_BEGIN)
-    end = text.find(DAG_VIEW_END)
-    if begin == -1 or end == -1 or end < begin:
-        return False
-    new = text[: begin + len(DAG_VIEW_BEGIN)] + "\n" + dag.render(graph) + "\n" + text[end:]
-    new = re.sub(r"^(\s*updated_at:\s*).*$", rf'\g<1>"{date.today().isoformat()}"', new, count=1, flags=re.MULTILINE)
-    Path(path).write_text(new, encoding="utf-8")
-    return True
-
-
-# Single definitions live in events.py / common.py; the old names stay importable from here.
-log_escalation = events.log_escalation
+# Single definitions live elsewhere; the old names stay importable from here.
 summarize_failure = common.summarize_failure
 _FAILURE_MAX_LINES = common._FAILURE_MAX_LINES
 
@@ -298,8 +221,8 @@ _FAILURE_MAX_LINES = common._FAILURE_MAX_LINES
 # --- subprocess -------------------------------------------------------------
 
 
-# The implementation lives in common.run; the `_run` name stays because doctor/pr_draft call
-# through it and the tests monkeypatch it here to fake git/agent-CLI results.
+# The implementation lives in common.run; the `_run` name stays because the tests monkeypatch it
+# here to fake git and agent-CLI results.
 _run = common.run
 
 
@@ -341,8 +264,10 @@ class Orchestrator:
         # behaves identically no matter which directory it was launched from.
         self.repo = repo or repo_mod.get()
         self.root = str(self.repo.root)
-        self.front = read_frontmatter(str(self.repo.state))
-        self.branch = work_branch(self.front, self.root)
+        self.store = store_mod.Store(self.repo)
+        self.state = self.store.read_state()
+        self.cycle_id = self.state.cycle_id if self.state else ""
+        self.branch = config.branch
         # The git/worktree layer (build_git.py); the runner is late-bound through _run above.
         self.ws = build_git.GitWorkspace(
             self.repo,
@@ -351,7 +276,14 @@ class Orchestrator:
             worktree_dir=config.worktree_dir,
             branch_pattern=config.branch_pattern,
             run=_late_run,
+            on_event=lambda event, subject, detail: self._event(event, subject, detail),
         )
+        # The control plane, once `run()` starts serving. A leaf reaches the Store only through
+        # it, so there is nothing to hand out before the socket exists.
+        self.control: control_plane.ControlServer | None = None
+        # Names this run in every token and every event a leaf records, so a decision can be
+        # traced back to the build that produced it.
+        self.run_id = f"RUN-{event_chain.now_iso().replace(':', '').replace('-', '')[:15]}"
         # Dry-run status overlay: the simulated statuses live here instead of tasks.yaml, so the
         # loop can progress to completion while the run stays strictly read-only.
         self._sim_status: dict[str, str] = {}
@@ -361,16 +293,31 @@ class Orchestrator:
             self._sim_status[task_id] = status
             print(f"    [dry-run] {task_id} → {status}")
             return
-        set_task_status(task_id, status, tasks_path=str(self.repo.tasks))
+        set_task_status(self.repo, task_id, status)
 
     def _escalate(self, event: str, message: str, *, task: str = "") -> None:
-        if self.dry_run:  # read-only: surface it on the console without touching the event log
-            logger.warning(f"[escalation] {message}")
+        """Record something a human has to decide about, and say so on the console.
+
+        There is no "resolve" verb any more: an escalation is closed by a signed disposition in
+        the review, not by a flag somebody flips in a log (`agentloop events --summary` lists
+        what is still open).
+        """
+        logger.warning(f"[escalation] {message}")
+        self._event(event, task or self.cycle_id, {"message": message})
+
+    def _event(self, event: str, subject: str, detail: dict[str, Any] | None = None) -> None:
+        """Append one audit event through the Central Store. A no-op in a dry run.
+
+        Every status change the loop makes goes through here or through `set_task_status`, so
+        there is no path by which the build mutates state without saying why.
+        """
+        if self.dry_run or not self.cycle_id:
             return
-        log_escalation(event, message, task=task, events_path=str(self.repo.events), state_path=str(self.repo.state))
+        with self.store.transaction() as tx:
+            tx.append(event, cycle_id=self.cycle_id, subject_ids=[subject], detail=detail or {})
 
     def _load_graph(self) -> dag.Graph:
-        graph = dag.load(self.repo.tasks)
+        graph = dag.load(self.repo)
         if self.dry_run and self._sim_status:
             graph = dag.Graph.from_tasks([replace(t, status=self._sim_status.get(t.id, t.status)) for t in graph.tasks])
         return graph
@@ -393,7 +340,7 @@ class Orchestrator:
         unverifiable), so only the known `claude -p` contract gets them; every other CLI keeps
         today's fresh launch per retry.
         """
-        return bool(self.config.headless_cmd) and self.config.headless_cmd[0] == "claude"
+        return bool(self.config.adapter_argv) and self.config.adapter_argv[0] == "claude"
 
     def _invoke_implementer(
         self, task: dag.Task, cwd: str, failure_log: str, session: str = "", resume: bool = False
@@ -410,38 +357,67 @@ class Orchestrator:
             return
         prompt = self._implementer_prompt(task, failure_log)
         flags = (["--resume", session] if resume else ["--session-id", session]) if session else []
+        env = self._leaf_env(task)
         rc, out = _run(
-            [*self.config.headless_cmd, *flags, prompt],
+            [*self.config.adapter_argv, *flags, prompt],
             cwd=cwd,
             timeout=self.config.timeout_agent,
+            env=env,
         )
         if rc != 0 and resume:
             print(f"    [resume] {task.id}: resuming session failed (rc={rc}); relaunching fresh")
-            rc, out = _run([*self.config.headless_cmd, prompt], cwd=cwd, timeout=self.config.timeout_agent)
+            # A fresh token: the first one was spent on the launch that failed, and the server
+            # accepts each nonce once.
+            rc, out = _run(
+                [*self.config.adapter_argv, prompt],
+                cwd=cwd,
+                timeout=self.config.timeout_agent,
+                env=self._leaf_env(task),
+            )
         if rc != 0:
             raise StopLoop(f"{task.id}: failed to launch implementer (rc={rc})\n{out[-1000:]}")
 
+    def _leaf_env(self, task: dag.Task) -> dict[str, str] | None:
+        """The environment an implementer runs with: the control socket and a scoped token.
+
+        Scoped to this run and this task, granting only what a leaf legitimately needs
+        (declare a decision, record a knowledge gap, report status, append an event). It can
+        never carry `gate.approve` or its siblings — `mint` refuses to sign those, and the
+        server refuses to serve them even if a token somehow claimed them.
+
+        None when there is no control plane (a dry run), which means the leaf inherits this
+        process's environment and its `agentloop decision add` will refuse rather than write
+        into a worktree that is about to be deleted.
+        """
+        if self.control is None:
+            return None
+        token = control_plane.mint(
+            self.control.secret,
+            run_id=self.run_id,
+            task_id=task.id,
+            capabilities=sorted(control_plane.LEAF_CAPABILITIES),
+            ttl_sec=int(self.config.timeout_agent or control_plane.DEFAULT_TTL_SEC),
+        )
+        return {
+            **os.environ,
+            control_plane.SOCKET_ENV: str(self.control.socket_path),
+            control_plane.TOKEN_ENV: token,
+        }
+
     @property
     def _steps_effective(self) -> tuple[GateStep, ...]:
-        """The gate steps actually run (agent steps drop out when quality_gate.agent_steps is false)."""
-        if self.config.agent_steps:
-            return self.config.steps
-        return tuple(s for s in self.config.steps if s.kind == "cmd")
+        """The gate steps actually run. All of them: the DoD has no opt-out knob in 0.9.0."""
+        return self.config.steps
 
     def _steps_for(self, task: dag.Task) -> tuple[GateStep, ...]:
-        """The gate steps for one task: the task's own `test` command first, then the configured DoD.
+        """The gate steps for one task.
 
-        tasks.yaml's per-task `test` (the ticket's automated-test approach — what /tasks recorded
-        as this task's green decision) runs as a focused cmd step ahead of the shared pipeline:
-        it fails faster and summarizes tighter than the whole suite. It is skipped when it
-        duplicates a configured cmd step's `run` (the default "make test" case), so nothing runs
-        twice. Budget: the `test` step's retries (the task command is its focused stand-in)."""
-        steps = self._steps_effective
-        run = task.test.strip()
-        if not run or any(s.kind == "cmd" and s.run.strip() == run for s in self.config.steps):
-            return steps
-        retries = next((s.retries for s in self.config.steps if s.kind == "cmd" and s.name == "test"), 2)
-        return (GateStep(name="task-test", kind="cmd", run=run, retries=retries), *steps)
+        0.8.x prepended the ticket's own `test:` command here. 0.9.0 has no such field: a task's
+        extra judgement boundary is its frozen acceptance oracle, which runs in a sealed sandbox
+        against a harness the implementer never touched — not a command the implementer chose.
+        The oracle run lands in PR-D; until then the shared DoD is the whole gate.
+        """
+        return self._steps_effective
 
     def _review_scope(self, task: dag.Task, cwd: str, base: str) -> tuple[list[str], str]:
         """The changed-path list + exact diff command that scope the review step's read.
@@ -472,7 +448,7 @@ class Orchestrator:
         """Run the review+simplify agent step headless. Returns True if it changed the tree."""
         before = self._tree_state(cwd)
         rc, out = _run(
-            [*self.config.headless_cmd, self._review_prompt(task, cwd, base)],
+            [*self.config.adapter_argv, self._review_prompt(task, cwd, base)],
             cwd=cwd,
             timeout=self.config.timeout_agent,
         )
@@ -483,11 +459,11 @@ class Orchestrator:
     def _run_cmd_step(self, step: GateStep, cwd: str) -> str:
         """Run one cmd step. Returns "" on pass, a compact failure summary otherwise.
 
-        shlex-split so quoted arguments work (e.g. `pytest -k 'a b'`). Still no shell: pipes and
-        redirections don't work in a step's `run` — wrap those in a make target or script.
+        An argv list, never a shell string: a pipe or a redirect has to live in a script a
+        reviewer can read, not in a config value nobody parses the same way twice.
         """
-        rc, out = _run(shlex.split(step.run), cwd=cwd, timeout=self.config.timeout_cmd)
-        return "" if rc == 0 else summarize_failure(step.run, rc, out)
+        rc, out = _run(list(step.command), cwd=cwd, timeout=self.config.timeout_cmd)
+        return "" if rc == 0 else summarize_failure(step.display, rc, out)
 
     def _run_pipeline(self, task: dag.Task, cwd: str, base: str = "") -> tuple[str | None, str]:
         """Run the quality-gate steps (config quality_gate.steps = the DoD) in order.
@@ -510,7 +486,7 @@ class Orchestrator:
                         if failure:
                             return prev.name, failure
                 continue
-            if not step.run:
+            if not step.command:
                 print(f"    [gate] skip {step.name}: no command configured")
                 continue
             failure = self._run_cmd_step(step, cwd)
@@ -526,7 +502,7 @@ class Orchestrator:
         that step's budget. Returns (ok, log); ok=False means some step's budget ran out
         (the caller marks the task blocked).
         """
-        budgets = {s.name: s.retries for s in self._steps_for(task) if s.kind == "cmd"}
+        budgets = {s.name: s.retries for s in self._steps_for(task) if s.kind == "command"}
         failure_log = ""
         # Retry-session continuity (claude preset only): the implementer resumes its own session
         # across its retries. A step's final retry is forced fresh — a resumed session re-reads
@@ -542,7 +518,7 @@ class Orchestrator:
             left = budgets.get(failed, 0)
             print(f"    quality gate fail at step '{failed}' (retries left: {left}): {task.id}")
             if not self.dry_run:  # unreachable in dry-run today (the dry pipeline always passes); keep read-only anyway
-                events.append_event("step_fail", task=task.id, step=failed, detail=f"retries left: {left}")
+                self._event("task_failed", task.id, {"step": failed, "retries_left": left})
             if left <= 0:
                 return False, failure_log
             budgets[failed] = left - 1
@@ -558,7 +534,7 @@ class Orchestrator:
 
     def _invoke_integration_fixer(self, ids: str, failure_log: str) -> None:
         rc, out = _run(
-            [*self.config.headless_cmd, self._integration_fix_prompt(ids, failure_log)],
+            [*self.config.adapter_argv, self._integration_fix_prompt(ids, failure_log)],
             cwd=self.root,
             timeout=self.config.timeout_agent,
         )
@@ -583,11 +559,11 @@ class Orchestrator:
         if self.dry_run:
             print(f"    [dry-run] integration gate on work after merging {ids}")
             return True, ""
-        budgets = {s.name: s.retries for s in self.config.steps if s.kind == "cmd"}
+        budgets = {s.name: s.retries for s in self.config.steps if s.kind == "command"}
         while True:
             failed, failure_log = None, ""
             for step in self._steps_effective:
-                if step.kind != "cmd" or not step.run:
+                if step.kind != "cmd" or not step.command:
                     continue
                 failure = self._run_cmd_step(step, cwd=self.root)
                 if failure:
@@ -597,7 +573,7 @@ class Orchestrator:
                 return True, ""
             left = budgets.get(failed, 0)
             print(f"    integration gate fail at step '{failed}' (retries left: {left}): {ids}")
-            events.append_event("step_fail", task=ids, step=failed, detail=f"integration; retries left: {left}")
+            self._event("task_failed", ids, {"step": failed, "stage": "integration", "retries_left": left})
             if left <= 0:
                 return False, failure_log
             budgets[failed] = left - 1
@@ -673,35 +649,40 @@ class Orchestrator:
         """
         if self.dry_run:
             return
-        events.append_event("task_done", task=task.id, commit=self.ws.head(), path=str(self.repo.events))
+        self._event("task_completed", task.id, {"commit": self.ws.head()})
 
     # -- main loop --
 
     def _recover_in_progress(self) -> None:
-        """Reset tasks left in in_progress from a previous interruption back to todo (crash recovery).
+        """Reset tasks left in in-progress from a previous interruption back to todo (crash recovery).
 
-        Since the frontier only picks status==todo, re-running with in_progress left over would mean
+        Since the frontier only picks status==todo, re-running with in-progress left over would mean
         that task is never started and the loop deadlocks. Roll back once at startup.
         """
         try:
-            graph = dag.load(self.repo.tasks)
-        except (OSError, dag.DagError, yaml.YAMLError):
+            graph = dag.load(self.repo)
+        except (OSError, dag.DagError, models.DocumentError, strict_yaml.StrictParseError):
             return
-        for t in graph.tasks:
-            if t.status == "in_progress":
-                self._set_status(t.id, "todo")
-                print(f"  [recover] {t.id}: reset in_progress → todo (resuming from a previous interruption)")
+        for task in graph.tasks:
+            if task.status == "in-progress":
+                self._set_status(task.id, "todo")
+                print(f"  [recover] {task.id}: reset in-progress -> todo (resuming from an interruption)")
 
     def run(self) -> int:
-        project = self.front.get("project")
-        if isinstance(project, str) and project.startswith("<"):
+        if self.state is None:
+            logger.error("no .agentloop/state.yaml — run `agentloop init` first")
+            return 2
+        if self.state.gate_status("tasks") != "approved":
             logger.error(
-                "state.md still carries the template placeholders. Run `agentloop init --name <product>` first."
+                "gate 3 (tasks) is not approved, so there is no frozen plan to build against. "
+                "Finish /tasks and get the plan approved first."
             )
             return 2
-        gates = self.front.get("gates") or {}
-        if not (isinstance(gates, dict) and gates.get("tasks") == "approved"):
-            logger.error("gates.tasks is not approved. Approve /tasks first.")
+        if self.state.plan_status != "frozen":
+            logger.error(
+                f"the plan is '{self.state.plan_status}', not 'frozen'. Gate 3's approval freezes it; "
+                "building against a draft would implement a plan nobody signed for."
+            )
             return 2
         if not self.dry_run and self.branch in ("", "HEAD"):
             # work_branch falls back to "HEAD" when git is unavailable/detached; creating worktrees
@@ -712,43 +693,26 @@ class Orchestrator:
             )
             return 2
         if self.dry_run:
-            return self._run_loop()  # read-only: no lock file either (and no contention to guard against)
-        if not acquire_lock(str(self.repo.path(LOCK_PATH))):
-            logger.error(
-                f"another build-loop run appears to be active ({LOCK_PATH} holds a live PID). "
-                "Wait for it to finish, or remove the lock file if you are sure it is gone."
-            )
-            return 2
+            return self._run_loop()  # read-only: no lock either, and no contention to guard against
         try:
-            return self._run_loop()
-        finally:
-            release_lock(str(self.repo.path(LOCK_PATH)))
+            # Lock order is build.lock -> store.lock, always; the control plane takes the store
+            # lock per request inside it. The socket lives for exactly this run: a leaf that
+            # outlives the orchestrator has nothing to talk to, which is the correct answer.
+            with build_lock(self.repo), control_plane.serving(self.repo) as server:
+                self.control = server
+                return self._run_loop()
+        except store_mod.LockUnavailableError as exc:
+            logger.error(f"another build run holds the lock: {exc}")
+            return 2
 
     def _run_loop(self) -> int:
-        # Fail fast on a contradictory DoD: a step marked required with no command would otherwise
-        # be silently skipped every task and only be noticed (if at all) at gate ④ — after the
-        # whole build was paid for. Refuse before consuming anything.
-        unrunnable = [s.name for s in self.config.steps if s.kind == "cmd" and s.required and not s.run.strip()]
-        if unrunnable:
-            logger.error(
-                f"quality_gate step(s) marked `required: true` have no command: {', '.join(unrunnable)}. "
-                "Fill `run` in .agentloop/config.yaml (or drop `required`) before running the build loop."
-            )
-            return 2
-        if not self.dry_run:
-            # keep the append-only event log lean before appending this run's entries
-            events.rotate_if_large(str(self.repo.events))
         self._recover_in_progress()
         while True:
             graph = self._load_graph()
-            if not self.dry_run:
-                # keep state.md's human-facing board fresh each iteration
-                update_state_view(graph, str(self.repo.state))
-                events.refresh_state_view(str(self.repo.events), str(self.repo.state))
             counts = graph.counts()
             unfinished = len(graph.tasks) - counts["done"]
             if unfinished == 0:
-                return self._present_gate4(graph, self._post_build_security_review())
+                return self._present_gate4(graph)
 
             batch = plan_batch(graph, self.config.max_parallel)
             if batch is None:
@@ -768,13 +732,6 @@ class Orchestrator:
                 else:
                     self._consume_parallel(tasks)
             except StopLoop as exc:
-                if not self.dry_run:
-                    try:  # leave the board reflecting the batch's blocked/done statuses before stopping
-                        update_state_view(dag.load(self.repo.tasks), str(self.repo.state))
-                    except (OSError, dag.DagError, yaml.YAMLError) as view_exc:
-                        # Cosmetic only (tasks.yaml stays the truth), but say so — a silently
-                        # stale board would misdirect the human the escalation is aimed at.
-                        logger.warning(f"[warn] could not refresh the state.md board: {view_exc}")
                 logger.error(str(exc))
                 return exc.code
             # Recompute at the top of the loop after each batch (reassemble the chain).
@@ -782,7 +739,7 @@ class Orchestrator:
     def _consume_serial(self, tasks: list[dag.Task]) -> None:
         """Finalize foundation tasks etc. serially on the work branch."""
         for task in tasks:
-            self._set_status(task.id, "in_progress")
+            self._set_status(task.id, "in-progress")
             print(f"  [serial] {task.id} {task.title}")
             pre_head = "" if self.dry_run else self.ws.head()
             ok, log = self._run_task_to_done(task, cwd=self.root, base=pre_head)
@@ -826,7 +783,7 @@ class Orchestrator:
         only the implementation is parallelized.
         """
         for task in tasks:
-            self._set_status(task.id, "in_progress")
+            self._set_status(task.id, "in-progress")
         # Worktree creation is serial (avoid git lock contention). The implementation is run in parallel after.
         branches = {task.id: self._add_worktree(task) for task in tasks}
         results: dict[str, tuple[bool, str]] = {}
@@ -876,7 +833,9 @@ class Orchestrator:
                 blocked_any = True
         # Integration gate: only a join of 2+ leaves creates a combined tree nobody has verified
         # (a single-leaf join is byte-identical to that leaf's already-gated worktree state).
-        if len(merged) >= 2 and self.config.integration_gate:
+        # Not a knob any more: each leaf was green only in isolation, so a batch that merged
+        # two or more of them has never been verified as one tree until now.
+        if len(merged) >= 2:
             ok, log = self._integration_gate(merged)
         else:
             ok, log = True, ""
@@ -898,79 +857,34 @@ class Orchestrator:
         if blocked_any:
             raise StopLoop("A blocked task occurred. Human intervention needed.", code=1)
 
-    # -- post-build security review (binds the review to this build's deliverable) --
+    # -- handing over to the review pipeline -----------------------------------
 
-    def _reviewed_head(self) -> str:
-        """The `Reviewed-HEAD:` hash recorded in the last security-review report ("" if none).
+    def _present_gate4(self, graph: dag.Graph) -> int:
+        """All tasks done. Say what still has to happen — and what has NOT been established.
 
-        This is the freshness/idempotence key: a re-invoked loop at the same HEAD must not pay
-        for a second headless review, and a stale report (HEAD moved on) must not pass for a
-        current one at gate ④.
+        (There is no "you left a step empty" nudge here any more: the config schema requires a
+        `command` for every command step, so an empty one cannot reach this code. The scaffold
+        ships a placeholder `["true"]` instead, which `doctor` can see and a silent skip cannot.)
+
+        0.8.x ended here with a security review and an invitation to approve. That framing is
+        the thing 0.9.0 exists to correct: green tests plus an AI's summary is not evidence that
+        the code does what the plan says. Gate ④ approves a grounded review — a blind extraction
+        of actual behaviour, compared against the frozen plan, with a coverage manifest saying
+        what could not be analysed — and this loop has produced none of that.
         """
-        try:
-            text = self.repo.path(SECURITY_REVIEW_PATH).read_text(encoding="utf-8")
-        except OSError:
-            return ""
-        m = re.search(r"^Reviewed-HEAD:\s*([0-9a-fA-F]+)", text, re.MULTILINE)
-        return m.group(1) if m else ""
-
-    def _security_review_prompt(self, head: str) -> str:
-        return build_prompts.security_review_prompt(head, report_path=SECURITY_REVIEW_PATH)
-
-    def _post_build_security_review(self) -> str:
-        """Run the headless security review once per work-branch HEAD; return a gate-④ status line.
-
-        Report-only by design (the reviewer must not fix code), written to SECURITY_REVIEW_PATH with
-        the reviewed HEAD embedded, and recorded as a security_review event carrying that hash —
-        binding "which state was reviewed" to the build's deliverable instead of leaving the review
-        as an unrecorded conversational step. /verify still runs its own full review later.
-        """
-        if self.dry_run:
-            return "[dry-run] security review not launched"
-        if not self.config.security_review:
-            return (
-                "post-build security review is OFF (build.post_build.security_review: false) — "
-                "run /security-review by hand before approving gate ④."
-            )
-        head = self.ws.head()
-        if head and self._reviewed_head() == head:
-            return f"already reviewed at current HEAD — report: {SECURITY_REVIEW_PATH} (Reviewed-HEAD {head[:12]})"
-        rc, out = _run(
-            [*self.config.headless_cmd, self._security_review_prompt(head)],
-            cwd=self.root,
-            timeout=self.config.timeout_agent,
-        )
-        if rc != 0:
-            return (
-                f"security-review launch FAILED (rc={rc}) — run /security-review by hand before gate ④.\n{out[-500:]}"
-            )
-        if self._reviewed_head() != head:
-            return (
-                f"security review ran but {SECURITY_REVIEW_PATH} does not record Reviewed-HEAD {head[:12]} — "
-                "treat it as not done; run /security-review by hand before gate ④."
-            )
-        events.append_event("security_review", commit=head, detail=SECURITY_REVIEW_PATH, path=str(self.repo.events))
-        # this event lands after the loop-top refresh; keep the view current
-        events.refresh_state_view(str(self.repo.events), str(self.repo.state))
-        return f"report written: {SECURITY_REVIEW_PATH} (Reviewed-HEAD {head[:12]})"
-
-    def _present_gate4(self, graph: dag.Graph, security_note: str) -> int:
-        print("\n========== all tasks done (gate ④) ==========")
+        print("\n========== all tasks done ==========")
         print(dag.render(graph))
-        skipped = [s.name for s in self.config.steps if s.kind == "cmd" and not s.run.strip()]
-        if skipped:
-            # The empty-step nudge must reach the gate reviewer mechanically, not depend on the
-            # lead remembering it: a silently skipped smoke means the DoD never launched the thing.
-            print(
-                f"\n  ! The DoD ran WITHOUT: {', '.join(skipped)} (no command configured). If the deliverable "
-                "is runnable, fill `run` (and set `required: true`) in .agentloop/config.yaml."
-            )
+
         print(
-            "\nNext steps (human approval needed):\n"
-            f"  1. Security review: {security_note}\n"
-            "     Triage the report's findings; must-fix items go back to the implementer before gate ④.\n"
-            "  2. Review the implementation summary and, if fine, approve at /build's gate ④.\n"
-            "  * This script does not set gates.build to approved (only the human opens a gate)."
+            "\nWhat this run established: every task's code passed the configured quality gate.\n"
+            "What it did NOT establish: that the code does what the plan claims.\n"
+            "\nNext:\n"
+            "  1. agentloop review generate   — oracles, coverage manifest, blind actual extraction,\n"
+            "                                   conformance comparison, security and maintainability review\n"
+            "  2. agentloop ui                — answer the unprimed challenges, then read the comparison\n"
+            "  3. agentloop approve build     — readiness check + an attestation request to sign\n"
+            "\nThis loop cannot open gate 4, and neither can `approve`: a gate opens only on a signature\n"
+            "from a key the external Trust Manifest authorizes."
         )
         return 0
 
@@ -978,27 +892,30 @@ class Orchestrator:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="the deterministic orchestrator for the implementation phase")
     parser.add_argument(
-        "--dry-run", action="store_true", help="run only the control flow without calling the agent CLI/git"
+        "--dry-run", action="store_true", help="run only the control flow without calling the agent CLI or git"
     )
     parser.add_argument("--repo", default=None, help="repository root (default: discovered from cwd)")
     args = parser.parse_args(argv)
     common.configure_logging()
     try:
         repo = repo_mod.get(args.repo)
-    except repo_mod.RepoNotFoundError as exc:
+        repo.require_supported_layout()
+    except (repo_mod.RepoNotFoundError, repo_mod.UnsupportedLayoutError) as exc:
         logger.error(str(exc))
         return 1
-    try:
-        config = Config.load(str(repo.config))
-    except (OSError, yaml.YAMLError, ValueError) as exc:
+    if not repo.is_canonical_checkout:
+        # A leaf worktree cannot own a build: its store mutations have to go through the control
+        # plane, and a build that recorded nothing centrally would lose its own decisions.
         logger.error(
-            f"cannot load .agentloop/config.yaml: {exc} — fix it (`agentloop doctor` validates it against the schema)"
+            "this is a linked worktree — run the build from the canonical checkout. "
+            "Leaf worktrees participate through the control plane, they do not drive it."
         )
+        return 2
+    try:
+        config = Config.load(repo)
+    except (OSError, ValueError, models.DocumentError, strict_yaml.StrictParseError) as exc:
+        logger.error(f"cannot load .agentloop/config.yaml: {exc} — `agentloop doctor` validates it")
         return 1
-    if not args.dry_run and config.headless_cmd == ("claude", "-p"):
-        print(
-            '(hint) headless CLI = claude -p (the default). Switch it with `agentloop agent <codex|gemini|"custom">`.'
-        )
     return Orchestrator(config, dry_run=args.dry_run, repo=repo).run()
 
 

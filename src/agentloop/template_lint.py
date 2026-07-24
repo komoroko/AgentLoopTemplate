@@ -24,9 +24,7 @@ import logging
 import re
 from pathlib import Path
 
-import yaml
-
-from agentloop import common, dag, gate_guard, install
+from agentloop import common, dag, gate_guard, install, models, strict_yaml
 
 logger = logging.getLogger(__name__)
 
@@ -35,8 +33,7 @@ TASKS_CMD = ".agentloop/prompts/commands/tasks.md"
 BUILD_CMD = ".agentloop/prompts/commands/build.md"
 RULES_DIR = ".agentloop/prompts/rules"
 COMMANDS_DIR = ".agentloop/prompts/commands"
-STATE_PATH = common.STATE_PATH
-CONFIG_PATH = common.CONFIG_PATH
+CONFIG_PATH = ".agentloop/config.yaml"
 CLAUDE_MAPPING = "CLAUDE.md"
 COPILOT_MAPPING = ".github/instructions/agentloop.instructions.md"
 
@@ -60,22 +57,33 @@ _DESCRIPTION_RE = re.compile(r"^description:\s*(.+?)\s*$", re.MULTILINE)
 _CLAUDE_ONLY_TERMS = ("AskUserQuestion", "PushNotification", "ExitPlanMode")
 # A rules-module mention is the full materialized path — the form the wiring lines use.
 _RULES_REF_RE = re.compile(r"\.agentloop/prompts/rules/([a-z0-9-]+\.md)")
+# 0.8.x layout artifacts and bypasses that 0.9.0 removed (plan §4.1). Their appearance in a
+# neutral operating document means the vocabulary regressed to the pre-grounding model — the
+# same drift check_vocabulary guards, but for terms that must be *gone*, not merely present.
+_LEGACY_TERMS: tuple[str, ...] = (
+    ".agentloop/state.md",
+    ".agentloop/tasks.yaml",
+    ".agentloop/security-review.md",
+    "approve --force",
+    "enforce_hook",
+    "build.headless.cmd",
+    "schema_version",
+    "--refresh-state",
+)
 
 
 def _require(text: str, path: str, terms: list[str], what: str) -> list[str]:
     return [f"{path}: missing {what} `{t}`" for t in terms if t not in text]
 
 
-def gate_names(state_text: str) -> list[str]:
-    """The gate keys from state.md's front matter — the canonical gate list the docs must echo."""
-    return sorted(common.gates_of(common.parse_frontmatter(state_text)) or {})
+def gate_names() -> list[str]:
+    """The canonical gate list (models.GATE_ORDER) the prose must echo verbatim."""
+    return sorted(models.GATE_ORDER)
 
 
 def quality_gate_steps(config_text: str) -> list[str]:
     """The DoD step names from config.yaml — defined once there, echoed by AGENTS.md."""
-    config = yaml.safe_load(config_text) or {}
-    steps = ((config.get("build") or {}).get("quality_gate") or {}).get("steps") or []
-    return [step["name"] for step in steps if isinstance(step, dict) and "name" in step]
+    return [step.name for step in models.Config.parse(config_text).quality_gate if step.name]
 
 
 def check_vocabulary(files: dict[str, str]) -> list[str]:
@@ -91,7 +99,7 @@ def check_vocabulary(files: dict[str, str]) -> list[str]:
     failures += _require(files[AGENTS_MD], AGENTS_MD, kinds, "task kind (dag.KIND_VALUES)")
     failures += _require(files[TASKS_CMD], TASKS_CMD, kinds, "task kind (dag.KIND_VALUES)")
     failures += _require(files[TASKS_CMD], TASKS_CMD, sorted(dag.STATUS_VALUES), "task status (dag.STATUS_VALUES)")
-    failures += _require(files[AGENTS_MD], AGENTS_MD, gate_names(files[STATE_PATH]), "gate (state.md front matter)")
+    failures += _require(files[AGENTS_MD], AGENTS_MD, gate_names(), "gate (models.GATE_ORDER)")
     # The DoD step names are defined once (config.yaml) but narrated in several prose homes —
     # every copy must keep echoing them, or a renamed step teaches stale vocabulary somewhere.
     steps = quality_gate_steps(files[CONFIG_PATH])
@@ -187,6 +195,21 @@ def check_neutral_vocabulary(texts: dict[str, str]) -> list[str]:
     return failures
 
 
+def check_legacy_absence(texts: dict[str, str]) -> list[str]:
+    """No 0.8.x layout artifact or removed bypass may survive in a neutral operating document.
+
+    0.9.0 refuses the old layout at runtime; this is the documentation-side companion, so a rule
+    body still telling a reader to edit `.agentloop/state.md` (or to pass `approve --force`) is
+    caught as drift instead of silently teaching a workflow the tool no longer supports.
+    """
+    failures: list[str] = []
+    for path, text in sorted(texts.items()):
+        for term in _LEGACY_TERMS:
+            if term in text:
+                failures.append(f"{path}: 0.8.x term `{term}` survives — 0.9.0 removed it (plan §4.1)")
+    return failures
+
+
 def check_rules_wiring(root: Path, texts: dict[str, str]) -> list[str]:
     """Every rules module is read by a command body, and every rules reference resolves.
 
@@ -236,22 +259,21 @@ def check_readme_parity(en: str, ja: str) -> list[str]:
 
 
 def check_guard_defaults(config_text: str) -> list[str]:
-    """The template config.yaml's gates.guard_paths must mirror gate_guard's built-in defaults.
+    """The template config.yaml's guard.paths must mirror gate_guard's built-in defaults.
 
     The block exists in two hand-maintained places on purpose (the code default applies when the
     key is omitted; the shipped config spells it out for the human editing it) — this canary is
     what keeps the pair from drifting when a path rule is added to only one of them.
     """
-    config = yaml.safe_load(config_text) or {}
-    shipped = (config.get("gates") or {}).get("guard_paths")
-    if not isinstance(shipped, dict):
-        return [f"{CONFIG_PATH}: gates.guard_paths block is missing (the template config must spell out the defaults)"]
+    shipped = models.Config.parse(config_text).guard_paths
+    if not shipped:
+        return [f"{CONFIG_PATH}: guard.paths block is missing (the template config must spell out the defaults)"]
     failures: list[str] = []
-    defaults = gate_guard._DEFAULT_GUARD_PATHS
+    defaults = gate_guard.DEFAULT_GUARD_PATHS
     for key in sorted(set(defaults) - set(shipped)):
-        failures.append(f"{CONFIG_PATH}: guard_paths is missing `{key}` (in gate_guard._DEFAULT_GUARD_PATHS)")
+        failures.append(f"{CONFIG_PATH}: guard.paths is missing `{key}` (in gate_guard.DEFAULT_GUARD_PATHS)")
     for key in sorted(set(shipped) - set(defaults)):
-        failures.append(f"gate_guard.py: _DEFAULT_GUARD_PATHS is missing `{key}` (in {CONFIG_PATH} guard_paths)")
+        failures.append(f"gate_guard.py: DEFAULT_GUARD_PATHS is missing `{key}` (in {CONFIG_PATH} guard.paths)")
     for key in sorted(set(defaults) & set(shipped)):
         if str(shipped[key]) != defaults[key]:
             failures.append(
@@ -267,6 +289,7 @@ def check_guard_defaults(config_text: str) -> list[str]:
 _DATA_PARITY: tuple[tuple[str, str], ...] = (
     (".agentloop/prompts", "prompts"),
     (".agentloop/schema", "schema"),
+    (".agentloop/oci", "oci"),
     ("AGENTS.md", "rules/AGENTS.md"),
     (".claude/commands", "integrations/claude/commands"),
     (".claude/agents", "integrations/claude/agents"),
@@ -343,15 +366,18 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     config_text = (root / CONFIG_PATH).read_text(encoding="utf-8")
-    config = yaml.safe_load(config_text) or {}
-    if (config.get("gates") or {}).get("template_mode") is not True:
-        print("skipped (gates.template_mode is false: not the template repo)")
-        return 0
+    try:
+        if not models.Config.parse(config_text).template_mode:
+            print("skipped (guard.template_mode is false: not the template repo)")
+            return 0
+    except (models.DocumentError, strict_yaml.StrictParseError) as exc:
+        logger.error(f"template-lint: {CONFIG_PATH} is not valid: {exc}")
+        return 1
 
     try:
         files = {
             path: (root / path).read_text(encoding="utf-8")
-            for path in (AGENTS_MD, TASKS_CMD, BUILD_CMD, STATE_PATH, CONFIG_PATH, "README.md", "README.ja.md")
+            for path in (AGENTS_MD, TASKS_CMD, BUILD_CMD, CONFIG_PATH, "README.md", "README.ja.md")
         }
         failures = check_vocabulary(files)
         failures += check_wrapper_parity(root)
@@ -362,6 +388,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         texts = neutral_texts(root)
         failures += check_neutral_vocabulary(texts)
+        failures += check_legacy_absence(texts)
         failures += check_rules_wiring(root, texts)
         failures += check_data_parity(root)
         failures += check_guard_defaults(files[CONFIG_PATH])

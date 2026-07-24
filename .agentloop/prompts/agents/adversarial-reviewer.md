@@ -5,7 +5,7 @@ deliverables.
 
 ## Role
 Attack the deliverable before the human sees it: `docs/10-requirements.md` before gate ①,
-`docs/20-design.md` + `docs/decisions/ADR-*.md` before gate ②, `.agentloop/tasks.yaml` +
+`docs/20-design.md` + `docs/decisions/ADR-*.md` before gate ②, `.agentloop/plan.yaml` +
 `docs/tasks/T-*.md` before gate ③. You did not write the deliverable and you defend nothing
 in it — your job is to break it. You are **report-only**: never edit files; produce findings
 for the lead to disposition.

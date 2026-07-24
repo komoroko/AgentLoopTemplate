@@ -65,8 +65,8 @@ def test_bad_env_var_is_an_error_not_a_fallback(repo_root: Path, monkeypatch: py
 
 def test_repo_paths_are_absolute_and_root_anchored(repo_root: Path) -> None:
     repo = repo_mod.Repo(repo_root)
-    assert repo.state == repo_root / ".agentloop/state.md"
-    assert repo.config.is_absolute() and repo.tasks.is_absolute() and repo.lock.is_absolute()
+    assert repo.state == repo_root / ".agentloop/state.yaml"
+    assert repo.config.is_absolute() and repo.plan.is_absolute() and repo.lock.is_absolute()
     assert repo.path("docs/20-design.md") == repo_root / "docs/20-design.md"
 
 
@@ -84,7 +84,6 @@ def test_gate_guard_resolves_repo_from_the_payload_cwd(repo_root: Path, monkeypa
     seed_repo(
         repo_root,
         state=make_state(gates=dict.fromkeys(GATE_ORDER, "pending")),
-        config="gates:\n  enforce_hook: true\n  template_mode: false\n",
     )
     payload = json.dumps(
         {
@@ -109,8 +108,9 @@ def test_gate_guard_resolves_repo_from_the_payload_cwd(repo_root: Path, monkeypa
 def test_evaluate_accepts_an_explicit_repo_without_chdir(repo_root: Path) -> None:
     seed_repo(
         repo_root,
-        state=make_state(gates={"requirements": "approved", "design": "pending", "tasks": "pending"}),
-        config="gates:\n  enforce_hook: true\n  template_mode: false\n",
+        state=make_state(
+            gates={"requirements": "approved", "design": "pending", "tasks": "pending"}, plan_status="draft"
+        ),
     )
     repo = repo_mod.Repo(repo_root)
     ok, _ = gate_guard.evaluate(str(repo_root / "docs" / "20-design.md"), repo)

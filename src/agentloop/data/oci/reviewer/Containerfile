@@ -1,0 +1,31 @@
+# The reviewer sandbox: where AI reviewers read the repository and produce structured output.
+#
+# Built with `agentloop oci build --profile reviewer`.
+#
+# A reviewer is given the repository READ-ONLY and one network profile that reaches the model
+# API and nothing else. It never receives: the canonical store, the Trust Manifest, a signing
+# key, a git write path, or a shell into the host. That is not belt-and-braces around a good
+# prompt — source code, comments, and READMEs are untrusted input, and an instruction hidden
+# in a docstring only matters if the process reading it can act on one (plan §10.3, §12.7).
+
+FROM docker.io/library/python:3.13-slim-bookworm
+
+RUN groupadd --gid 1000 reviewer \
+ && useradd --uid 1000 --gid 1000 --create-home --shell /usr/sbin/nologin reviewer
+
+# git is present for read-only inspection (blame, show, ls-tree). The runner mounts the repo
+# read-only, so there is nothing here for a write to land in.
+RUN apt-get update \
+ && apt-get install --no-install-recommends -y git ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    HOME=/home/reviewer \
+    GIT_CONFIG_GLOBAL=/dev/null \
+    GIT_CONFIG_SYSTEM=/dev/null
+
+USER 1000:1000
+WORKDIR /subject
+ENTRYPOINT []
+CMD ["python", "-c", "print('agentloop reviewer sandbox')"]

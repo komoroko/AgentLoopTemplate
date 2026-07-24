@@ -81,13 +81,13 @@ The installed `agentloop guard` denies in code at three checkpoints — **edit-t
 hook on deliverable writes), **commit-stage** (`agentloop guard --check-diff` in pre-commit /
 the quality gate), and **merge-stage** (`agentloop build` re-checks every path a task changed
 before it lands; violations escalate as `gate_violation`). Guarded paths: `gates.guard_paths`.
-A state.md gate-line flip to `approved` is denied edit-time, and commit-stage without a
-matching `gate_approved` event. `agentloop approve` also machine-checks the gate's recorded
-evidence (unresolved `[NEEDS CLARIFICATION]` markers, the security review's `Reviewed-HEAD`
-binding, open escalations) and refuses when it is missing; `--force` overrides, recorded in
-the event. Escape hatches (human-decided): `gates.enforce_hook: false`;
-`gates.template_mode: true` while the repo IS the template. Detail: `gate_guard.py`'s
-docstring and the config comments.
+A `state.yaml` gate flip to `approved` written by hand is denied — the only write path is
+`agentloop attestation import` of a request signed by a Trust-Manifest key. `agentloop approve`
+machine-checks the gate's bound evidence (unresolved `[NEEDS CLARIFICATION]` markers, the
+review's `subject_head_sha` freshness, coverage sufficiency, blocking findings, a frozen human
+review, open escalations) and refuses to emit a request when it is missing — there is **no
+`--force`**. The only standing exception is `gates.template_mode: true` while the repo IS the
+template. Detail: `gate_guard.py`'s docstring and the config comments.
 
 ## Repo map
 
