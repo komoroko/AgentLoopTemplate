@@ -57,6 +57,19 @@ _DESCRIPTION_RE = re.compile(r"^description:\s*(.+?)\s*$", re.MULTILINE)
 _CLAUDE_ONLY_TERMS = ("AskUserQuestion", "PushNotification", "ExitPlanMode")
 # A rules-module mention is the full materialized path — the form the wiring lines use.
 _RULES_REF_RE = re.compile(r"\.agentloop/prompts/rules/([a-z0-9-]+\.md)")
+# 0.8.x layout artifacts and bypasses that 0.9.0 removed (plan §4.1). Their appearance in a
+# neutral operating document means the vocabulary regressed to the pre-grounding model — the
+# same drift check_vocabulary guards, but for terms that must be *gone*, not merely present.
+_LEGACY_TERMS: tuple[str, ...] = (
+    ".agentloop/state.md",
+    ".agentloop/tasks.yaml",
+    ".agentloop/security-review.md",
+    "approve --force",
+    "enforce_hook",
+    "build.headless.cmd",
+    "schema_version",
+    "--refresh-state",
+)
 
 
 def _require(text: str, path: str, terms: list[str], what: str) -> list[str]:
@@ -179,6 +192,21 @@ def check_neutral_vocabulary(texts: dict[str, str]) -> list[str]:
         for term in _CLAUDE_ONLY_TERMS:
             if term in text:
                 failures.append(f"{path}: Claude-only mechanism `{term}` leaked into a neutral file")
+    return failures
+
+
+def check_legacy_absence(texts: dict[str, str]) -> list[str]:
+    """No 0.8.x layout artifact or removed bypass may survive in a neutral operating document.
+
+    0.9.0 refuses the old layout at runtime; this is the documentation-side companion, so a rule
+    body still telling a reader to edit `.agentloop/state.md` (or to pass `approve --force`) is
+    caught as drift instead of silently teaching a workflow the tool no longer supports.
+    """
+    failures: list[str] = []
+    for path, text in sorted(texts.items()):
+        for term in _LEGACY_TERMS:
+            if term in text:
+                failures.append(f"{path}: 0.8.x term `{term}` survives — 0.9.0 removed it (plan §4.1)")
     return failures
 
 
@@ -360,6 +388,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         texts = neutral_texts(root)
         failures += check_neutral_vocabulary(texts)
+        failures += check_legacy_absence(texts)
         failures += check_rules_wiring(root, texts)
         failures += check_data_parity(root)
         failures += check_guard_defaults(files[CONFIG_PATH])

@@ -337,3 +337,12 @@ def test_main_reports_an_invalid_config_rather_than_skipping(
     (root / ".agentloop" / "config.yaml").write_text("project: {}\n", encoding="utf-8")
     assert template_lint.main([]) == 1
     assert "is not valid" in capsys.readouterr().err
+
+
+def test_check_legacy_absence_flags_08x_terms() -> None:
+    clean = {"AGENTS.md": "gate approvals live in `.agentloop/state.yaml`"}
+    assert template_lint.check_legacy_absence(clean) == []
+    dirty = {"rules/gate.md": "record it in `.agentloop/state.md`, or `approve --force` to override"}
+    problems = template_lint.check_legacy_absence(dirty)
+    assert any("state.md" in p for p in problems)
+    assert any("approve --force" in p for p in problems)

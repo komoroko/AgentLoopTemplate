@@ -45,6 +45,7 @@ VERBS: dict[str, str] = {
     "upgrade": "install:cmd_upgrade",
     "approve": "approve",
     "revise": "revise",
+    "review": "review",
     "build": "build_loop",
     "doctor": "doctor",
     "events": "events",
@@ -56,6 +57,7 @@ VERBS: dict[str, str] = {
     "oci": "oci_cli",
     "oracle": "oracle_cli",
     "guard": "gate_guard",
+    "policy-check": "policy_check",
     "decision": "control_plane",
     "knowledge-gap": "control_plane:knowledge_gap_main",
     "dag": "dag",
@@ -94,6 +96,7 @@ operations:
   oci build|verify             build the sandbox images and pin their digests
   oracle validate|freeze|run   the acceptance-oracle boundary (frozen at gate 3)
   revise --to <phase> ...      roll back upstream (gates reset in a chain)
+  review generate|complete|show  the grounded machine review (gate ④'s evidence)
   build [--dry-run]            the deterministic /build orchestrator
   dag [--render|--trace|...]   derive/inspect the task DAG (read-only; /tasks & /status use it)
   doctor [--unsupported-layout]  read-only diagnosis: format, trust, sandbox, evidence, review
@@ -104,6 +107,7 @@ operations:
   decision add --statement …   record an implementation decision (routes via the control plane)
   knowledge-gap add …          record what could not be found out
   guard [--check-diff]         the gate-guard hook / commit-stage check
+  policy-check --base-sha … --head-sha …  base-side CI meta-policy (rejects head weakening)
   template-lint                drift canaries (template repo only; products exit 0)
   version                      print the tool version
 """
