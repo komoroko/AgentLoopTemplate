@@ -15,9 +15,10 @@ capability vocabulary onto Claude Code's mechanisms.
 | `approval-presentation` | plan mode + `ExitPlanMode`; outside plan mode, present the summary and ask for an explicit "approve" |
 | `session-compaction` | `/compact` (human-run; the agent only suggests it) |
 | `role-delegation` | subagents in `.claude/agents/` (`requirements-analyst`, `architect`, `implementer`, `adversarial-reviewer`); parallel leaves use `isolation: "worktree"` |
-| `autonomous-build-iteration` | `/loop /build` (mode B) — and headless mode A, `agentloop build`, which drives the CLI in `build.headless.cmd` (default `claude -p`) |
+| `autonomous-build-iteration` | `/loop /build` (mode B) — and headless mode A, `agentloop build`, which drives the reviewer/implementer adapters set by `agentloop agent <role> <cli>` |
 | `command-preauthorization` | `permissions.allow` in `.claude/settings.json` |
 
 Claude Code also carries the **mechanism layer** of the gates: the PreToolUse hook in
 `.claude/settings.json` runs `agentloop guard` on every Write/Edit (AGENTS.md "Gate rules").
-The security review before gate ④ is `/security-review`.
+The grounded review that gate ④ approves is `agentloop review generate`; the structured security
+review feeds it. A gate opens only by `agentloop attestation import` of a signed request.
