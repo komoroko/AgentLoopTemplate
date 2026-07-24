@@ -5,6 +5,44 @@ upgrade` shows the sections between the installed version, recorded in
 `.agentloop/agentloop.lock`, and the new one). The version's single source is
 `pyproject.toml [project] version`.
 
+## [0.9.0] - 2026-07-24
+
+**Breaking.** 0.9.0 is a rewrite: it evaluates an implementation against externally-anchored
+independent boundaries instead of an AI's self-consistent explanation. There is no migration —
+a repository carrying a 0.8.x marker (`.agentloop/state.md`, `tasks.yaml`, or `security-review.md`)
+is refused by every verb except `agentloop doctor --unsupported-layout`. Archive the old cycle,
+remove `.agentloop/`, and run `agentloop init` again.
+
+### Changed
+- **The SSOT is four documents, not three.** `plan.yaml` (the frozen Expected Model), `state.yaml`
+  (phase + gate approvals + tasks), `review.yaml` (the machine review and the human review, digested
+  *separately*), and `events.ndjson` (a hash-chained audit log). Strict YAML/JSON parsing rejects
+  duplicate keys, merge keys, aliases, and deep nesting; every cross-reference is by typed id.
+- **Gates open only by a signed attestation.** A localhost click is not authentication. `approve`
+  reports readiness and emits an attestation request; the gate opens when a key the *external* Trust
+  Manifest names signs it and `attestation import` records it. `approve --force` is gone.
+- **Gate ④ approves a grounded review, not a green test run.** `agentloop review generate` runs the
+  frozen acceptance oracles (sealed OCI sandbox), a deterministic Coverage Manifest, a *blind* actual
+  extraction (never given the plan), an Expected/Actual comparison, and security/maintainability
+  review — reported on three separate axes (integrity / semantic_support / conformance). There is no
+  single `verified`. "Extra behaviours: 0" is shown only with the Coverage Manifest that earned it.
+- **The human review is Challenge-first.** The reviewer answers an unprimed challenge before any
+  Expected/Actual reveal; a mismatch opens a counterfactual; high/critical work in an unfamiliar
+  domain needs an expert, an experiment, or a smaller scope; a blown review budget splits the scope
+  rather than lengthening the screen.
+
+### Added
+- `agentloop review`, `attestation`, `evidence`, `oci`, `oracle`, `decision`, `knowledge-gap`, and
+  `policy-check` — the base-side CI meta-policy that reads the head tree from the trusted base and
+  refuses a weakening (exact SHAs only; a mutable ref is not a base).
+- OCI sandbox images (`agentloop oci build|verify`) built from bundled Containerfiles and pinned by
+  image digest; the Central Store (flock + journaled atomic writes) and the Control Plane so a leaf
+  worktree's decisions survive its deletion.
+
+### Removed
+- All 0.8.x compatibility: the state.md/tasks.yaml/security-review.md parsers, `approve --force`,
+  `events --refresh-state`, `build.headless.cmd`, `gates.enforce_hook`, and `schema_version`.
+
 ## [0.8.4] - 2026-07-20
 
 ### Added

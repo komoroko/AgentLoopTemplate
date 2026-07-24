@@ -1,0 +1,112 @@
+# .agentloop/agentloop.lock — machine-written by `agentloop init|sync|install|uninstall|upgrade`.
+# Records the tool version/source, schema versions, and a hash per installed file so
+# upgrades never overwrite local edits. Do not edit by hand.
+version: 1
+agentloop:
+  version: 0.8.4
+  source: ''
+schema:
+  config: 1
+  tasks: 1
+prompts:
+  version: 0.8.4
+  files:
+    AGENTS.agentloop.md: sha256:955c66dede137bdaafb26bb42386a9d321c6805a037fbf6e4a51cd1a7bc5dedc
+    prompts/agents/architect.md: sha256:d36360652d81f2dcfae8861557cd49a679f2f29241551b13e4aa5364ffbf6479
+    prompts/agents/implementer.md: sha256:99f58fc07f0ccf54fbedde9128b140a0d2ffe9b960eaf1c7a159ee572f39bce6
+    prompts/agents/requirements-analyst.md: sha256:f856541626e80f3439a3681c70a9ab09f557b0e3dc5c4ddd229f214b5f8efab3
+    prompts/commands/build.md: sha256:6922d9c261b5d47efaf13987f372bd2b1e0b565a8812ea61a95317e3040d7493
+    prompts/commands/design.md: sha256:2f46b55d0847368906066732686706dac66c8dc3dc6199f6917ed533fc82f50e
+    prompts/commands/onboard.md: sha256:f9eec4a85eed5b91d5d889f71c1665f869c63a2c79c127f04f403b3bfd72c479
+    prompts/commands/req.md: sha256:675aa9300928f3fa4f7f8a126879fd2c49cea60783d8f4336a68e7c88f4b4588
+    prompts/commands/revise.md: sha256:739d875341ab5def2b790b46ab3f6f907c3d4b6f36d5d6f14fd0a45575db920a
+    prompts/commands/status.md: sha256:559917b9892dbf8efe74dbc2bd7e575b8f4fe7360a7553b9fb6265e7653b2b95
+    prompts/commands/tasks.md: sha256:d46800186b19675920eb5292fbd7f17705b0b2fed6834cc5ea34d8e5aa5d9333
+    prompts/commands/verify.md: sha256:b0ced50fbea8c2f7c88715b50b5f6866754ecabf5f774b782f9f14e370b513ec
+    schema/config.schema.json: sha256:7ab4d34fac29e12beec8dfd81e50f50df882701da7d4540e94c7c9ab63692e70
+    schema/tasks.schema.json: sha256:9e45b44bfab0a319b6a263b0df58e475a4f838c6f37041039bb06ac8d268fb7b
+    prompts/agents/adversarial-reviewer.md: sha256:b93f3c5bb1f7aae40a7212b256b6f4693c8ce6b66e377eb7a86c8a10b4b54c3d
+    prompts/rules/gate-workflow.md: sha256:357b3208efe6bc2840559c08b59ea6906405020f049292f4ed0b9e4580d5e088
+integrations:
+  claude:
+    version: 0.8.4
+    installed_at: '2026-07-14'
+    files:
+      .claude/agents/architect.md: sha256:85a1c85dfe17e29bb7ebf1cb88465c1b29663976d0441b74c6c8a196f9d5e389
+      .claude/agents/implementer.md: sha256:17b484f87b6d4f60a734bc6cbea8a5a0233a75cbe305f614c0067386aa033c39
+      .claude/agents/requirements-analyst.md: sha256:0e3ea289658f002f1254b9003ee161f08a2805c30c6a5ff825a532aaba0f8a55
+      .claude/commands/build.md: sha256:0160e4f8cc29b276087c7373760c064a04dfef12bfd710aca28426483c987884
+      .claude/commands/design.md: sha256:7402db85ecfebd9cbcd134971655b7ddc085739ea8e270b04b32b6db906126b6
+      .claude/commands/onboard.md: sha256:8d12c6f0f22425987bca43f0158fd8d9d23468c0db4524caf99fd5f6fe242634
+      .claude/commands/req.md: sha256:181aaff2d8990102f81fb0e70332d6adb038e35c6fbb0aceb4217518b42ccd1d
+      .claude/commands/revise.md: sha256:2663c5a1e30ae5af6ebeb934461d15c9b77e394640bd4ea0b9b067c6c3fc9f29
+      .claude/commands/status.md: sha256:1e534f35381ecb24b64fc8e0a4a76cbf71b9559ee4f28f194170d6bd70aa9595
+      .claude/commands/tasks.md: sha256:9f6e01c7b8c9bbad0818d2ee52d79d9e64df4c5e6e74e0a784913d72174fee22
+      .claude/commands/verify.md: sha256:8e0db9000ef0b3f4d5dadb0be84b047882acffd379f7282107a83657dc65a8e2
+      .claude/agents/adversarial-reviewer.md: sha256:2fe152f94d2c6d6539b862b7a7db2260539e7654503add24bb797dadcaa0c1bb
+    settings:
+      created: true
+      permissions_allow:
+      - Read
+      - Grep
+      - Glob
+      - Bash(cat .agentloop/state.md:*)
+      - Bash(cat .agentloop/config.yaml:*)
+      - Bash(git status:*)
+      - Bash(git diff:*)
+      - Bash(git log:*)
+      - Bash(git show:*)
+      - Bash(git branch:*)
+      - Bash(git rev-parse:*)
+      - Bash(git add:*)
+      - Bash(git commit:*)
+      - Bash(git merge --ff-only:*)
+      - Bash(git merge --no-ff:*)
+      - Bash(git worktree:*)
+      - Bash(ls:*)
+      - Bash(agentloop status:*)
+      - Bash(agentloop next:*)
+      - Bash(agentloop dag:*)
+      - Bash(agentloop build:*)
+      - Bash(agentloop doctor:*)
+      - Bash(agentloop events:*)
+      - Bash(agentloop revise:*)
+      - Bash(agentloop issue-sync:*)
+      - Bash(agentloop sync --check:*)
+      - Bash(make test:*)
+      - Bash(make check:*)
+      - Bash(make audit:*)
+      - Bash(uv run pytest:*)
+      hooks:
+        SessionStart:
+        - hooks:
+          - type: command
+            command: test -f .agentloop/state.md && echo '--- AgentLoop current state
+              (top of .agentloop/state.md) ---' && sed -n '1,20p' .agentloop/state.md
+              || true
+        PreToolUse:
+        - matcher: Write|Edit|MultiEdit
+          hooks:
+          - type: command
+            command: agentloop guard
+  copilot:
+    version: 0.8.4
+    installed_at: '2026-07-14'
+    files:
+      .github/agents/architect.agent.md: sha256:369c4ed04d39c7520e6bdd99677cd459dcb9b557dcd685090168f1adccf3f6de
+      .github/agents/implementer.agent.md: sha256:72b023a6bc76d716f17f4d03bc8039bf676958494241bcbb88f35b3d899a7fac
+      .github/agents/requirements-analyst.agent.md: sha256:df2935215e0abb20b74e8db9d03e17b67d8bd1bfe3278f0c7ae988e0e8838e40
+      .github/hooks/agentloop.json: sha256:644d68ef30d12ed1a6995119a5f39234c6348012e9bf464f86ea79857109d4a3
+      .github/instructions/agentloop.instructions.md: sha256:1047655e8b44e15adc9ec01438ca97598eec73bbfa60ff5f9f2d3abad49453b8
+      .github/prompts/build.prompt.md: sha256:51b545d091c135f7785ecc5647e9237714278075b6243fa367b4ebfa823604bd
+      .github/prompts/design.prompt.md: sha256:da06ffac233ab4390d9b585c437976a46048d040a4c0070c5de40d33c51eab15
+      .github/prompts/onboard.prompt.md: sha256:2f8fccdc64a3ae26dfdae319ca0594f3606da865a4f15c02e8d6d0188d9d5c82
+      .github/prompts/req.prompt.md: sha256:9f3cefd1ae7037557d6e314f9a85d635f4d9ec834fb10c449d05bf57c48555d9
+      .github/prompts/revise.prompt.md: sha256:2f12e53ba14688b14147aa28973df6a71580556b4c60a2f95e1e62e95bf6472e
+      .github/prompts/status.prompt.md: sha256:bc5c496ae2026f8676c673ace44a6c364c2d2933a1a708aed5a1e4382ca8690b
+      .github/prompts/tasks.prompt.md: sha256:8aea4cecb018374a367133364c7e1fe382d9d4c68d101287a7837f2d45c7a9cc
+      .github/prompts/verify.prompt.md: sha256:f46113e966adac21c190de0583635b23cfc9a4eca028f94df55f797a620b0bf7
+      .github/agents/adversarial-reviewer.agent.md: sha256:dd88806e9d227ede242931f8509c195d470628ad787d85e3e95a8e8e8878a807
+seeded: {}
+created_at: '2026-07-14'
+updated_at: '2026-07-20'

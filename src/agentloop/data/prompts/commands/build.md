@@ -75,7 +75,7 @@ puts four duties on the lead that mode A does in code:
    branch rather than the work branch; the implementer then lacks the foundation tasks'
    deliverables and must first pull the work branch in (`git merge`, `--ff-only` if possible)
    before implementing. (Mode A branches from the work branch, so this never arises there.)
-3. **Keep the records by hand.** Statuses (`in_progress` → `done`/`blocked`) in `state.yaml.tasks` as
+3. **Keep the records by hand.** Statuses (`in-progress` → `done`/`blocked`) in `state.yaml.tasks` as
    you go — never `done` with any DoD step unmet; blocked/needs-revision recorded as events
    (`agentloop events --add blocked --task T-NNN --detail "…"`); per-task commits
    **`T-NNN: <summary>`** (one commit = one task — the worktree's commits are exactly that
@@ -85,7 +85,7 @@ puts four duties on the lead that mode A does in code:
    `needs-revision` + escalation — never fixed on your own; roll back via `/revise` at the
    human's discretion.
 4. **Session hygiene.** At a layer boundary, when the conversation is heavy with re-run
-   output, you may suggest `session-compaction` — only when no task is `in_progress`, merges
+   output, you may suggest `session-compaction` — only when no task is `in-progress`, merges
    are committed and marked `done`, and observations are recorded in tickets / `state.yaml`
    (pre-compact check: `.agentloop/prompts/rules/gate-workflow.md` "Context budget"; the SSOT rehydrates the next iteration).
    Never mid-retry or while a worktree awaits its merge. (Mode A runs in separate processes

@@ -1,0 +1,396 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/komoroko/AgentLoopTemplate/schema/plan.schema.json",
+  "title": "AgentLoop plan.yaml (agentloop-grounded-v1)",
+  "description": "The Expected Model and its Evidence Obligations — the sole SSOT for what the implementation is supposed to do, frozen at gate 3. Every enum here is mirrored by a constant in agentloop/models.py; tests/test_models.py fails if the two drift.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["cycle", "claims"],
+  "properties": {
+    "cycle": { "$ref": "#/$defs/cycle" },
+    "evidence_obligations": { "type": "array", "maxItems": 512, "items": { "$ref": "#/$defs/obligation" } },
+    "searches": { "type": "array", "maxItems": 512, "items": { "$ref": "#/$defs/search" } },
+    "sources": { "type": "array", "maxItems": 512, "items": { "$ref": "#/$defs/source" } },
+    "claims": { "type": "array", "maxItems": 512, "items": { "$ref": "#/$defs/claim" } },
+    "technical_facts": { "type": "array", "maxItems": 512, "items": { "$ref": "#/$defs/technicalFact" } },
+    "solutions": { "type": "array", "maxItems": 512, "items": { "$ref": "#/$defs/solution" } },
+    "oracles": { "type": "array", "maxItems": 256, "items": { "$ref": "#/$defs/oracle" } },
+    "tasks": { "type": "array", "maxItems": 512, "items": { "$ref": "#/$defs/task" } },
+    "non_goals": { "type": "array", "maxItems": 128, "items": { "$ref": "#/$defs/nonGoal" } }
+  },
+
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "gitBlob": { "type": "string", "pattern": "^git-blob:[0-9a-f]{40}([0-9a-f]{24})?$" },
+    "commit": { "type": "string", "pattern": "^[0-9a-f]{7,64}$" },
+    "risk": { "enum": ["low", "medium", "high", "critical"] },
+    "text": { "type": "string", "minLength": 1, "maxLength": 2000 },
+    "label": { "type": "string", "minLength": 1, "maxLength": 200 },
+
+    "repoPath": {
+      "description": "A repo-relative POSIX path. No absolute form, no '..' segment, no backslash — a reference that can escape the repository is not a reference to anything reviewable.",
+      "type": "string",
+      "maxLength": 512,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[A-Za-z0-9._][A-Za-z0-9._/@+-]*$"
+    },
+
+    "domains": {
+      "type": "array",
+      "maxItems": 16,
+      "items": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-z0-9][a-z0-9_-]*$" }
+    },
+
+    "claimId": { "type": "string", "pattern": "^C-[0-9]{3,}$" },
+    "technicalFactId": { "type": "string", "pattern": "^TF-[0-9]{3,}$" },
+    "solutionId": { "type": "string", "pattern": "^D-[0-9]{3,}$" },
+    "sourceId": { "type": "string", "pattern": "^SRC-[0-9]{3,}$" },
+    "searchId": { "type": "string", "pattern": "^SEARCH-[0-9]{3,}$" },
+    "obligationId": { "type": "string", "pattern": "^EO-[A-Z0-9-]+$" },
+    "oracleId": { "type": "string", "pattern": "^O-[0-9]{3,}$" },
+    "taskId": { "type": "string", "pattern": "^T-[0-9]{3,}$" },
+    "nonGoalId": { "type": "string", "pattern": "^NG-[0-9]{3,}$" },
+    "attestationId": { "type": "string", "pattern": "^ATT-[A-Z0-9-]+$" },
+
+    "idList": { "type": "array", "maxItems": 128, "items": { "type": "string", "maxLength": 64 } },
+
+    "artifactRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "digest"],
+      "properties": {
+        "path": { "$ref": "#/$defs/repoPath" },
+        "digest": { "$ref": "#/$defs/digest" }
+      }
+    },
+
+    "cycle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "base_commit", "branch"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-z0-9][a-z0-9-]*$" },
+        "base_commit": { "$ref": "#/$defs/commit" },
+        "branch": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "artifacts": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "brief": { "$ref": "#/$defs/artifactRef" },
+            "current_state": { "$ref": "#/$defs/artifactRef" },
+            "requirements": { "$ref": "#/$defs/artifactRef" },
+            "design": { "$ref": "#/$defs/artifactRef" }
+          }
+        }
+      }
+    },
+
+    "obligation": {
+      "description": "What must be true before a claim or technical fact may be treated as settled. execution_status and coverage_status are separate on purpose: a search that ran and found nothing has completed execution and satisfied no coverage.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "subject_ids", "rule", "risk", "execution_status", "coverage_status"],
+      "properties": {
+        "id": { "$ref": "#/$defs/obligationId" },
+        "subject_ids": { "type": "array", "minItems": 1, "maxItems": 64, "items": { "type": "string", "maxLength": 64 } },
+        "rule": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-z0-9][a-z0-9-]*$" },
+        "risk": { "$ref": "#/$defs/risk" },
+        "alternatives": {
+          "description": "The evidence paths that may satisfy this obligation. More than one path is normal — 'official source unavailable' is a reason to take another route, not an automatic block (plan 15.3).",
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "requires"],
+            "properties": {
+              "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-z0-9][a-z0-9-]*$" },
+              "requires": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "source_class": { "enum": ["official_external_spec", "internal_spec", "repository_code", "repository_test", "runtime_trace", "human_decision", "expert_statement", "experiment_receipt"] },
+                  "oracle": { "enum": ["hermetic", "observational"] },
+                  "expert_attestation": { "type": "string", "minLength": 1, "maxLength": 64 },
+                  "experiment": { "enum": ["reproducible", "one_off"] },
+                  "test": { "enum": ["unit", "integration"] }
+                }
+              }
+            }
+          }
+        },
+        "execution_status": { "enum": ["pending", "complete", "failed"] },
+        "coverage_status": { "enum": ["satisfied", "unsatisfied"] },
+        "satisfied_by": { "$ref": "#/$defs/idList" }
+      }
+    },
+
+    "search": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "obligation_ids", "purpose", "provider_attempts", "execution_status", "coverage_status"],
+      "properties": {
+        "id": { "$ref": "#/$defs/searchId" },
+        "obligation_ids": { "type": "array", "minItems": 1, "maxItems": 64, "items": { "$ref": "#/$defs/obligationId" } },
+        "purpose": { "$ref": "#/$defs/text" },
+        "provider_attempts": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["provider", "query", "execution_status", "result"],
+            "properties": {
+              "provider": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-z0-9][a-z0-9_-]*$" },
+              "query": { "type": "string", "minLength": 1, "maxLength": 1000 },
+              "execution_status": { "enum": ["pending", "complete", "failed"] },
+              "result": {
+                "description": "'no_match' = searched, nothing found. 'unavailable' = could not search. Collapsing the two is how 'no documentation exists' gets invented (plan 6.4).",
+                "enum": ["matched", "no_match", "unavailable"]
+              },
+              "reason": { "type": "string", "maxLength": 1000 },
+              "source_ids": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/sourceId" } }
+            }
+          }
+        },
+        "execution_status": { "enum": ["pending", "complete", "failed"] },
+        "coverage_status": { "enum": ["sufficient", "insufficient"] }
+      }
+    },
+
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "provider", "kind", "authority", "title", "locator"],
+      "properties": {
+        "id": { "$ref": "#/$defs/sourceId" },
+        "provider": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-z0-9][a-z0-9_-]*$" },
+        "kind": { "enum": ["official_external_spec", "internal_spec", "repository_code", "repository_test", "runtime_trace", "human_decision", "expert_statement", "experiment_receipt"] },
+        "authority": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["class", "derived_by_policy"],
+          "properties": {
+            "class": {
+              "description": "Derived by the Policy Engine from the provider manifest, source kind, and locator class — never taken from a value an AI wrote. 'assumed' does not exist: an assumption is not a class of evidence.",
+              "enum": ["executable", "normative", "oracle", "expert", "experimental", "descriptive", "inferred"]
+            },
+            "derived_by_policy": { "const": true },
+            "provider_manifest_digest": { "$ref": "#/$defs/digest" }
+          }
+        },
+        "title": { "$ref": "#/$defs/label" },
+        "locator": { "type": "string", "minLength": 1, "maxLength": 2000 },
+        "anchor": { "type": "string", "maxLength": 500 },
+        "revision": { "type": "string", "maxLength": 200 },
+        "content_digest": { "$ref": "#/$defs/digest" },
+        "snapshot": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["digest", "media_type", "size_bytes", "cache_locator"],
+          "properties": {
+            "digest": { "$ref": "#/$defs/digest" },
+            "media_type": { "type": "string", "maxLength": 128, "pattern": "^[a-z]+/[a-zA-Z0-9.+-]+$" },
+            "size_bytes": { "type": "integer", "minimum": 0 },
+            "cache_locator": { "type": "string", "maxLength": 500, "pattern": "^evidence://sha256/[0-9a-f]{64}$" }
+          }
+        },
+        "verification": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status"],
+          "properties": {
+            "status": { "enum": ["verified", "failed", "unavailable"] },
+            "verified_at": { "type": "string", "maxLength": 64 }
+          }
+        }
+      }
+    },
+
+    "evidenceLink": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_id", "relation"],
+      "properties": {
+        "source_id": { "$ref": "#/$defs/sourceId" },
+        "relation": { "enum": ["supports", "contradicts", "context"] },
+        "note": { "type": "string", "maxLength": 1000 }
+      }
+    },
+
+    "claim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "statement", "kind", "decision_class", "risk", "epistemic_status"],
+      "properties": {
+        "id": { "$ref": "#/$defs/claimId" },
+        "requirement_ids": { "type": "array", "maxItems": 64, "items": { "type": "string", "maxLength": 32, "pattern": "^(R|NFR)-[0-9]+$" } },
+        "statement": { "$ref": "#/$defs/text" },
+        "kind": { "enum": ["invariant", "behavior", "constraint", "prohibition"] },
+        "decision_class": {
+          "description": "Which evidence path can settle this. A business_policy is settled by an authorized human decision; a technical_fact never is (plan 8.5).",
+          "enum": ["business_policy", "technical_fact", "implementation_choice"]
+        },
+        "risk": { "$ref": "#/$defs/risk" },
+        "domains": { "$ref": "#/$defs/domains" },
+        "evidence_obligation_ids": { "type": "array", "maxItems": 32, "items": { "$ref": "#/$defs/obligationId" } },
+        "evidence": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/evidenceLink" } },
+        "epistemic_status": {
+          "description": "grounded / unknown / conflicted — there is no fourth value, and prose may not be promoted into the first (plan 2.3).",
+          "enum": ["grounded", "unknown", "conflicted"]
+        },
+        "oracle_ids": { "type": "array", "maxItems": 32, "items": { "$ref": "#/$defs/oracleId" } },
+        "safe_default": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["statement", "source_id"],
+          "properties": {
+            "statement": { "$ref": "#/$defs/text" },
+            "source_id": { "$ref": "#/$defs/sourceId" }
+          }
+        }
+      }
+    },
+
+    "technicalFact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "statement", "risk", "epistemic_status"],
+      "properties": {
+        "id": { "$ref": "#/$defs/technicalFactId" },
+        "statement": { "$ref": "#/$defs/text" },
+        "risk": { "$ref": "#/$defs/risk" },
+        "domains": { "$ref": "#/$defs/domains" },
+        "evidence_obligation_ids": { "type": "array", "maxItems": 32, "items": { "$ref": "#/$defs/obligationId" } },
+        "evidence": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/evidenceLink" } },
+        "epistemic_status": { "enum": ["grounded", "unknown", "conflicted"] }
+      }
+    },
+
+    "solution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "claim_ids", "decision"],
+      "properties": {
+        "id": { "$ref": "#/$defs/solutionId" },
+        "claim_ids": { "type": "array", "minItems": 1, "maxItems": 64, "items": { "$ref": "#/$defs/claimId" } },
+        "technical_fact_ids": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/technicalFactId" } },
+        "decision": { "$ref": "#/$defs/text" },
+        "alternatives": { "type": "array", "maxItems": 16, "items": { "$ref": "#/$defs/text" } },
+        "rationale_source_ids": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/sourceId" } },
+        "rollback_claim": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["statement", "evidence_obligation_id"],
+          "properties": {
+            "statement": { "$ref": "#/$defs/text" },
+            "evidence_obligation_id": { "$ref": "#/$defs/obligationId" }
+          }
+        }
+      }
+    },
+
+    "oracle": {
+      "description": "A judgement boundary separate from the implementer's own unit tests, frozen at gate 3 together with its harness, runner, expected result, and negative controls.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "claim_ids", "risk", "kind", "bundle", "runner", "command", "expected_exit_code"],
+      "properties": {
+        "id": { "$ref": "#/$defs/oracleId" },
+        "claim_ids": { "type": "array", "minItems": 1, "maxItems": 64, "items": { "$ref": "#/$defs/claimId" } },
+        "risk": { "$ref": "#/$defs/risk" },
+        "kind": { "enum": ["property_test", "conformance_test", "integration_test", "schema_test"] },
+        "bundle": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["root", "digest", "git_blobs"],
+          "properties": {
+            "root": { "$ref": "#/$defs/repoPath" },
+            "digest": { "$ref": "#/$defs/digest" },
+            "git_blobs": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 512,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["path", "blob"],
+                "properties": {
+                  "path": { "$ref": "#/$defs/repoPath" },
+                  "blob": { "$ref": "#/$defs/gitBlob" }
+                }
+              }
+            }
+          }
+        },
+        "runner": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["executor", "network_profile"],
+          "properties": {
+            "executor": { "enum": ["oci", "host"] },
+            "image": { "type": "string", "maxLength": 500, "pattern": "^[a-z0-9][a-zA-Z0-9._/:-]*@sha256:[0-9a-f]{64}$" },
+            "image_digest": { "$ref": "#/$defs/digest" },
+            "network_profile": { "type": "string", "maxLength": 64, "pattern": "^[a-z0-9][a-z0-9_-]*$" },
+            "environment_digest": { "$ref": "#/$defs/digest" }
+          }
+        },
+        "command": { "type": "array", "minItems": 1, "maxItems": 64, "items": { "type": "string", "minLength": 1, "maxLength": 500 } },
+        "expected_exit_code": { "type": "integer", "minimum": 0, "maximum": 255 },
+        "negative_controls": {
+          "description": "A known-violating subject the oracle must reject. Without one, an oracle that always exits 0 looks identical to a passing one (plan 9.4).",
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "subject_fixture", "expected_exit_code"],
+            "properties": {
+              "id": { "type": "string", "maxLength": 64, "pattern": "^NC-[0-9]{3,}-[0-9]+$" },
+              "subject_fixture": { "type": "string", "minLength": 1, "maxLength": 500 },
+              "expected_exit_code": { "type": "integer", "minimum": 0, "maximum": 255 }
+            }
+          }
+        },
+        "subject_paths": { "type": "array", "maxItems": 128, "items": { "$ref": "#/$defs/repoPath" } }
+      }
+    },
+
+    "task": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title", "kind", "risk"],
+      "properties": {
+        "id": { "$ref": "#/$defs/taskId" },
+        "title": { "$ref": "#/$defs/label" },
+        "kind": {
+          "description": "The DAG role that drives orchestration: layers, parallelism, and merge order derive from it, not from LLM discretion.",
+          "enum": ["foundation", "parallel", "integration"]
+        },
+        "blocked_by": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/taskId" } },
+        "claim_ids": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/claimId" } },
+        "oracle_ids": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/oracleId" } },
+        "domains": { "$ref": "#/$defs/domains" },
+        "risk": { "$ref": "#/$defs/risk" },
+        "scope": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "include": { "type": "array", "maxItems": 128, "items": { "$ref": "#/$defs/repoPath" } },
+            "exclude": { "type": "array", "maxItems": 128, "items": { "$ref": "#/$defs/repoPath" } }
+          }
+        }
+      }
+    },
+
+    "nonGoal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "statement"],
+      "properties": {
+        "id": { "$ref": "#/$defs/nonGoalId" },
+        "statement": { "$ref": "#/$defs/text" }
+      }
+    }
+  }
+}

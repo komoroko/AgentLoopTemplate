@@ -302,11 +302,10 @@ def test_check_version_changelog_green_and_drifts() -> None:
 
 def _live_template_mode() -> bool:
     config = yaml.safe_load((_REPO_ROOT / template_lint.CONFIG_PATH).read_text(encoding="utf-8")) or {}
-    return bool((config.get("gates") or {}).get("template_mode") is True)
+    return bool((config.get("guard") or {}).get("template_mode") is True)
 
 
 @pytest.mark.skipif(not _live_template_mode(), reason="not the template repo (gates.template_mode is false)")
-@pytest.mark.skip(reason="this repository is still on the 0.8.x layout; PR-G re-scaffolds it and re-enables the canary")
 def test_live_repo_has_no_drift() -> None:
     files = {
         path: (_REPO_ROOT / path).read_text(encoding="utf-8")
