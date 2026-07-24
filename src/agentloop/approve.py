@@ -29,7 +29,7 @@ import json
 import logging
 import sys
 
-from agentloop import common, dag, dag_trace, digests, event_chain, models
+from agentloop import common, dag, dag_trace, digests, event_chain, models, oracle_bundle
 from agentloop import repo as repo_mod
 from agentloop import store as store_mod
 
@@ -94,8 +94,29 @@ def _plan_blockers(plan: models.Plan | None, gate: str) -> list[str]:
         if not plan.tasks:
             blockers.append("the plan declares no tasks")
         for oracle in plan.oracles:
-            if not oracle.bundle_digest:
-                blockers.append(f"{oracle.id}: the oracle bundle is not frozen (no digest)")
+            blockers += oracle_bundle.check_negative_controls(oracle)
+    return blockers
+
+
+def _oracle_blockers(repo: repo_mod.Repo, plan: models.Plan | None, gate: str) -> list[str]:
+    """Refuse a downstream gate when an already-frozen oracle bundle has since been tampered with.
+
+    A tamper detector, not a freeze *presence* check: the freeze that stamps `bundle.digest` is
+    part of the gate-③ plan deliverable (it must be in the plan the human signs, so it cannot be
+    written after the fact). Here we only assert that an oracle *carrying* a frozen digest still
+    matches its committed bundle — the "edit a fixture to make the oracle pass" move (E2E-12) —
+    at the gates downstream of the freeze. An oracle with no digest yet is left to the freeze
+    step's own enforcement, not blocked here.
+    """
+    if gate not in {"build", "release"} or plan is None:
+        return []
+    blockers: list[str] = []
+    for oracle in plan.oracles:
+        if not oracle.bundle_digest:
+            continue
+        ok, message = oracle_bundle.verify_frozen(repo, oracle)
+        if not ok:
+            blockers.append(message)
     return blockers
 
 
@@ -178,6 +199,7 @@ def readiness(repo: repo_mod.Repo, gate: str) -> list[str]:
     blockers += _chain_blockers(state, gate)
     blockers += _plan_blockers(plan, gate)
     blockers += _task_blockers(plan, state, gate)
+    blockers += _oracle_blockers(repo, plan, gate)
     blockers += _review_blockers(review, gate)
     return blockers
 

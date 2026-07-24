@@ -117,6 +117,22 @@ def test_challenge_precedes_expected_actual_in_the_review_order() -> None:
     assert models.PRIMING_STAGES < models.REVIEW_STAGE_VALUES
 
 
+def test_make_oracle_builder_is_schema_valid() -> None:
+    """The `make_oracle` fixture must produce a plan the real tool would accept, cross-refs and all."""
+    from tests._support import make_oracle, make_plan
+
+    plan = make_plan(
+        oracles=[
+            make_oracle(
+                risk="high",
+                negative_controls=[{"id": "NC-001-1", "subject_fixture": "bad.py", "expected_exit_code": 1}],
+            )
+        ]
+    )
+    errors = models.schema_errors(plan, "plan") or models.cross_reference_errors(models.Plan(plan))
+    assert errors == []
+
+
 @pytest.mark.parametrize("name", ["plan", "state", "review", "config"])
 def test_the_shipped_scaffold_validates(name: str) -> None:
     """The scaffold `agentloop init` seeds must satisfy its own schema.

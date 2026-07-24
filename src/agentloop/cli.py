@@ -53,6 +53,8 @@ VERBS: dict[str, str] = {
     "pr-draft": "pr_draft",
     "attestation": "attestations",
     "evidence": "evidence",
+    "oci": "oci_cli",
+    "oracle": "oracle_cli",
     "guard": "gate_guard",
     "decision": "control_plane",
     "knowledge-gap": "control_plane:knowledge_gap_main",
@@ -89,6 +91,8 @@ operations:
   approve <gate> [--check]     readiness check + an attestation request (does NOT open the gate)
   attestation sign|import|…    sign an approval, or import a signed one to open its gate
   evidence obligations|coverage  inspect what each claim owes, and whether it is met
+  oci build|verify             build the sandbox images and pin their digests
+  oracle validate|freeze|run   the acceptance-oracle boundary (frozen at gate 3)
   revise --to <phase> ...      roll back upstream (gates reset in a chain)
   build [--dry-run]            the deterministic /build orchestrator
   dag [--render|--trace|...]   derive/inspect the task DAG (read-only; /tasks & /status use it)

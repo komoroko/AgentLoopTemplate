@@ -182,6 +182,47 @@ def make_source(
     }
 
 
+def make_oracle(
+    oracle_id: str = "O-001",
+    *,
+    claim_ids: list[str] | None = None,
+    risk: str = "low",
+    bundle_root: str | None = None,
+    bundle_digest: str | None = None,
+    git_blobs: list[dict[str, str]] | None = None,
+    negative_controls: list[dict[str, Any]] | None = None,
+    subject_paths: list[str] | None = None,
+) -> dict[str, Any]:
+    """A schema-valid acceptance oracle. The default is a low-risk OCI conformance test.
+
+    `bundle_digest` / `git_blobs` default to well-formed fixtures — a test that needs the digest
+    to match a *real* committed bundle passes the frozen values in.
+    """
+    root = bundle_root or f".agentloop/oracles/{oracle_id}"
+    oracle: dict[str, Any] = {
+        "id": oracle_id,
+        "claim_ids": claim_ids or ["C-001"],
+        "risk": risk,
+        "kind": "conformance_test",
+        "bundle": {
+            "root": root,
+            "digest": bundle_digest or _digest(f"bundle-{oracle_id}"),
+            "git_blobs": git_blobs or [{"path": f"{root}/harness.py", "blob": "git-blob:" + "a" * 40}],
+        },
+        "runner": {
+            "executor": "oci",
+            "image": "localhost/agentloop-oracle@sha256:" + "c" * 64,
+            "network_profile": "none",
+        },
+        "command": ["pytest", "-q"],
+        "expected_exit_code": 0,
+        "subject_paths": subject_paths if subject_paths is not None else ["src/"],
+    }
+    if negative_controls is not None:
+        oracle["negative_controls"] = negative_controls
+    return oracle
+
+
 def make_plan(
     *,
     cycle_id: str = DEMO_CYCLE,

@@ -165,6 +165,52 @@ def test_a_design_decision_needs_a_stated_alternative(tmp_path: Path) -> None:
     assert any("decision nobody actually made" in b for b in approve.readiness(repo, "design"))
 
 
+# --- a tampered oracle bundle blocks a downstream gate (E2E-12) ---------------
+
+
+@pytest.mark.integration
+def test_gate_four_blocks_when_a_frozen_oracle_bundle_was_tampered(tmp_path: Path) -> None:
+    """A bundle edited after gate 3 (the 'make the oracle pass' move) must fail readiness."""
+    import subprocess
+
+    from agentloop import oracle_bundle
+    from tests._support import make_oracle
+
+    def git(*args: str) -> None:
+        subprocess.run(["git", "-C", str(tmp_path), *args], check=True, capture_output=True)
+
+    root = ".agentloop/oracles/O-001"
+    bundle_file = tmp_path / root / "harness.py"
+    bundle_file.parent.mkdir(parents=True, exist_ok=True)
+    bundle_file.write_text("assert conforms()\n", encoding="utf-8")
+    git("init", "-q")
+    git("config", "user.email", "t@e.x")
+    git("config", "user.name", "T")
+    git("add", "-A")
+    git("commit", "-q", "-m", "bundle")
+
+    frozen = oracle_bundle.freeze(repo_mod.Repo(tmp_path), models.Oracle(make_oracle(bundle_root=root)))
+    oracle = make_oracle(
+        bundle_root=root,
+        bundle_digest=frozen.digest,
+        git_blobs=[{"path": b.path, "blob": f"git-blob:{b.blob}"} for b in frozen.blobs],
+    )
+    repo = repo_at(
+        tmp_path,
+        state=make_state(tasks={"T-001": "done"}),
+        plan=make_plan(oracles=[oracle]),
+        review=make_review(generated=True, human_status="frozen"),
+    )
+    # Intact: the frozen digest still describes the committed bundle.
+    assert not any("no longer matches" in b for b in approve.readiness(repo, "build"))
+
+    # Now tamper with the committed bundle — the digest must move and readiness must block.
+    bundle_file.write_text("assert True  # neutered\n", encoding="utf-8")
+    git("add", "-A")
+    git("commit", "-q", "-m", "tamper")
+    assert any("no longer matches" in b for b in approve.readiness(repo, "build"))
+
+
 # --- gate 4: a review, not a green test run -----------------------------------
 
 
