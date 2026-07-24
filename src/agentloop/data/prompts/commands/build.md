@@ -4,7 +4,7 @@
 (Capability terms like `role-delegation` resolve per AGENTS.md "Capability vocabulary" and your agent's capability mapping.)
 
 ## Prerequisite gate check (always first)
-Read `.agentloop/state.md` and confirm `gates.tasks == approved`.
+Read `.agentloop/state.yaml` and confirm `gates.tasks == approved`.
 If unapproved, do not work; say "please approve `/tasks` first" and stop.
 
 ## The consumption algorithm (one definition, both modes)
@@ -17,7 +17,7 @@ derivatives on a stale base); independent leaves run in `git worktree` isolation
 subtree) at up to `max_parallel` (default 3) in parallel → for each task, run the quality-gate
 pipeline `quality_gate.steps` in `.agentloop/config.yaml` — the single definition of the DoD
 (default: `test` → `check` → `review` → `smoke`; when the task's own `test` command in
-tasks.yaml differs from the configured steps it is prepended as a focused `task-test` step).
+`plan.yaml` differs from the configured steps it is prepended as a focused `task-test` step).
 Each `cmd` step is gate-decided by exit code; a fail goes back to the implementer up to **that
 step's own `retries` budget** (over the budget → `blocked`) → **gate-check every path the task
 changed** (merge-stage gate guard — a pending-gate path escalates as `gate_violation` and
@@ -31,11 +31,11 @@ with unfinished tasks = all blocked/needs-revision → escalate and stop; all do
 below. **Only the human opens `gates.build`.**
 
 ### A. Deterministic execution (recommended; requires a headless agent CLI) — `agentloop build`
-The installed orchestrator runs the algorithm **in code** from `.agentloop/config.yaml` and
-`tasks.yaml` — not LLM discretion. It launches its implementer/reviewer agents headless itself
-via the CLI in `build.headless.cmd` (default `claude -p`; `codex exec` / `gemini -p` also work
-— the prompt is appended as the last argument), so the requirement is **that CLI installed and
-authenticated** — any agent (or the human in a terminal) may invoke `agentloop build`. At the
+The installed orchestrator runs the algorithm **in code** from `.agentloop/config.yaml`,
+`plan.yaml`, and `state.yaml` — not LLM discretion. It launches its implementer/reviewer agents
+headless in the **OCI sandbox** via the adapters set by `agentloop agent <role> <cli>` (default
+`claude`), so the requirement is **that CLI installed and authenticated** — any agent (or the
+human in a terminal) may invoke `agentloop build`. At the
 start it code-checks `gates.tasks == approved` and stops doing nothing if unapproved.
 
 ```
@@ -75,18 +75,18 @@ puts four duties on the lead that mode A does in code:
    branch rather than the work branch; the implementer then lacks the foundation tasks'
    deliverables and must first pull the work branch in (`git merge`, `--ff-only` if possible)
    before implementing. (Mode A branches from the work branch, so this never arises there.)
-3. **Keep the records by hand.** Statuses (`in_progress` → `done`/`blocked`) in tasks.yaml as
+3. **Keep the records by hand.** Statuses (`in_progress` → `done`/`blocked`) in `state.yaml.tasks` as
    you go — never `done` with any DoD step unmet; blocked/needs-revision recorded as events
    (`agentloop events --add blocked --task T-NNN --detail "…"`); per-task commits
    **`T-NNN: <summary>`** (one commit = one task — the worktree's commits are exactly that
-   task's diff, which is what scopes the review step); merged worktrees cleaned up; state.md
-   views and `updated_at` refreshed each iteration. A newly discovered dependency or task
-   split updates the DAG in tasks.yaml; an upstream (requirements/design) defect is
+   task's diff, which is what scopes the review step); merged worktrees cleaned up; `state.yaml`
+   and its `updated_at` refreshed each iteration. A newly discovered dependency or task
+   split is a plan change — take it through `/revise` (the plan is frozen at gate ③); an upstream (requirements/design) defect is
    `needs-revision` + escalation — never fixed on your own; roll back via `/revise` at the
    human's discretion.
 4. **Session hygiene.** At a layer boundary, when the conversation is heavy with re-run
    output, you may suggest `session-compaction` — only when no task is `in_progress`, merges
-   are committed and marked `done`, and observations are recorded in tickets / `state.md`
+   are committed and marked `done`, and observations are recorded in tickets / `state.yaml`
    (pre-compact check: `.agentloop/prompts/rules/gate-workflow.md` "Context budget"; the SSOT rehydrates the next iteration).
    Never mid-retry or while a worktree awaits its merge. (Mode A runs in separate processes
    and needs none of this.)
@@ -116,19 +116,18 @@ algorithm above). Operational notes:
   (`command-preauthorization`) so the smoke step doesn't re-prompt every loop.
 
 ## When all tasks complete (gate ④)
-1. **The security review is mandatory, bound to this build's deliverable.** In deterministic
-   mode A, `build_loop.py` auto-launches it headless when all tasks are done (config
-   `build.post_build.security_review`, default on): the report lands in
-   `.agentloop/security-review.md` with the reviewed HEAD hash embedded, and the run is
-   recorded as a `security_review` event — **read that report and triage it**; a re-run at the
-   same HEAD skips (already reviewed). In mode B — or when the knob is off / the launch failed
-   — run **`/security-review`** yourself (in an environment without that command, perform an
-   equivalent security-focused review of this build's changes and write the report to
-   `.agentloop/security-review.md` with the reviewed HEAD hash, the same binding). Either way:
-   return must-fix-equivalent findings to the implementer to fix (a fix moves HEAD, so mode A
-   re-reviews on the next run), and record judgment calls as escalation events
-   (`agentloop events --add …`) for the human. Do not present gate ④ if there is a serious
-   unresolved issue.
+1. **Generate the grounded review — the artefact gate ④ approves.** Run `agentloop review
+   generate` (bound to the current HEAD). It runs the frozen acceptance oracles in the OCI
+   sandbox, a deterministic Coverage Manifest, a **blind** actual-behaviour extraction (never
+   given the plan), the Expected/Actual comparison, and the structured security and
+   maintainability review — writing `.agentloop/review.yaml` and recording the pipeline events.
+   Findings sit on three separate axes (integrity / semantic support / conformance); there is no
+   single `verified`, and "extra behaviours: 0" appears only with the Coverage Manifest that
+   earned it. **Triage it**: a blocking security finding, an oracle failure, an ungrounded
+   high/critical extra behaviour, or an insufficient Coverage Manifest blocks the gate — return
+   those to the implementer to fix (a fix moves HEAD, so re-generate; a later commit leaves the
+   review stale) and record judgment calls as escalation events for the human. Do not present
+   gate ④ while a blocker stands.
 2. `notify-and-wait`: tell the human the gate-④ approval is pending.
    - **(Only with GitHub integration)** Run `agentloop issue-sync` to reflect each task's
      latest status (done → close, etc.) to Issues. Best-effort; do not stop the gate if it
@@ -136,8 +135,10 @@ algorithm above). Operational notes:
      the deterministic orchestration loop (`build_loop.py`) = do not bring networking into the
      deterministic loop.
 3. Present the implementation summary (completed tasks, key additions/changes, test results,
-   **security-review results**, unresolved items) as an **`approval-presentation`** and
-   confirm "may we approve this as implementation-complete?".
+   **the grounded-review results — the three axes, coverage, and the Challenge-first human
+   review**, unresolved items) as an **`approval-presentation`** and confirm "may we approve
+   this as implementation-complete?". The human review is completed in `agentloop ui` and frozen
+   with `agentloop review complete` before the gate can be requested.
    - **Smoke-step check**: if the deliverable is runnable (CLI, server, …) and
      `quality_gate`'s `smoke.run` is still empty, say so explicitly at the gate — the DoD ran
      without a launch check — and propose the command to fill in plus `required: true` (mode A
@@ -146,16 +147,17 @@ algorithm above). Operational notes:
    - **Always present a self-assessment as well** (`.agentloop/prompts/rules/gate-workflow.md` "Gate self-assessment"),
      including the outcomes of spots that produced blocked/needs-revision.
 4. **While waiting for approval**, only outcome-independent speculative work (AGENTS.md
-   "Minimizing the approval-wait bottleneck"; record it in the speculative work log of
-   `state.md`): concretizing functional test cases in `docs/test/test-plan.md`, a trial run of
+   "Minimizing the approval-wait bottleneck"; record it as speculative-work events):
+   concretizing functional test cases in `docs/test/test-plan.md`, a trial run of
    `make audit`, and other `/verify` prep pulled forward. Do not make changes that could
    require redoing the implementation.
 5. Once a human approves (acknowledging the `approval-presentation`, or an explicit "approve")
-   — **running the next command (`/verify`) is not itself approval** — record it by running
-   `agentloop approve build [BY=<approver>]`: the operation is the only sanctioned write path;
-   never edit a gate line yourself (mechanics: AGENTS.md "Gate rules" 2). Point to "next is
-   `/verify`", and after committing the gate's deliverables, suggest `session-compaction`
-   (pre-compact check: `.agentloop/prompts/rules/gate-workflow.md` "Context budget").
+   — **running the next command (`/verify`) is not itself approval** — run `agentloop approve
+   build` (readiness + an attestation request; it does **not** open the gate). The gate opens
+   when a Trust-Manifest key signs the request and `agentloop attestation import <signed>`
+   records it; never edit a gate line yourself (mechanics: AGENTS.md "Gate rules" 2). Point to
+   "next is `/verify`", and after committing the gate's deliverables, suggest
+   `session-compaction` (pre-compact check: `.agentloop/prompts/rules/gate-workflow.md` "Context budget").
 
 ## Monitoring long-running loops (optional)
 When running long in the background, you may periodically notify the human of progress
