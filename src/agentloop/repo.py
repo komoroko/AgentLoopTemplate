@@ -196,6 +196,24 @@ class Repo:
             return ""
         return proc.stdout.strip() if proc.returncode == 0 else ""
 
+    def _git_rc(self, *args: str) -> tuple[int, str]:
+        """Like :meth:`_git` but returns `(returncode, stdout)` *unstripped*.
+
+        The return code separates "no such blob" from "an empty blob", and the unstripped
+        stdout keeps a file's real line count — both matter when validating a code anchor
+        against the committed tree (`review_policy.validate_anchor`).
+        """
+        try:
+            proc = subprocess.run(
+                ["git", "-C", str(self.root), *args],
+                capture_output=True,
+                text=True,
+                timeout=_GIT_TIMEOUT_SEC,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return 1, ""
+        return proc.returncode, proc.stdout
+
     @property
     def git_common_dir(self) -> Path | None:
         """The realpath of the git *common* dir — shared by the repository and its worktrees.

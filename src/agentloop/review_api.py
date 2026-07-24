@@ -4,7 +4,7 @@ status_api.py answers "where does the lifecycle stand"; this module answers the 
 "what do I read to approve the gate in front of me". `collect_review(root, gate)` returns one JSON
 object per gate: the phase deliverables rendered through mdlite (escape-first — see its threat
 model), each deliverable's Self-assessment section split out so the pane can pin it, and for gate
-④ the work-branch diff plus the security-review report's freshness.
+④ the work-branch diff plus the generated review's freshness.
 
 Reach is fixed server-side, the same way ui.action_argv fixes command lines: the client sends only
 a gate name; which files are read comes from the `_GATE_SPEC` constant plus a template-excluding
@@ -34,7 +34,6 @@ _MAX_PATCH = 200_000  # bytes of unified diff for gate ④
 _GIT_TIMEOUT_SEC = 10
 _GLOB_NAME_RE = re.compile(r"^(T|ADR)-[A-Za-z0-9_.-]+\.md$")
 _TEMPLATE_NAMES = frozenset({"T-template.md", "ADR-template.md"})
-_REVIEWED_HEAD_RE = re.compile(r"^Reviewed-HEAD:\s*([0-9a-fA-F]+)", re.MULTILINE)
 # The *labelled* confidence line ("- **Confidence**: …"), not any prose mentioning the word: the
 # label must be what precedes the colon, so a sentence like "we have high confidence in X" is not
 # mistaken for the assessment. The value is everything after that colon.
@@ -154,7 +153,7 @@ def _expand(root: Path, spec: list[_SpecItem]) -> list[dict[str, object]]:
     return out
 
 
-# -- gate ④: the work-branch diff and the security-review freshness --
+# -- gate ④: the work-branch diff and the generated-review freshness --
 
 
 def _git(root: Path, *args: str) -> tuple[int, str]:
@@ -217,14 +216,22 @@ def _diff_block(root: Path) -> dict[str, object]:
 
 
 def _review_meta(root: Path, head: str | None) -> dict[str, object]:
-    """Whether .agentloop/security-review.md speaks for the commit actually under review."""
+    """Whether the generated machine review speaks for the commit actually under review.
+
+    0.9.0 has no `security-review.md`: gate ④ approves the generated *review.yaml*, whose
+    machine binding records the `subject_head_sha` it was produced against. Freshness is that
+    sha against the current HEAD — a commit made after the review was generated leaves the
+    review stale (plan §17.5, E2E-08), and the pane must show it rather than imply currency.
+    """
     try:
-        text = (root / ".agentloop" / "security-review.md").read_text(encoding="utf-8")
-    except OSError:
+        raw = strict_yaml.load_mapping((root / ".agentloop" / "review.yaml").read_text(encoding="utf-8"))
+    except (OSError, strict_yaml.StrictParseError):
         return {"reviewed_head": None, "head": head, "fresh": False}
-    m = _REVIEWED_HEAD_RE.search(text)
-    reviewed = m.group(1) if m else None
-    return {"reviewed_head": reviewed, "head": head, "fresh": bool(reviewed and head and reviewed == head)}
+    machine = raw.get("machine")
+    binding = machine.get("binding") if isinstance(machine, dict) else None
+    reviewed = str(binding.get("subject_head_sha", "")) if isinstance(binding, dict) else ""
+    reviewed_or_none = reviewed or None
+    return {"reviewed_head": reviewed_or_none, "head": head, "fresh": bool(reviewed and head and reviewed == head)}
 
 
 def _gate_statuses(root: Path) -> dict[str, str]:

@@ -209,15 +209,17 @@ class TestBuildGateDiff:
         assert "patch" not in diff
         assert diff["log"] and "only commit" in diff["log"][0]
 
-    def test_security_review_freshness(self, make_repo: MakeRepo) -> None:
+    def test_machine_review_freshness(self, make_repo: MakeRepo) -> None:
+        # 0.9.0 has no security-review.md: freshness is the review.yaml machine binding's
+        # subject_head_sha against the current HEAD (a later commit leaves it stale, E2E-08).
         root = make_repo()
         _git(root, "init", "-q", "-b", "main")
         _write(root, "a.txt", "x\n")
         _git(root, "add", ".")
         _git(root, "commit", "-qm", "c")
         head = _git(root, "rev-parse", "HEAD")
-        _write(root, ".agentloop/security-review.md", f"Reviewed-HEAD: {head}\nverdict: fine\n")
+        _write(root, ".agentloop/review.yaml", f"machine:\n  binding:\n    subject_head_sha: {head}\n")
         assert _review(root, "build")["review_meta"]["fresh"] is True
-        _write(root, ".agentloop/security-review.md", "Reviewed-HEAD: 0000000\n")
+        _write(root, ".agentloop/review.yaml", "machine:\n  binding:\n    subject_head_sha: '0000000'\n")
         meta = _review(root, "build")["review_meta"]
         assert meta["fresh"] is False and meta["reviewed_head"] == "0000000"
